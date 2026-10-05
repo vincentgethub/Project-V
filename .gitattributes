@@ -1,3 +1,3 @@
-vws-core/docs/spec/*.md -text
-vws-core/deliveries/*.md -text
-vws-core/deliveries/*_manifest.json -text
+vws-core/docs/spec/*.md -text whitespace=cr-at-eol
+vws-core/deliveries/*.md -text whitespace=cr-at-eol
+vws-core/deliveries/*_manifest.json -text whitespace=cr-at-eol
