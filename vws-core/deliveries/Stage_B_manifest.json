@@ -1,0 +1,176 @@
+[
+  {
+    "path": ".env.example",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 2606,
+    "sha256": "d4665b19a70c0d2d776e1e0be4c1351003f7d286c91b4f679983bcbf964a41fb"
+  },
+  {
+    "path": ".gitignore",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 371,
+    "sha256": "9652788a7167eb59505640f6622c916b58e16004d0ea85b9ff6984bb10336de9"
+  },
+  {
+    "path": ".pre-commit-config.yaml",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 906,
+    "sha256": "8096372a7dd01ef88e42a191e0b2fa23f9c35d1da60055fffe68af0a275bf281"
+  },
+  {
+    "path": "pyproject.toml",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 2240,
+    "sha256": "2e1856235685591bd7d81652df03e12a9e7b437f1305cdd947c45f5233f64275"
+  },
+  {
+    "path": "requirements-lock.txt",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 2123,
+    "sha256": "d465af53a4e8375afc2014db09889d14b4badfeb9a932fa5d3b344920273d5dc"
+  },
+  {
+    "path": ".github/workflows/ci.yml",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 2477,
+    "sha256": "68e93ac1648819b1ae3f99965b03239494c7e0d21dc4387d71aaded0621c844d"
+  },
+  {
+    "path": "README.md",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 6412,
+    "sha256": "2a2db9927633e5c895f14f253b4448d011c03576259788be5deff337b31a2912"
+  },
+  {
+    "path": "ASSUMPTIONS.md",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 10362,
+    "sha256": "f88ea397e2bd52a765a3a5e23460a0d6f94fd909a5da2330cb6b359f1f5532e1"
+  },
+  {
+    "path": "VERIFY.md",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 13582,
+    "sha256": "1c973e27d148c019aba4c38c7f93b5eac5b5d6237119ef5b7ad94b2b45e7d913"
+  },
+  {
+    "path": "backend/core/check_stage_a.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 1880,
+    "sha256": "1fb4e8f146fc171bc40a071aa1f28d5cdb9dadd2e17e759a5b1fa41c113936ef"
+  },
+  {
+    "path": "backend/core/check_stage_b.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 1574,
+    "sha256": "1cb98df34e1e402f67a9a599f3fcf54a14dc47d47d073d87eb2a3303d7acc6a9"
+  },
+  {
+    "path": "backend/domain/__init__.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 82,
+    "sha256": "75159c158cfe9b9ec1e4f7ec7eeb7b41d6666b253a09af5ac14f3288545edd7f"
+  },
+  {
+    "path": "backend/domain/models.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 19535,
+    "sha256": "df24b430981af747f3dd3a3a6be398043af3885fbeea9cc516d02ff932605824"
+  },
+  {
+    "path": "backend/domain/instruments.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 12719,
+    "sha256": "df71caa90a340e8baeba32091f93ca858d6d286b109296c68968a32689c085aa"
+  },
+  {
+    "path": "backend/risk/__init__.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 68,
+    "sha256": "bed55df552c4aaba26164d22966cdfb9d8f2dca25ad9c293dc21147b55eb5220"
+  },
+  {
+    "path": "backend/risk/risk_cro.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 24232,
+    "sha256": "f2ba629e627299bee5b0586b4c5d05dfe9bb1639920b0474170c5e3c8e88023e"
+  },
+  {
+    "path": "backend/risk/boundary.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 8495,
+    "sha256": "b8e8864c3c1c37a65b8e46854f90d0068f29b818047550a190703f48a4ddcf32"
+  },
+  {
+    "path": "backend/tests/test_domain.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 34328,
+    "sha256": "814aaba22e89c4f500fbf389a2066923da84c2fe7e798d2be7798d4b08bab6ad"
+  },
+  {
+    "path": "backend/tests/test_risk_cro.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 38631,
+    "sha256": "f17d6d13efff2b5ee143a69691bfd6e8de8e1eed411ce161451972309ed242bd"
+  },
+  {
+    "path": "backend/tests/test_risk_boundary.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 15633,
+    "sha256": "c173629ff9b90cc2e8ebffc36718a479b0548fa5e3f9347cabdd6cde56ca7048"
+  },
+  {
+    "path": "backend/tests/test_stage_b_adversarial.py",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 14127,
+    "sha256": "c75c1503a6446c05fd0694f0d54232c565b623d365cf27bdd8654f13afd48d2c"
+  },
+  {
+    "path": "config/config.yaml",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 782,
+    "sha256": "2714e63536baca5dd313596df9401ff5fa5e62a81358e35749a5f9e0a1ce3d0c"
+  },
+  {
+    "path": "config/instruments.csv",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 574,
+    "sha256": "1d7f9d8750254079ead7e666ba4bbff5e6d270fa28c56511df361baaefb67e0f"
+  },
+  {
+    "path": "config/etf_sector_weights.csv",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 449,
+    "sha256": "69f61d9c5cdb275b9fe4967acf38fe2688e0ad4f326e5ae7924bbc8a90ffe44e"
+  },
+  {
+    "path": "config/substantially_identical.csv",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 16,
+    "sha256": "c37995109bdb6b50a3cb83c024d1766379b2a41b7ceee5dea3084f6652afdfe2"
+  },
+  {
+    "path": "config/blackout_windows.csv",
+    "scope": "Stage B and referenced configuration",
+    "bytes": 24,
+    "sha256": "56ea224a05617ca3033069d373ae86d2eeb1abdcb555abb4e91ff86fbe822143"
+  },
+  {
+    "path": "../.github/workflows/ci.yml",
+    "scope": "Git-root mirror",
+    "bytes": 2477,
+    "sha256": "68e93ac1648819b1ae3f99965b03239494c7e0d21dc4387d71aaded0621c844d"
+  },
+  {
+    "path": "../.pre-commit-config.yaml",
+    "scope": "Git-root mirror",
+    "bytes": 906,
+    "sha256": "8096372a7dd01ef88e42a191e0b2fa23f9c35d1da60055fffe68af0a275bf281"
+  },
+  {
+    "path": "../.gitignore",
+    "scope": "Git-root mirror",
+    "bytes": 371,
+    "sha256": "9652788a7167eb59505640f6622c916b58e16004d0ea85b9ff6984bb10336de9"
+  }
+]

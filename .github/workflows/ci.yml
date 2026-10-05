@@ -1,0 +1,35 @@
+name: Stage A through C defensive core
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.VWS_PROJECT_DIR || '.' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Locate project
+        working-directory: .
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo 'VWS_PROJECT_DIR=.' >> "$GITHUB_ENV"
+          else
+            echo 'VWS_PROJECT_DIR=vws-core' >> "$GITHUB_ENV"
+          fi
+      - name: Install exact dependencies
+        run: python -m pip install --upgrade pip==26.2.1 && python -m pip install -r requirements-lock.txt && python -m pip install --no-deps -e .
+      - name: Lint and format
+        run: python -m ruff check . && python -m ruff format --check .
+      - name: Strict Stage A through C typing
+        run: python -m backend.core.check_stage_c
+      - name: Execution source guard
+        run: python -m backend.core.source_guard .
+      - name: Security checks
+        run: python -m bandit -r backend/core backend/domain backend/risk backend/data/market_calendar.py -c pyproject.toml && python -m pip_audit -r requirements-lock.txt --no-deps --disable-pip --progress-spinner off --timeout 15 && python -m detect_secrets scan --all-files --exclude-files '(^|[\\/])(\.venv|backend[\\/]tests|deliveries|\.git|\.mypy_cache|\.pytest_cache|\.ruff_cache|\.hypothesis|__pycache__|mutants|build|dist)[\\/]' > /tmp/vws-secrets.json && python -c "import json; from pathlib import Path; findings=json.loads(Path('/tmp/vws-secrets.json').read_text())['results']; print(findings); assert not findings"
+      - name: Stage A through C tests, network blocked, risk and state branch coverage 100%
+        run: python -m pytest backend/tests/test_config_safety.py backend/tests/test_yaml_config.py backend/tests/test_money.py backend/tests/test_logging.py backend/tests/test_ledger.py backend/tests/test_research_ledger.py backend/tests/test_system_state.py backend/tests/test_market_calendar.py backend/tests/test_no_order_exec.py backend/tests/test_domain.py backend/tests/test_risk_cro.py backend/tests/test_risk_boundary.py backend/tests/test_stage_b_adversarial.py backend/tests/test_compliance.py backend/tests/test_wash_sales.py backend/tests/test_compliance_boundary.py backend/tests/test_stage_c_adversarial.py --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov-branch --cov-fail-under=100 --cov-report=term-missing

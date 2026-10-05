@@ -1,0 +1,11 @@
+symbol,asset_class,gics_sector,themes,is_leveraged,is_inverse,tradable
+AAPL,STOCK,Information Technology,CONSUMER_TECH,false,false,true
+MSFT,STOCK,Information Technology,CLOUD,false,false,true
+NVDA,STOCK,Information Technology,AI_SEMIS,false,false,true
+JNJ,STOCK,Health Care,,false,false,true
+JPM,STOCK,Financials,,false,false,true
+SPY,BROAD_ETF,UNKNOWN,,false,false,true
+QQQ,BROAD_ETF,UNKNOWN,MEGA_CAP_TECH,false,false,true
+XLK,SECTOR_ETF,Information Technology,,false,false,true
+TQQQ,BROAD_ETF,UNKNOWN,MEGA_CAP_TECH,true,false,false
+SH,BROAD_ETF,UNKNOWN,,false,true,false

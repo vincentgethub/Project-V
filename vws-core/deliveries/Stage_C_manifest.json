@@ -1,0 +1,200 @@
+[
+  {
+    "path": ".env.example",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 2606,
+    "sha256": "d4665b19a70c0d2d776e1e0be4c1351003f7d286c91b4f679983bcbf964a41fb"
+  },
+  {
+    "path": ".gitignore",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 393,
+    "sha256": "a05c6036b9d2d5b14805ae732d49945770021b6974b04e310ab9077c1c1f3cb9"
+  },
+  {
+    "path": ".pre-commit-config.yaml",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 911,
+    "sha256": "6a3f557da9182d950e1cec0a18f24f69eb1a01825032e5c6c8087eaceab2820d"
+  },
+  {
+    "path": "pyproject.toml",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 2368,
+    "sha256": "04a92c293bf601f525536463c20e5cb63b467604643b544da320421dca8e2be7"
+  },
+  {
+    "path": "requirements-lock.txt",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 2123,
+    "sha256": "d465af53a4e8375afc2014db09889d14b4badfeb9a932fa5d3b344920273d5dc"
+  },
+  {
+    "path": ".github/workflows/ci.yml",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 2605,
+    "sha256": "5d52f41da371a5331fdadd0ebc55f461352715a9aae1b78e5c536648bdd2b412"
+  },
+  {
+    "path": "README.md",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 8011,
+    "sha256": "8a8e61db3bf7dbe8218f059b1580ef24314c16ce6d9f997935071dc7c8079f0e"
+  },
+  {
+    "path": "ASSUMPTIONS.md",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 14297,
+    "sha256": "cd5fe10daaaa3008b2ec2ef5fda740ff0b0749203b78dc2abc081cd89b9d295d"
+  },
+  {
+    "path": "VERIFY.md",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 19167,
+    "sha256": "441af347bf2a68ace65a50771cd1008109231554d36a729025781692a2fc29e2"
+  },
+  {
+    "path": "STAGE_C_SOURCE_NOTES.md",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 4644,
+    "sha256": "ab524d7e59398618a9dca75b02410ed7e0c62ad642468ff7482118afe9dfcf0f"
+  },
+  {
+    "path": "backend/core/check_stage_a.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 1880,
+    "sha256": "1fb4e8f146fc171bc40a071aa1f28d5cdb9dadd2e17e759a5b1fa41c113936ef"
+  },
+  {
+    "path": "backend/core/check_stage_b.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 1574,
+    "sha256": "1cb98df34e1e402f67a9a599f3fcf54a14dc47d47d073d87eb2a3303d7acc6a9"
+  },
+  {
+    "path": "backend/core/check_stage_c.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 1536,
+    "sha256": "f74fc2d08311d69981232b719935e09315e9e27f14c72a184adb8cb23c1ad308"
+  },
+  {
+    "path": "backend/domain/__init__.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 82,
+    "sha256": "75159c158cfe9b9ec1e4f7ec7eeb7b41d6666b253a09af5ac14f3288545edd7f"
+  },
+  {
+    "path": "backend/domain/models.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 19535,
+    "sha256": "df24b430981af747f3dd3a3a6be398043af3885fbeea9cc516d02ff932605824"
+  },
+  {
+    "path": "backend/domain/instruments.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 12719,
+    "sha256": "df71caa90a340e8baeba32091f93ca858d6d286b109296c68968a32689c085aa"
+  },
+  {
+    "path": "backend/domain/compliance_models.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 6804,
+    "sha256": "1268b2bbf88075e8b7679bd99187b27b1a7cad30c6cc25e09726e6bd596e354e"
+  },
+  {
+    "path": "backend/risk/__init__.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 68,
+    "sha256": "bed55df552c4aaba26164d22966cdfb9d8f2dca25ad9c293dc21147b55eb5220"
+  },
+  {
+    "path": "backend/risk/compliance.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 32651,
+    "sha256": "bbd854922de0a78bc26c41c83fbb5b192a63ba0144ade73092ece79e04873352"
+  },
+  {
+    "path": "backend/risk/wash_sales.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 14305,
+    "sha256": "2dda3a48413732cf15c279acf95df2fe96179209d97bc7f618de48d306ce1faa"
+  },
+  {
+    "path": "backend/risk/compliance_boundary.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 8623,
+    "sha256": "4a831a22612bfa40efd7048e66e53b0af02830c3e87064ac2ece6418fbd243e4"
+  },
+  {
+    "path": "backend/tests/test_compliance.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 40301,
+    "sha256": "ce348476832c16f2eddac533e869d88d8da6e03c48c6524a6ad2c6fdafd2be2f"
+  },
+  {
+    "path": "backend/tests/test_wash_sales.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 20037,
+    "sha256": "ad6c63b160441b04f6573bd30bec16863d625e89746a7891abf6895f769e29e3"
+  },
+  {
+    "path": "backend/tests/test_compliance_boundary.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 15156,
+    "sha256": "c4d7b7d6c9a10fb5d540f49283f11b763fbcdb55e92c1a3f94035d6cfe921e08"
+  },
+  {
+    "path": "backend/tests/test_stage_c_adversarial.py",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 22995,
+    "sha256": "8d72a33ba4eb96a190755fec64cb6fa1fccfc58cc3572fd3c0396b17a41a98b2"
+  },
+  {
+    "path": "config/config.yaml",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 782,
+    "sha256": "2714e63536baca5dd313596df9401ff5fa5e62a81358e35749a5f9e0a1ce3d0c"
+  },
+  {
+    "path": "config/instruments.csv",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 574,
+    "sha256": "1d7f9d8750254079ead7e666ba4bbff5e6d270fa28c56511df361baaefb67e0f"
+  },
+  {
+    "path": "config/etf_sector_weights.csv",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 449,
+    "sha256": "69f61d9c5cdb275b9fe4967acf38fe2688e0ad4f326e5ae7924bbc8a90ffe44e"
+  },
+  {
+    "path": "config/substantially_identical.csv",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 16,
+    "sha256": "c37995109bdb6b50a3cb83c024d1766379b2a41b7ceee5dea3084f6652afdfe2"
+  },
+  {
+    "path": "config/blackout_windows.csv",
+    "scope": "Stage C and referenced configuration",
+    "bytes": 24,
+    "sha256": "56ea224a05617ca3033069d373ae86d2eeb1abdcb555abb4e91ff86fbe822143"
+  },
+  {
+    "path": "../.github/workflows/ci.yml",
+    "scope": "Git-root mirror",
+    "bytes": 2605,
+    "sha256": "5d52f41da371a5331fdadd0ebc55f461352715a9aae1b78e5c536648bdd2b412"
+  },
+  {
+    "path": "../.pre-commit-config.yaml",
+    "scope": "Git-root mirror",
+    "bytes": 911,
+    "sha256": "6a3f557da9182d950e1cec0a18f24f69eb1a01825032e5c6c8087eaceab2820d"
+  },
+  {
+    "path": "../.gitignore",
+    "scope": "Git-root mirror",
+    "bytes": 393,
+    "sha256": "a05c6036b9d2d5b14805ae732d49945770021b6974b04e310ab9077c1c1f3cb9"
+  }
+]

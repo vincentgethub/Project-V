@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scalp-city-vws-core"
+version = "0.1.0"
+description = "Deterministic read-only trading defense and immutable audit ledger"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic==2.13.5", "pydantic-settings==2.15.0", "SQLAlchemy==2.0.54",
+  "alpaca-py==0.44.0", "plaid-python==45.0.0", "pandas==3.0.6",
+  "exchange-calendars==4.13.2", "tenacity==9.1.4", "structlog==26.1.0",
+  "cryptography==50.0.2", "requests==2.34.2", "tzdata==2026.5",
+  "openai==3.24.0", "python-telegram-bot==22.8", "APScheduler==3.11.3",
+  "httpx==0.28.1", "feedparser==6.0.14", "numpy==2.5.3", "PyYAML==6.0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.1.1", "pytest-cov==7.1.0", "pytest-socket==0.8.1",
+  "hypothesis==6.168.3", "mutmut==3.8.0", "ruff==0.16.10", "mypy==2.4.0",
+  "pandas-stubs==3.0.5.260914", "bandit==1.9.4", "pip-audit==2.10.1",
+  "detect-secrets==1.5.0", "pre-commit==4.6.2", "types-requests==2.32.4.20250913",
+  "pytest-asyncio==1.4.0", "types-PyYAML==6.0.12.20260906",
+]
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+addopts = "--disable-socket --strict-markers"
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["integration: explicit paper-key integration checks (not run by default)"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["backend", "scripts"]
+
+[[tool.mypy.overrides]]
+module = ["exchange_calendars.*", "alpaca.*", "plaid.*", "tenacity.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+branch = true
+source = ["backend.core.system_state", "backend.risk", "backend.domain.compliance_models"]
+
+[tool.bandit]
+exclude_dirs = ["backend/tests", ".venv", "mutants"]
+
+[tool.mutmut]
+source_paths = ["backend/risk/"]
+also_copy = ["backend/core", "backend/data", "backend/domain", "backend/tests", "config", "scripts"]
+pytest_add_cli_args_test_selection = ["backend/tests/test_risk_cro.py", "backend/tests/test_compliance.py", "backend/tests/test_wash_sales.py", "backend/tests/test_compliance_boundary.py", "backend/tests/test_stage_c_adversarial.py"]
+pytest_add_cli_args = ["--disable-socket", "-q"]

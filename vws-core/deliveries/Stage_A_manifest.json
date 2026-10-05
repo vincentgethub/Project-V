@@ -1,0 +1,266 @@
+[
+  {
+    "path": ".env.example",
+    "scope": "Stage A",
+    "bytes": 2606,
+    "sha256": "d4665b19a70c0d2d776e1e0be4c1351003f7d286c91b4f679983bcbf964a41fb"
+  },
+  {
+    "path": ".gitignore",
+    "scope": "Stage A",
+    "bytes": 349,
+    "sha256": "42411b3abf6b8a46f4faa2b060f1fd19d31cca57bb598c5a7b110f9501285637"
+  },
+  {
+    "path": ".dockerignore",
+    "scope": "Stage A",
+    "bytes": 339,
+    "sha256": "e5f749ef7bc885b3ac26490f985d6348f43f92d2a148d8ad1aa62fec7cbacaf8"
+  },
+  {
+    "path": ".pre-commit-config.yaml",
+    "scope": "Stage A",
+    "bytes": 899,
+    "sha256": "5c1dc6c05e3976dfb8fdcbccf8ecebdc171e605ac9a4a69c84ad62e96fb83422"
+  },
+  {
+    "path": "pyproject.toml",
+    "scope": "Stage A",
+    "bytes": 2190,
+    "sha256": "96e47254af904ebf47120aee7b75c539547d906e9614ef86c5b1b9b98cb335b9"
+  },
+  {
+    "path": "requirements-lock.txt",
+    "scope": "Stage A",
+    "bytes": 2123,
+    "sha256": "d465af53a4e8375afc2014db09889d14b4badfeb9a932fa5d3b344920273d5dc"
+  },
+  {
+    "path": ".github/workflows/ci.yml",
+    "scope": "Stage A",
+    "bytes": 2132,
+    "sha256": "978f9cf636050687194693b6ae35f363a365158032f63e835bc084580bd79f14"
+  },
+  {
+    "path": "README.md",
+    "scope": "Stage A",
+    "bytes": 4722,
+    "sha256": "f6b5fb76fbc3cebd41aaec0d129e2efe48f01b1583beba2138c6669346d3ed7f"
+  },
+  {
+    "path": "ASSUMPTIONS.md",
+    "scope": "Stage A",
+    "bytes": 7020,
+    "sha256": "7d25b1fb7713d157a8934e5b06a08827cc9e576c38aa2bf73e96464567995621"
+  },
+  {
+    "path": "VERIFY.md",
+    "scope": "Stage A",
+    "bytes": 9183,
+    "sha256": "7ce890022eead819b900835cc6f4af3df07bce2e5736a81c85d3d694474331bf"
+  },
+  {
+    "path": "config/config.yaml",
+    "scope": "Stage A",
+    "bytes": 782,
+    "sha256": "2714e63536baca5dd313596df9401ff5fa5e62a81358e35749a5f9e0a1ce3d0c"
+  },
+  {
+    "path": "backend/__init__.py",
+    "scope": "Stage A",
+    "bytes": 77,
+    "sha256": "0d25e37c3c72b897beabf71ef1fdcfbaf73c3874f408fc3920e3d4b6c124a84e"
+  },
+  {
+    "path": "backend/core/__init__.py",
+    "scope": "Stage A",
+    "bytes": 63,
+    "sha256": "16172f1bfafe16fdd27a11fe2ffaed73525f04cf50c2bb9784c9d23ee8db4a8e"
+  },
+  {
+    "path": "backend/core/config.py",
+    "scope": "Stage A",
+    "bytes": 35775,
+    "sha256": "7427d4ee67178136522c4ffed0f67725d001c3b5e6ccbed64655d21acdf5b221"
+  },
+  {
+    "path": "backend/core/clock.py",
+    "scope": "Stage A",
+    "bytes": 1719,
+    "sha256": "1903f9789454b57df2c6d5a9c85b3f7b1f8772da6edda0327386a85667446930"
+  },
+  {
+    "path": "backend/core/errors.py",
+    "scope": "Stage A",
+    "bytes": 1626,
+    "sha256": "7b5e510980157cea2690298a5d7d19be33aeda257b8829822f5943bcb65675eb"
+  },
+  {
+    "path": "backend/core/money.py",
+    "scope": "Stage A",
+    "bytes": 3427,
+    "sha256": "491a267134a3d1ada08d05b5de0841b1f405406bcddfe08ab2cd7160f60e7add"
+  },
+  {
+    "path": "backend/core/logging.py",
+    "scope": "Stage A",
+    "bytes": 3310,
+    "sha256": "39a84aff1564ccdf7f3f48c521cf1af5ad680f9d75eb191e2eda64d13ebd6247"
+  },
+  {
+    "path": "backend/core/notifier.py",
+    "scope": "Stage A",
+    "bytes": 1827,
+    "sha256": "4358bac1cb6ccc13c590b21772a710de9a9370bb7ab9d20286b28eacf8423f48"
+  },
+  {
+    "path": "backend/core/database.py",
+    "scope": "Stage A",
+    "bytes": 32566,
+    "sha256": "87178a5ccdfaf97710ff729dc7af2b7c8422ac2d16ad46d3b68c50611c6e1fdb"
+  },
+  {
+    "path": "backend/core/ledger.py",
+    "scope": "Stage A",
+    "bytes": 55148,
+    "sha256": "5362851f86007316fdda720ca8cef26b6a2f7cb1e54a12d9d7fdc073aa683c09"
+  },
+  {
+    "path": "backend/core/system_state.py",
+    "scope": "Stage A",
+    "bytes": 11011,
+    "sha256": "dfeede8c2573d641cd12cbbd258244eb9caebb2763f5ea6961ba419fe2fe8b8a"
+  },
+  {
+    "path": "backend/core/execution_policy.py",
+    "scope": "Stage A",
+    "bytes": 2238,
+    "sha256": "826cb722b5dc19dc326ce75d0cbeac6c623b13a50a85313a1ac19d25913291f7"
+  },
+  {
+    "path": "backend/core/source_guard.py",
+    "scope": "Stage A",
+    "bytes": 22487,
+    "sha256": "ff10d3a3ab4a04c87ea9d463185b9f9b83f8e0bb9a9e2e6a12a9ecadff3b5d13"
+  },
+  {
+    "path": "backend/core/check_stage_a.py",
+    "scope": "Stage A",
+    "bytes": 1880,
+    "sha256": "1fb4e8f146fc171bc40a071aa1f28d5cdb9dadd2e17e759a5b1fa41c113936ef"
+  },
+  {
+    "path": "backend/data/__init__.py",
+    "scope": "Stage A",
+    "bytes": 38,
+    "sha256": "92296c6545459927a1b354008b98911a38b58fd57c66dc852595388822e952af"
+  },
+  {
+    "path": "backend/data/market_calendar.py",
+    "scope": "Stage A",
+    "bytes": 9589,
+    "sha256": "a3e136f65c416b13eb86fdec90f62dcd17353376d136da123257fa6a6a03600b"
+  },
+  {
+    "path": "backend/tests/__init__.py",
+    "scope": "Stage A",
+    "bytes": 41,
+    "sha256": "c9481d0d1ecb3da2f37f02a1577a4eede80f71778168f2ce83a7abdff88a7cdb"
+  },
+  {
+    "path": "backend/tests/conftest.py",
+    "scope": "Stage A",
+    "bytes": 1711,
+    "sha256": "a5d15a108cdc3d636d40f83772de0547a819b9d4e48c185f013c716e8f1e591e"
+  },
+  {
+    "path": "backend/tests/test_config_safety.py",
+    "scope": "Stage A",
+    "bytes": 18843,
+    "sha256": "a11e64a90cea44e3af44f47a760126e7b01a38a27772512d105a713f00197a3e"
+  },
+  {
+    "path": "backend/tests/test_yaml_config.py",
+    "scope": "Stage A",
+    "bytes": 11617,
+    "sha256": "05ed93ce3064bc2035947ef71ef54e4390a08a950688cc55dd117c23f3ae6d03"
+  },
+  {
+    "path": "backend/tests/test_money.py",
+    "scope": "Stage A",
+    "bytes": 2899,
+    "sha256": "e14367be5710744d19d5cd8d08401162cafe13f78a2a61b6e1d9fd56f0362e96"
+  },
+  {
+    "path": "backend/tests/test_logging.py",
+    "scope": "Stage A",
+    "bytes": 5537,
+    "sha256": "2b1e983a7b12b7890292d11190c9bb6a1de04298cfe0d2820375a994b17fb286"
+  },
+  {
+    "path": "backend/tests/test_ledger.py",
+    "scope": "Stage A",
+    "bytes": 22883,
+    "sha256": "90a20247cfae41d8614882dcb8aea8bc447e803b2fe09b7381a93084df30d584"
+  },
+  {
+    "path": "backend/tests/test_research_ledger.py",
+    "scope": "Stage A",
+    "bytes": 19363,
+    "sha256": "c9ba8b65c1324c2b61c873c0db189d970871d12b83d12b593aa72ba7caa8bb6c"
+  },
+  {
+    "path": "backend/tests/test_system_state.py",
+    "scope": "Stage A",
+    "bytes": 13152,
+    "sha256": "ec31578ab3ad549678d56c3e5d1bff04cc9a395b2ce64ecfa922d963a567bf3f"
+  },
+  {
+    "path": "backend/tests/test_market_calendar.py",
+    "scope": "Stage A",
+    "bytes": 13276,
+    "sha256": "cbad00b260562f384c319ef008a168a1dd8993e04320a00b01d0656d6cf87a30"
+  },
+  {
+    "path": "backend/tests/test_no_order_exec.py",
+    "scope": "Stage A",
+    "bytes": 13661,
+    "sha256": "85a9519dec13aa991154edad08c8c6867adafdf62839c2a148e65c9811b04915"
+  },
+  {
+    "path": "../.github/workflows/ci.yml",
+    "scope": "Parent repository wiring",
+    "bytes": 2132,
+    "sha256": "978f9cf636050687194693b6ae35f363a365158032f63e835bc084580bd79f14"
+  },
+  {
+    "path": "../.pre-commit-config.yaml",
+    "scope": "Parent repository wiring",
+    "bytes": 899,
+    "sha256": "5c1dc6c05e3976dfb8fdcbccf8ecebdc171e605ac9a4a69c84ad62e96fb83422"
+  },
+  {
+    "path": "../.gitignore",
+    "scope": "Parent repository wiring",
+    "bytes": 349,
+    "sha256": "42411b3abf6b8a46f4faa2b060f1fd19d31cca57bb598c5a7b110f9501285637"
+  },
+  {
+    "path": "backend/risk/risk_cro.py",
+    "scope": "Preserved draft compatibility edit",
+    "bytes": 19007,
+    "sha256": "9089728132d5499c9c7a8e629fd410442b68488d6b409e32cb34a43b5ab1f94e"
+  },
+  {
+    "path": "backend/tests/test_data_layer.py",
+    "scope": "Preserved draft compatibility edit",
+    "bytes": 24764,
+    "sha256": "7c4eaccf0d58b70a13668b4a46b221cdb7e881cbcaea422d12b801432718a5e7"
+  },
+  {
+    "path": "scripts/plaid_sandbox_token.py",
+    "scope": "Preserved draft compatibility edit",
+    "bytes": 5717,
+    "sha256": "31bfc1372340d595344750eae41cf51856f96f2322921be45dc88312d134b72b"
+  }
+]

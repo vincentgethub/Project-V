@@ -1,0 +1,19 @@
+{
+  "id": "9d3f2de1-9ce3-4a30-88df-6e5c4f42c901",
+  "account_number": "SYNTHETIC_PAPER_ACCOUNT",
+  "status": "ACTIVE",
+  "currency": "USD",
+  "buying_power": "7000.00",
+  "cash": "7000.00",
+  "equity": "10000.00",
+  "portfolio_value": "10000.00",
+  "long_market_value": "3000.00",
+  "short_market_value": "0.00",
+  "multiplier": "1",
+  "trading_blocked": false,
+  "account_blocked": false,
+  "trade_suspended_by_user": false,
+  "transfers_blocked": false,
+  "shorting_enabled": false,
+  "created_at": "2026-10-01T14:00:00Z"
+}

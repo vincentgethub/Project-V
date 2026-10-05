@@ -1,0 +1,30 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff lint
+        entry: python -m ruff check
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: Ruff format check
+        entry: python -m ruff format --check
+        language: system
+        types: [python]
+      - id: no-order-execution
+        name: R-10 GD-07 source guard
+        entry: python -m backend.core.source_guard .
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: stage-abc-types
+        name: Stage A through C strict types
+        entry: python -m backend.core.check_stage_c
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: detect-secrets
+        name: Secrets scan
+        entry: detect-secrets-hook
+        language: system
+        exclude: (^|/)(backend/tests/|requirements-lock\.txt$|deliveries/)
