@@ -3,16 +3,20 @@
 import io
 import json
 import logging
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 import structlog
 from pydantic import SecretStr
 
+from backend.core.clock import FrozenClock
 from backend.core.config import Settings
 from backend.core.errors import ProviderError
 from backend.core.logging import (
     REDACTED,
     RedactingFormatter,
+    configure_daily_log,
     configure_logging,
     redact,
     redact_processor,
@@ -157,3 +161,73 @@ def test_R_07_arbitrary_repr_cannot_leak_after_redaction(
     assert REDACTED in output
     assert redact(42) == 42
     assert redact(None) is None
+
+
+def test_SEC_14_sdk_log_levels_and_unknown_token_traceback_redaction() -> None:
+    configure_logging()
+    for name in ("httpx", "httpcore", "urllib3", "telegram"):
+        assert logging.getLogger(name).getEffectiveLevel() == logging.WARNING
+    bot_token = "bot123456789:" + "Z" * 35
+    plaid_token = "access-sandbox-isolated-unregistered-credential"
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(RedactingFormatter("%(message)s"))
+    logger = logging.Logger("isolated-telegram-error")
+    logger.addHandler(handler)
+    try:
+        raise RuntimeError(
+            f"https://api.telegram.org/{bot_token}/getMe access_token={plaid_token}\n"
+            "APCA-API-KEY-ID: isolated-header-key\n"
+            'APCA-API-SECRET-KEY="isolated-header-secret"\n'
+            "Authorization: Bearer isolated-authorization-value"
+        )
+    except RuntimeError:
+        logger.exception("telegram request failed")
+    rendered = output.getvalue()
+    for value in (
+        bot_token,
+        plaid_token,
+        "isolated-header-key",
+        "isolated-header-secret",
+        "isolated-authorization-value",
+    ):
+        assert value not in rendered
+    assert "telegram request failed" in rendered
+    assert REDACTED in rendered
+    assert "access-" not in str(ProviderError(f"transport failed {plaid_token}"))
+
+
+def test_SEC_75_daily_log_retention_uses_injected_utc_clock(tmp_path: Path) -> None:
+    path = tmp_path / "logs" / "vws.log"
+    path.parent.mkdir()
+    expired = path.parent / "vws.log.2026-09-05"
+    kept = path.parent / "vws.log.2026-09-06"
+    malformed = path.parent / "vws.log.2026-13-01"
+    unrelated = path.parent / "other.log.2026-09-01"
+    for item in (expired, kept, malformed, unrelated):
+        item.write_text("old", encoding="utf-8")
+    handler = configure_daily_log(
+        path, retention_days=30, clock=FrozenClock(datetime(2026, 10, 5, tzinfo=UTC))
+    )
+    try:
+        assert not expired.exists()
+        assert kept.exists() and malformed.exists() and unrelated.exists()
+        record = logging.LogRecord(
+            "telegram", logging.ERROR, __file__, 1, "access-sandbox-only-log-test", (), None
+        )
+        handler.emit(record)
+        handler.flush()
+        assert "access-sandbox-only-log-test" not in path.read_text(encoding="utf-8")
+        assert REDACTED in path.read_text(encoding="utf-8")
+    finally:
+        handler.close()
+
+
+@pytest.mark.parametrize("retention", [6, 366, True, 30.5])
+def test_SEC_75_retention_range_refuses_before_creating_file(
+    tmp_path: Path, retention: int
+) -> None:
+    path = tmp_path / "never-created" / "vws.log"
+    with pytest.raises(ValueError, match="7 and 365"):
+        configure_daily_log(path, retention_days=retention)
+    assert not path.exists()

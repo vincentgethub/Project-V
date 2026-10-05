@@ -1,43 +1,50 @@
 # Project V progress
-Last updated: October 4, 2026 - audit fixes verified
+Last updated: October 5, 2026 - security stage checked
 
 ## Where things stand
-The safety rules, ledger and offline data tests work. The alert service is not
-ready yet. Automatic trading has not been built.
+The safety rules, security protections and offline data tests passed their checks,
+and the alert service and automatic trading are unfinished.
 
 ## What works now
 From the vws-core folder in PowerShell:
 - Run the offline checks: `.venv\Scripts\python.exe -m pytest -q`
-- Check the trading-code ban: `.venv\Scripts\python.exe -m backend.core.source_guard .`
 - Read this page in the terminal: `.venv\Scripts\python.exe -m vws progress`
+- Test encrypted backups and emergency halts: `.venv\Scripts\python.exe -m pytest -q backend/tests/test_backups.py backend/tests/test_ops_security.py`
 
 ## What's being built next
-The audit fixes passed. Security protections come next, then the expanded data stage.
-Daily losses now block new entries until the next market opening.
+Expand market and account data reads, with shared limits, news and earnings checks.
 
 ## Waiting on you
 No answer is needed for the current offline work. Later setup will need:
-- Your paper broker account type and keys to check real account data.
-- Your Telegram bot and private chat to deliver alerts to you.
-- Your name and email for the public filing service's required contact header.
-- Account security confirmations: broker/email/GitHub/Plaid two-step security,
-  Telegram password and devices, phone lock, carrier PIN and password manager.
-- Optional: other tax accounts and tax rates; without rates, reports show totals.
+- Paper broker keys and CASH or MARGIN account type, to check real account data.
+- A Telegram bot and private chat, to deliver alerts only to you.
+- Plaid dashboard credentials and a checking account, for read-only cash checks.
+- Confirm broker, recovery email, GitHub and Plaid two-step security;
+  Telegram password/devices, phone lock, carrier PIN and password manager.
+- Confirm broker email notices and unused crypto disabled. Save the backup key
+  in your password manager when setup shows it once; losing it prevents restores.
+- Optional: other tax accounts, rates and filing state; skipping rates shows totals.
+The company-filing contact has been provided; its details stay out of these docs.
 Defaults: paper account, fundamentals annotated, AI summaries off, default watchlist.
 Setup will guide these choices; do not paste secrets into chat.
 
 ## Not checked yet
-Real broker, bank and Telegram connections have not been tested.
-Database server, Docker container and mutation checks have not run locally.
-The new security, setup, alert, evaluation and automatic trading stages are unfinished.
+Real broker, bank and Telegram connections need your saved credentials.
+AI service checks matter only if you choose to turn summaries on.
+Your computer's secret storage, account protections and real backup need checking.
+Broker key scopes and approved-IP restrictions have not been confirmed.
+Checks that deliberately change code, another database and deployment packaging
+have not run on this computer. Remote checks have not run.
+Setup, connected alerts, reports and automatic trading are unfinished.
 
 ## Try this next
-Open this page to follow progress while offline development continues.
+Run `.venv\Scripts\python.exe -m vws progress` from the vws-core folder.
 
 ## Safety status
 Current behavior: MANUAL research only, paper by default. No order calls exist.
 Real-money order path reachable: No.
-Last emergency drill: not built or run. Last backup restore test: not built or run.
+Last emergency drill: not built or run. Backup restore tests passed October 5,
+2026 with test data; your real database backup has not been checked.
 
 ## Suggestions
 None proposed. Extra features require your plain-words approval before building.

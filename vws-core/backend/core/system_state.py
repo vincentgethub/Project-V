@@ -98,14 +98,14 @@ class SystemStateStore:
     """
 
     def __init__(
-        self, engine: Engine, clock: Clock, notifier: Notifier, *, verify: bool = True
+        self, engine: Engine, clock: Clock, notifier: Notifier, *, verify_ledger: bool = True
     ) -> None:
         self.engine = engine
         self.clock = clock
         self.notifier = DeduplicatingNotifier(notifier)
         self._emergency_halt = False
         self.ledger = Ledger(engine, clock, halt_callback=self._notify)
-        if verify:
+        if verify_ledger:
             self.startup()
 
     def _notify(self, reason: str) -> None:

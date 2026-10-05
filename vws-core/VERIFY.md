@@ -1,3 +1,75 @@
+# Stage S verification - 2026-10-05
+
+Stage S offline gates passed. Actual remote services and CI remain UNVERIFIED.
+Historical audit-fixes and A-C delivery results below remain unchanged.
+
+| Focused check | Actual observed/reported result |
+| --- | --- |
+| Ops security, backups and anchors | 137 passed in 40.22s; 100% of 490 statements/114 branches |
+| Ops Ruff lint/format and strict mypy | PASS, 7 sources typed |
+| Ops Bandit | PASS, zero production findings |
+| Keyring/permissions/redaction recovery gate | 138 reported tests and 10 strictly typed sources passed |
+| Runtime/dev hash-lock compilation | PASS: 60 runtime/121 dev records, original pins retained; Linux keyring dependencies and pinned setuptools included |
+| Hash-enforced existing-venv install | PASS: final dev lock, --require-hashes --no-deps; pip check clean |
+| Fresh hash-enforced Windows dev install/pip check | PASS: final dev lock and authored editable source, no dependency resolution |
+| Whole-source Ruff lint/format and strict mypy | PASS: 91 formatted files and 97 typed sources |
+| Whole production Bandit and dev-lock audit | PASS: zero findings; 121 packages with no known vulnerabilities |
+| Collected full suite | PASS: 2,535 tests, two warnings; 1,238 risk/state/contract statements and 400 branches, 100% |
+| Final expanded CLI suite | PASS: 31 separate cases, including seven added after the earlier whole-suite collection |
+| Final CLI/progress regression gate | PASS: 42 cases; appended coverage remains 100% |
+| Final current collection | 2,542 cases; seven added CLI cases covered by the final regression gate |
+| Whole authored-source guard and secrets scan | PASS; zero source secret findings |
+| Full-history Gitleaks 8.30.1 | PASS before stage commit: 4 commits, 2.34 MB, zero leaks |
+| Native Windows ACL read | PASS on synthetic temporary file; owner paths UNVERIFIED |
+| Actual Git-root pre-commit run | PASS: all five hooks on all files |
+
+Fakes exercise keyring selection/rollback, immutable HMAC rotation evidence,
+90-day age warnings, POSIX and Windows ACL policy, URL/header/traceback
+redaction, encrypted backup corruption, off-box prefix verification, config
+drift, identity changes and offline panic. A fake test cannot verify the owner's
+actual keyring, permissions, MFA or remote account.
+
+Current Stage S contracts and source references:
+
+| Contract | Primary reference | Verification scope |
+| --- | --- | --- |
+| Fernet authenticated encryption | [cryptography Fernet API](https://cryptography.io/en/stable/fernet/) | Installed encrypt/decrypt tests; key/byte/header/digest failures; actual owner backup UNVERIFIED |
+| Consistent SQLite backup and serialization | [Python 3.12 sqlite3](https://docs.python.org/3.12/library/sqlite3.html#sqlite3.Connection.backup) | Pinned Python online-backup/serialize fixtures; PostgreSQL tooling not guessed |
+| Native Windows keyring and local-machine persistence | [keyring 25.7.0 Windows backend](https://github.com/jaraco/keyring/blob/v25.7.0/keyring/backends/Windows.py) | Explicit native class chosen in fake tests; real Credential Manager UNVERIFIED |
+| Native Linux Secret Service | [keyring 25.7.0 Secret Service](https://github.com/jaraco/keyring/blob/v25.7.0/keyring/backends/SecretService.py) | Backend fakes and transitive lock closure verified; native session UNVERIFIED |
+| Read-only Windows ACL inspection | [Microsoft icacls](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls) | Mocked broad-group/UNKNOWN/world-write controls; real host ACL results UNVERIFIED |
+| Python DNS/connect audit events | [Python 3.12 audit events](https://docs.python.org/3.12/library/audit_events.html) | socket.getaddrinfo/socket.connect fake and isolated subprocess controls; not a malicious-code sandbox |
+| Audit-hook trust boundary | [Python sys.addaudithook](https://docs.python.org/3.12/library/sys.html#sys.addaudithook) | Guard supplements hostname/TLS checks; no OS-sandbox claim |
+| Compiled package hashes | [pip-tools hash generation](https://pip-tools.readthedocs.io/en/stable/#using-hashes) | Final runtime/dev locks, hash parser, fresh Windows install and 121-pin audit passed |
+
+Reproduction uses the activated venv in vws-core:
+
+```text
+python -m pytest -q backend/tests/test_backups.py backend/tests/test_anchors.py backend/tests/test_ops_security.py --cov=backend.ops --cov-branch --cov-fail-under=100
+python -m pytest -q backend/tests/test_secrets.py backend/tests/test_permissions.py backend/tests/test_logging.py
+python -m pytest -q backend/tests/test_egress.py backend/tests/test_security_source_guard.py backend/tests/test_telegram_security.py backend/tests/test_content.py backend/tests/test_dependencies.py
+python -m mypy --strict
+python -m backend.core.source_guard .
+python -m pip install --require-hashes --no-deps -r requirements.lock
+python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+python -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off --timeout 15
+python -m pip_audit -r requirements-dev.lock --no-deps --disable-pip --progress-spinner off --timeout 15
+```
+
+UNVERIFIED: real paper account capture, Plaid response, Telegram getMe/webhook,
+provider-validating credential rotation, OS keyring, live host permissions,
+owner backup/anchor/drill, PostgreSQL concurrency, Docker, mutation score and
+remote CI. The exact local/connected commands are in docs/STATUS.md and RUNBOOK.md.
+Trading API key scope controls and IP allowlisting are not certified by Broker
+API documentation or key-prefix hints. Alpaca email/crypto settings require
+owner verification. Logs/IPs are not assumed available through the Trading API.
+
+The Stage S services and host CLI do not constitute the full running alert
+pipeline. Monitor cycles, bot handlers and digest/report composition are wired
+in their specified stages. Per-call LLM token limits and the actual public-only
+provider request remain Stage E work. Cancellation and AUTO_LIVE prerequisite
+composition remain Stage I work. No order executor exists before Stage I.
+
 # Audit fixes verification - 2026-10-04
 
 The complete offline suite passed **2,167 tests in 240.36 seconds**, with one

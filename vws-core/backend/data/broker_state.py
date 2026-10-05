@@ -11,13 +11,15 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import QueryOrderStatus
 from alpaca.trading.requests import GetOrdersRequest
 from pydantic import BaseModel, ValidationError
-from requests import Response, Session
+from requests import Session
 
 from backend.core.clock import Clock, ensure_utc
 from backend.core.config import Settings, assert_broker_endpoint
 from backend.core.errors import ConfigurationError, DataIntegrityError, ProviderError, SafetyError
 from backend.core.money import MoneyInput, decimal_money, validate_cent_price
 from backend.domain.models import AccountFlags, PortfolioSnapshot
+from backend.net.http import ExactJSONResponse as ExactJSONResponse
+from backend.net.http import TimeoutSession as TimeoutSession
 
 MarksProvider = Callable[[Decimal, datetime], tuple[Decimal, Decimal]]
 SettledCashProvider = Callable[[datetime], Decimal]
@@ -60,47 +62,6 @@ class ReadOnlyTradingClient(Protocol):
     def get_clock(self) -> object:
         """DAT-02: read the broker clock for skew validation."""
         raise NotImplementedError("client must supply get_clock")
-
-
-class TimeoutSession(Session):
-    """R-08/DAT-04: Alpaca SDK transport with a fixed explicit read timeout."""
-
-    def __init__(
-        self,
-        timeout_seconds: int,
-        *,
-        before_request: Callable[[], None] | None = None,
-    ) -> None:
-        """DAT-04: reject invalid timeouts before any network request."""
-        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 60:
-            raise ConfigurationError("request timeout must be 1 through 60 seconds")
-        super().__init__()
-        self._timeout_seconds = timeout_seconds
-        self._before_request = before_request
-
-    def request(self, method: str | bytes, url: str | bytes, *args: Any, **kwargs: Any) -> Response:
-        """R-08/DAT-04: every request is a GET with a bounded timeout."""
-        if method.upper() not in {"GET", b"GET"}:
-            raise ProviderError("read-only Alpaca transport rejects non-GET requests")
-        kwargs["timeout"] = self._timeout_seconds
-        kwargs["allow_redirects"] = False
-        if self._before_request is not None:
-            self._before_request()
-        response = super().request(method, url, *args, **kwargs)
-        if 300 <= response.status_code <= 399:
-            raise ProviderError("read-only Alpaca transport rejects HTTP redirects")
-        exact = ExactJSONResponse()
-        exact.__dict__.update(response.__dict__)
-        return exact
-
-
-class ExactJSONResponse(Response):
-    """R-04: preserve financial JSON decimals before alpaca-py sees them."""
-
-    def json(self, **kwargs: Any) -> Any:
-        """R-04: use Decimal at the transport boundary, never binary float."""
-        kwargs["parse_float"] = Decimal
-        return super().json(**kwargs)
 
 
 def configure_alpaca_transport(

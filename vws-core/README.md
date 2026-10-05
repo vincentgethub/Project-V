@@ -1,4 +1,4 @@
-# vws-core — defensive core and completion audit
+# vws-core - defensive core and completion audit
 
 The [master specification](docs/spec/MASTER_SPEC.md) and
 [Amendments 01](docs/spec/AMENDMENT_01.md), [02](docs/spec/AMENDMENT_02.md),
@@ -38,6 +38,16 @@ The research swarm and Telegram bot are still pending. The project is not
 finished, and no broker order execution path currently exists. Stage I alone
 may add the specified isolated order executor; money movement remains banned.
 
+Stage S passed its offline gates on October 5, 2026. The encryption, anchor, drift and
+panic service suite passed 137 offline tests with complete statement and branch
+coverage; native-keyring/permissions/redaction services have separate fake tests.
+The full collected suite passed 2,535 tests; the final CLI/progress gate passed
+42 cases, including seven new cases. Risk/state coverage stays at 100%.
+The final 60-runtime/121-dev hash locks installed into an isolated fresh Windows
+environment, pip check passed, and all 121 dev pins audited clean.
+Monitor-cycle, Telegram-handler and evening/weekly report wiring belong to the
+specified later stages. A tested component does not certify a connected account.
+
 Fundamentals use the amended deterministic five-point framework in Stage E.
 Code evaluates exact Decimal ratios and free cash flow against strict thresholds:
 gross margin >40%, operating margin >15%, ROIC >10%, FCF >0, and interest coverage
@@ -51,15 +61,27 @@ Use Python 3.12. From this directory on Windows PowerShell:
 
 ```powershell
 py -3.12 -m venv .venv
-.venv\Scripts\python.exe -m pip install --upgrade pip==26.2.1
-.venv\Scripts\python.exe -m pip install -r requirements-lock.txt
-.venv\Scripts\python.exe -m pip install --no-deps -e .
+.venv\Scripts\python.exe -m pip install --require-hashes --no-deps -r requirements.lock
+.venv\Scripts\python.exe -m pip install --require-hashes --no-deps -r requirements-dev.lock
+.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
 ```
 
 On Linux use python3.12 and .venv/bin/python. Direct dependencies are pinned in
-pyproject.toml; requirements-lock.txt pins the transitive environment. No
+pyproject.toml; requirements.lock pins and hashes runtime packages, and
+requirements-dev.lock covers development and build tools. The last command
+installs only authored local source, without resolving external dependencies.
+Fresh Windows installation of both lock closures is verified. Native Linux
+operation and remote CI remain UNVERIFIED; requirements-lock.txt is retained
+as historical audit evidence. No
 credentials are needed for these tests. Unit tests block sockets and isolate
 application environment variables. A real dotenv file is never auto-read.
+
+The guided first-run flow specified for Stage H will be install, then
+`python -m vws setup`, `python -m vws start`, and review cards in your private
+Telegram chat. Setup, start and the bot are not available yet. Setup will save
+secrets to the native keyring, start in MANUAL + paper, confirm your chat and
+guide you through account-security attestations. It never enables auto mode.
+For commands available at the current stage, see [RUNBOOK.md](RUNBOOK.md).
 
 ## Verify the audited core
 
@@ -70,8 +92,9 @@ python -m ruff check .
 python -m ruff format --check .
 python -m backend.core.check_stage_d
 python -m backend.core.source_guard .
-python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents scripts -c pyproject.toml
-python -m pip_audit -r requirements-lock.txt --no-deps --disable-pip --progress-spinner off --timeout 15
+python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/security backend/net backend/ops backend/telegram scripts vws -c pyproject.toml
+python -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off --timeout 15
+python -m pip_audit -r requirements-dev.lock --no-deps --disable-pip --progress-spinner off --timeout 15
 python -m detect_secrets scan --all-files --exclude-files '(^|[\\/])(\.venv|backend[\\/]tests|deliveries|\.git|\.mypy_cache|\.pytest_cache|\.ruff_cache|\.hypothesis|__pycache__|mutants|build|dist)[\\/]'
 python -m pytest backend/tests --disable-socket --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov-branch --cov-fail-under=100 --cov-report=term-missing
 ```
@@ -87,6 +110,67 @@ checks marked UNVERIFIED. The coverage gate includes every risk module, the
 state machine and Stage C tax contracts. Callback mutation tests, the
 end-to-end dry run and Docker build belong to later stages. PostgreSQL runtime,
 Docker, mutation testing and real paper API integration are not locally verified.
+
+## Secure your accounts
+
+Confirm each item yourself, then record it on the host with
+`python -m vws --env-file .env ops attest ITEM --operator YOUR_NAME`. ITEM accepts
+the number or the exact name below. The explicit `--env-file` option loads only
+the file you chose. Doctor shows **ATTESTED (date)** or **WARN**; the app never
+claims to have verified a third-party security setting.
+
+| ITEM | Name | What to confirm |
+| --- | --- | --- |
+| 1 | ALPACA_MFA | Alpaca multi-factor authentication enabled |
+| 2 | RECOVERY_EMAIL_2FA | Dedicated recovery email with a passkey or two-factor security |
+| 3 | TELEGRAM_2STEP | Telegram two-step password set and Devices reviewed |
+| 4 | PHONE_PASSCODE | Phone passcode enabled |
+| 5 | GITHUB_PRIVATE_2FA | GitHub two-factor security enabled and repository private |
+| 6 | CARRIER_PORT_PIN | Carrier port-out/SIM PIN enabled |
+| 7 | PASSWORD_MANAGER | Every secret and the recovery backup key saved in a password manager |
+| 8 | PLAID_2FA | Plaid dashboard two-factor security enabled |
+| 9 | ALPACA_EMAIL_NOTICES | Alpaca email notifications enabled; exact setting remains VERIFY |
+| 10 | ALPACA_CRYPTO_DISABLED | Unused crypto disabled in Alpaca; availability remains VERIFY |
+
+Broker API scopes do not prove that Trading API keys have the same controls.
+Trading API scope controls and IP allowlisting remain UNVERIFIED. If available,
+MANUAL/data credentials must be read only; AUTO credentials get Trading + Data,
+with Funding and Journaling set to No access. The app never tests funding
+destructively. PK/AK key prefixes are only hints; endpoint/account binding is
+authoritative. Crypto-wallet and whitelist mutations remain source-banned.
+
+Native storage is Windows Credential Manager with local-machine persistence,
+or Linux Secret Service. Plaid access tokens live there in every mode, with
+no env/file fallback. Rotation asks for hidden input and validates a read-only
+provider call before replacement. Failed validation keeps the old credential;
+the ledger stores only a dated HMAC fingerprint. A credential age at 90 days
+WARNs by default; unknown age never counts as verified.
+
+Generate/store the backup recovery key and display it once with
+`python -m vws --env-file .env ops show-backup-key`. Save it immediately in your
+password manager. **Losing this key means encrypted backups cannot be restored.**
+Do not paste it or any credential into chat, logs or command arguments.
+
+See [RUNBOOK.md](RUNBOOK.md) for rotation, encrypted backups, host hardening,
+anchor checks and drift acknowledgement, and [INCIDENT.md](docs/INCIDENT.md)
+for a suspected compromise. Real keyring/provider/host checks are UNVERIFIED
+until run on your configured machine; passing fake tests does not attest to them.
+
+## Advanced: explicit manual configuration
+
+The owner-facing setup wizard is pending Stage H. Developers can deliberately
+load a private non-secret configuration with `--env-file .env`; tests never
+read it implicitly. Verify the actual CASH or MARGIN account type rather than
+copying the sample CASH value as an assumption. Keep strategy/schedules in
+config/config.yaml and risk/mode settings in their single env home. Plaid tokens
+cannot be placed in env or files, and AUTO_LIVE rejects the specified live,
+Telegram and Plaid secrets from both dotenv and the process environment.
+Manual configuration does not authorize mode upgrades or bypass live unlocks.
+
+The app opens no inbound ports. HTTPS egress is allowlisted, TLS is verified,
+redirects are rechecked, and the SDK socket hook provides an additional guard.
+That Python guard is not an operating-system sandbox against a compromised host.
+Private paths, disk encryption and an independent old ledger anchor still matter.
 
 ## Local API
 

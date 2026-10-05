@@ -44,6 +44,7 @@ YAML_INTEGER_BOUNDS: Mapping[str, tuple[int, int]] = MappingProxyType(
     }
 )
 YAML_ALLOWED_SETTING_NAMES = frozenset(YAML_INTEGER_BOUNDS)
+KEYRING_ONLY_ENV_NAMES = frozenset({"plaid_access_token", "plaid_token_path", "fernet_key"})
 
 
 def _reject_yaml_environment_keys() -> None:
@@ -148,6 +149,10 @@ class Settings(BaseSettings):
             "proposal_ttl_sessions": (1, 3),
             "llm_timeout_seconds": (1, 60),
             "llm_max_tokens": (1, 8192),
+            "secret_max_age_days": (30, 365),
+            "log_retention_days": (7, 365),
+            "tg_rate_per_min": (1, 20),
+            "tg_heavy_rate_per_min": (1, 5),
         }
     )
     SECRET_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -156,13 +161,12 @@ class Settings(BaseSettings):
             "broker_secret_key",
             "plaid_client_id",
             "plaid_secret",
-            "plaid_access_token",
-            "fernet_key",
             "db_url",
             "llm_api_key",
             "telegram_bot_token",
             "telegram_callback_secret",
             "newsapi_key",
+            "healthcheck_ping_url",
         }
     )
 
@@ -197,6 +201,7 @@ class Settings(BaseSettings):
     paper_trading: bool = True
     live_trading_enabled: bool = False
     live_trading_confirm: str = ""
+    execution_mode: Literal["MANUAL", "AUTO_PAPER", "AUTO_LIVE"] = "MANUAL"
     broker_api_key: SecretStr = Field(
         default=SecretStr(""),
         repr=False,
@@ -209,11 +214,8 @@ class Settings(BaseSettings):
     )
     plaid_client_id: SecretStr = Field(default=SecretStr(""), repr=False)
     plaid_secret: SecretStr = Field(default=SecretStr(""), repr=False)
-    plaid_access_token: SecretStr = Field(default=SecretStr(""), repr=False)
-    fernet_key: SecretStr = Field(default=SecretStr(""), repr=False)
     plaid_env: Literal["sandbox", "production"] = "sandbox"
     plaid_account_id: str = ""
-    plaid_token_path: Path | None = None
     db_url: SecretStr = Field(default=SecretStr("sqlite:///vws-core.sqlite3"), repr=False)
     earnings_blackout_sessions: int = 2
     min_setup_score: Decimal = Decimal("7.0")
@@ -233,12 +235,50 @@ class Settings(BaseSettings):
     telegram_allowed_user_ids: tuple[int, ...] = ()
     telegram_callback_secret: SecretStr = Field(default=SecretStr(""), repr=False)
     newsapi_key: SecretStr = Field(default=SecretStr(""), repr=False)
+    anchor_file_path: Path | None = None
+    telegram_mask_amounts: bool = False
+    secret_max_age_days: int = 90
+    log_retention_days: int = 30
+    tg_rate_per_min: int = 20
+    tg_heavy_rate_per_min: int = 5
+    healthcheck_ping_url: SecretStr = Field(default=SecretStr(""), repr=False)
 
     @model_validator(mode="before")
     @classmethod
     def reject_wrong_configuration_home(cls, value: object) -> object:
         """R-06: process env cannot silently override YAML-only settings."""
         _reject_yaml_environment_keys()
+        if any(name.casefold() in KEYRING_ONLY_ENV_NAMES for name in os.environ):
+            raise ValueError("Plaid access token and backup key must come from the keyring")
+        return value
+
+    @field_validator("execution_mode", mode="before")
+    @classmethod
+    def validate_execution_mode(cls, value: object) -> str:
+        """AX-02/SEC-10: an unknown mode cannot enable automatic behavior."""
+        return (
+            value
+            if isinstance(value, str) and value in {"MANUAL", "AUTO_PAPER", "AUTO_LIVE"}
+            else "MANUAL"
+        )
+
+    @field_validator("healthcheck_ping_url")
+    @classmethod
+    def validate_healthcheck_url(cls, value: SecretStr) -> SecretStr:
+        """SEC-31: healthcheck URLs remain secret and use authenticated TLS."""
+        raw = value.get_secret_value()
+        if raw:
+            parsed = urlsplit(raw)
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.fragment
+            ):
+                raise ValueError("healthcheck URL requires HTTPS without user credentials")
+            if parsed.port not in {None, 443}:
+                raise ValueError("healthcheck URL requires the standard HTTPS port")
         return value
 
     @field_validator(*DECIMAL_BOUNDS.keys(), mode="before")
@@ -390,7 +430,11 @@ class Settings(BaseSettings):
         return tuple(result)
 
     @field_validator(
-        "paper_trading", "live_trading_enabled", "enable_intraday_playbooks", mode="before"
+        "paper_trading",
+        "live_trading_enabled",
+        "enable_intraday_playbooks",
+        "telegram_mask_amounts",
+        mode="before",
     )
     @classmethod
     def validate_mode_flag(cls, value: object) -> bool:
@@ -615,6 +659,57 @@ class AlertConfig(_FrozenYamlModel):
         return _bounded_integer(value, name, YAML_INTEGER_BOUNDS[name])
 
 
+class EgressHost(_FrozenYamlModel):
+    """SEC-31: every extra DNS host requires a visible operator comment."""
+
+    host: str
+    comment: str = Field(min_length=1, max_length=280)
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, value: str) -> str:
+        """SEC-31: exact DNS identities, no URLs, literals, ports or wildcards."""
+        import ipaddress
+
+        try:
+            ipaddress.ip_address(value)
+        except ValueError:
+            if (
+                not value.isascii()
+                or len(value) > 253
+                or "." not in value
+                or any(
+                    re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) is None
+                    for label in value.split(".")
+                )
+            ):
+                raise ValueError("extra egress host requires a lowercase DNS name") from None
+            return value
+        raise ValueError("extra egress host cannot be an IP literal")
+
+    @field_validator("comment")
+    @classmethod
+    def validate_comment(cls, value: str) -> str:
+        """SEC-31: a comment cannot consist of whitespace or control characters."""
+        if not value.strip() or any(ord(character) < 32 for character in value):
+            raise ValueError("extra egress host requires a readable justification")
+        return value
+
+
+class EgressConfig(_FrozenYamlModel):
+    """SEC-31: explicit immutable additional public egress identities."""
+
+    extra_hosts: tuple[EgressHost, ...] = Field(default=(), max_length=100)
+
+    @field_validator("extra_hosts")
+    @classmethod
+    def validate_unique_hosts(cls, value: tuple[EgressHost, ...]) -> tuple[EgressHost, ...]:
+        """SEC-31: duplicate grants fail rather than hiding a conflicting comment."""
+        if len({entry.host for entry in value}) != len(value):
+            raise ValueError("extra egress hosts cannot be duplicated")
+        return value
+
+
 class PlaybookConfig(_FrozenYamlModel):
     """GD-02/R-04: exact weights and reproducible ATR/target parameters."""
 
@@ -676,6 +771,7 @@ class YamlConfig(_FrozenYamlModel):
     watchlist: tuple[str, ...]
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
+    egress: EgressConfig = Field(default_factory=EgressConfig)
     playbooks: Mapping[str, PlaybookConfig]
 
     @model_validator(mode="before")

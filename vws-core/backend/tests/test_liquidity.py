@@ -1,4 +1,4 @@
-"""R-04/R-08/CRO-12/DAT-04: exact, read-only liquidity and encrypted tokens."""
+"""R-04/R-08/CRO-12/SEC-11: exact balances and keyring-only Plaid tokens."""
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -8,7 +8,6 @@ from typing import Any
 
 import plaid
 import pytest
-from cryptography.fernet import Fernet
 from pydantic import SecretStr, ValidationError
 
 from backend.core.clock import FrozenClock
@@ -27,9 +26,38 @@ from backend.data.liquidity import (
     PlaidLiquiditySource,
 )
 from backend.domain.models import CapitalStatus
+from backend.security import secrets as secret_module
+from scripts import plaid_sandbox_token as sandbox_module
 from scripts.plaid_sandbox_token import create_sandbox_token
 
 NOW = datetime(2026, 10, 4, 15, 0, tzinfo=UTC)
+
+
+class FakeSecrets:
+    """SEC-11: explicit isolated keyring substitute, with no native access."""
+
+    def __init__(self, token: str | None = None) -> None:
+        self.values: dict[str, SecretStr] = {}
+        if token is not None:
+            self.values["PLAID_ACCESS_TOKEN"] = SecretStr(token)
+
+    def get(self, name: str) -> SecretStr | None:
+        return self.values.get(name)
+
+    def set(self, name: str, value: SecretStr) -> None:
+        self.values[name] = value
+
+    def delete(self, name: str) -> None:
+        self.values.pop(name, None)
+
+
+@pytest.fixture(autouse=True)
+def isolated_plaid_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SEC-11/R-07: no test may discover or read the owner's native keyring."""
+    monkeypatch.setattr(
+        secret_module, "KeyringSecretStore", lambda: FakeSecrets("test-only-access-token")
+    )
+    monkeypatch.setattr(sandbox_module, "KeyringSecretStore", FakeSecrets)
 
 
 def reading(available: Any = "3000", current: Any = "4000", **values: Any) -> BalanceReading:
@@ -160,7 +188,6 @@ class FakePlaid:
 def plaid_settings(**values: Any) -> Settings:
     return Settings(
         plaid_account_id="checking-test",
-        plaid_access_token=SecretStr("test-only-access-token"),
         **values,
     )
 
@@ -206,35 +233,43 @@ class FakeSandbox:
         return {"access_token": "test-only-encrypted-access-token"}
 
 
-def test_R_07_sandbox_token_is_encrypted_and_runtime_can_decrypt(tmp_path: Path) -> None:
-    key = Fernet.generate_key().decode("ascii")
-    settings = Settings(fernet_key=SecretStr(key))
-    output = tmp_path / "secret.fernet"
+def test_SEC_11_sandbox_token_is_keyring_only_and_runtime_reads_same_store(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = Settings()
+    store = FakeSecrets()
     client = FakeSandbox()
-    create_sandbox_token(settings, output, client=client)
-    ciphertext = output.read_bytes()
-    assert b"test-only-encrypted-access-token" not in ciphertext
-    assert Fernet(key.encode("ascii")).decrypt(ciphertext) == b"test-only-encrypted-access-token"
+    existing_paths = set(tmp_path.iterdir())
+    create_sandbox_token(settings, client=client, secret_store=store)
+    token = store.get("PLAID_ACCESS_TOKEN")
+    assert token is not None
+    assert token.get_secret_value() == "test-only-encrypted-access-token"
+    assert set(tmp_path.iterdir()) == existing_paths
+    assert "test-only-encrypted-access-token" not in capsys.readouterr().out
     assert isinstance(client.products, list)
     assert len(client.products) == 1 and str(client.products[0]) == "auth"
     with pytest.raises(ConfigurationError, match="already exists"):
-        create_sandbox_token(settings, output, client=client)
+        create_sandbox_token(settings, client=client, secret_store=store)
     source = PlaidLiquiditySource(
-        Settings(
-            fernet_key=SecretStr(key), plaid_token_path=output, plaid_account_id="checking-test"
-        ),
+        Settings(plaid_account_id="checking-test"),
         FrozenClock(NOW),
         FakePlaid({"accounts": []}),
+        secret_store=store,
     )
     with pytest.raises(DataIntegrityError):
         source.read()
 
 
-def test_R_08_sandbox_script_rejects_production_and_bad_encryption_key(tmp_path: Path) -> None:
+def test_SEC_11_R_08_sandbox_script_rejects_production_and_unavailable_keyring() -> None:
     with pytest.raises(ConfigurationError, match="Sandbox"):
-        create_sandbox_token(Settings(plaid_env="production"), tmp_path / "prod.fernet")
-    with pytest.raises(ConfigurationError, match="FERNET_KEY"):
-        create_sandbox_token(Settings(), tmp_path / "bad.fernet")
+        create_sandbox_token(Settings(plaid_env="production"), client=FakeSandbox())
+
+    class BrokenStore(FakeSecrets):
+        def get(self, name: str) -> SecretStr | None:
+            raise RuntimeError("native unavailable")
+
+    with pytest.raises(ConfigurationError, match="keyring"):
+        create_sandbox_token(Settings(), client=FakeSandbox(), secret_store=BrokenStore())
 
 
 def plaid_account(**updates: object) -> dict[str, object]:
@@ -344,7 +379,7 @@ def test_R_02_liquidity_settings_are_revalidated_before_capacity_or_bootstrap(
     with pytest.raises(ConfigurationError):
         LiquidityGate(invalid, FakeLiquiditySource(reading()), FrozenClock(NOW))
     with pytest.raises(ConfigurationError):
-        create_sandbox_token(invalid, tmp_path / "ciphertext", client=FakeSandbox())
+        create_sandbox_token(invalid, client=FakeSandbox())
 
 
 def test_DAT_04_real_plaid_requires_resilience_before_any_network_call() -> None:
@@ -361,21 +396,19 @@ def test_DAT_04_real_plaid_requires_resilience_before_any_network_call() -> None
 )
 def test_R_07_R_08_plaid_rejects_missing_pin_or_access_token(settings: Settings) -> None:
     with pytest.raises(ConfigurationError):
-        PlaidLiquiditySource(settings, FrozenClock(NOW), FakePlaid({"accounts": []}))
+        PlaidLiquiditySource(
+            settings, FrozenClock(NOW), FakePlaid({"accounts": []}), secret_store=FakeSecrets()
+        )
 
 
-def test_R_07_encrypted_storage_failures_never_fall_back_to_an_environment_token(
-    tmp_path: Path,
+@pytest.mark.parametrize("name", ["PLAID_ACCESS_TOKEN", "PLAID_TOKEN_PATH", "FERNET_KEY"])
+def test_SEC_11_legacy_sources_never_fall_back_to_the_keyring_token(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
 ) -> None:
-    output = tmp_path / "ciphertext"
-    output.write_bytes(b"invalid-ciphertext")
-    config = plaid_settings(
-        plaid_token_path=output, fernet_key=SecretStr(Fernet.generate_key().decode("ascii"))
-    )
-    with pytest.raises(ConfigurationError, match="encrypted"):
-        PlaidLiquiditySource(config, FrozenClock(NOW), FakePlaid({"accounts": []}))
-    output.unlink()
-    with pytest.raises(ConfigurationError, match="encrypted"):
+    config = plaid_settings()
+    monkeypatch.setenv(name, "")
+    with pytest.raises(ConfigurationError, match="keyring"):
         PlaidLiquiditySource(config, FrozenClock(NOW), FakePlaid({"accounts": []}))
 
 
@@ -411,8 +444,10 @@ def test_R_07_sandbox_invalid_response_never_writes_token(tmp_path: Path, respon
                 raise response
             return response
 
-    settings = Settings(fernet_key=SecretStr(Fernet.generate_key().decode("ascii")))
-    output = tmp_path / "ciphertext"
+    settings = Settings()
+    store = FakeSecrets()
+    existing_paths = set(tmp_path.iterdir())
     with pytest.raises((ConfigurationError, ProviderError)):
-        create_sandbox_token(settings, output, client=BadSandbox())
-    assert not output.exists()
+        create_sandbox_token(settings, client=BadSandbox(), secret_store=store)
+    assert store.get("PLAID_ACCESS_TOKEN") is None
+    assert set(tmp_path.iterdir()) == existing_paths

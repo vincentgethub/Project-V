@@ -1,4 +1,4 @@
-name: Defensive core and audit fixes
+name: Defensive core and security gates
 on: [push, pull_request]
 permissions:
   contents: read
@@ -23,16 +23,37 @@ jobs:
           else
             echo 'VWS_PROJECT_DIR=vws-core' >> "$GITHUB_ENV"
           fi
-      - name: Install exact dependencies
-        run: python -m pip install --upgrade pip==26.2.1 && python -m pip install -r requirements-lock.txt && python -m pip install --no-deps -e .
+      - name: Install hashed dependencies and local source
+        run: |
+          python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+      - name: Scan complete Git history for secrets
+        env:
+          GITLEAKS_ARCHIVE_SHA256: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' # pragma: allowlist secret - published release checksum
+        run: |
+          tool_dir="$RUNNER_TEMP/vws-gitleaks-8.30.1"
+          mkdir -p "$tool_dir"
+          archive="$tool_dir/gitleaks_8.30.1_linux_x64.tar.gz"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 'https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz' --output "$archive"
+          printf '%s  %s\n' "$GITLEAKS_ARCHIVE_SHA256" "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$tool_dir" gitleaks
+          "$tool_dir/gitleaks" git "$(git rev-parse --show-toplevel)" --log-opts='--all' --redact --no-banner
       - name: Lint and format
         run: python -m ruff check . && python -m ruff format --check .
       - name: Strict authored-source typing
-        run: python -m mypy --strict
+        run: python -m backend.core.check_stage_d
       - name: Execution source guard
         run: python -m backend.core.source_guard .
-      - name: Security checks
-        run: python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents scripts vws -c pyproject.toml && python -m pip_audit -r requirements-lock.txt --no-deps --disable-pip --progress-spinner off --timeout 15 && python -m detect_secrets scan --all-files --exclude-files '(^|[\\/])(\.venv|backend[\\/]tests|deliveries|\.git|\.mypy_cache|\.pytest_cache|\.ruff_cache|\.hypothesis|__pycache__|mutants|build|dist)[\\/]' > /tmp/vws-secrets.json && python -c "import json; from pathlib import Path; findings=json.loads(Path('/tmp/vws-secrets.json').read_text())['results']; print(findings); assert not findings"
+      - name: Production source security checks
+        run: python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/net backend/ops backend/security backend/telegram scripts vws -c pyproject.toml
+      - name: Audit runtime and development dependency locks
+        run: |
+          python -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off --timeout 15
+          python -m pip_audit -r requirements-dev.lock --no-deps --disable-pip --progress-spinner off --timeout 15
+      - name: Scan authored files for secrets
+        run: |
+          python -m detect_secrets scan --all-files --exclude-files '(^|[\\/])(\.venv|backend[\\/]tests|deliveries|\.git|\.mypy_cache|\.pytest_cache|\.ruff_cache|\.hypothesis|__pycache__|mutants|build|dist)[\\/]' > /tmp/vws-secrets.json
+          python -c "import json; from pathlib import Path; findings=json.loads(Path('/tmp/vws-secrets.json').read_text())['results']; print('Authored secret findings:', sum(len(items) for items in findings.values())); assert not findings"
       - name: Owner progress page updated with code
         run: |
           git diff-tree --root --no-commit-id --name-only -r HEAD > /tmp/vws-changed-files.txt

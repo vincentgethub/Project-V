@@ -1,14 +1,34 @@
 """R-05/R-07: isolated clocks, databases and environment; no real dotenv."""
 
-from collections.abc import Iterator
+import asyncio
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import pytest_socket
 from sqlalchemy.engine import Engine
 
 from backend.core.clock import FrozenClock
 from backend.core.database import create_database, create_schema
+
+
+def pytest_asyncio_loop_factories() -> dict[str, Callable[[], asyncio.AbstractEventLoop]]:
+    """SEC-30: create asyncio's local self-pipe, then keep test sockets blocked.
+
+    Windows asyncio needs a local TCP socket pair during loop construction.
+    No test body or coroutine runs while constructors are briefly restored.
+    VERIFY: installed pytest-asyncio 1.4 plugin's loop factory hook contract.
+    """
+
+    def offline_loop() -> asyncio.AbstractEventLoop:
+        pytest_socket.enable_socket()
+        try:
+            return asyncio.new_event_loop()
+        finally:
+            pytest_socket.disable_socket(allow_unix_socket=True)
+
+    return {"offline": offline_loop}
 
 
 @pytest.fixture(autouse=True)
@@ -49,12 +69,37 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "SCAN_",
         "OFFHOURS_",
         "SCHEDULER_",
+        "EXECUTION_",
+        "SECRET_",
+        "LOG_",
+        "TG_",
+        "ANCHOR_",
+        "HEALTHCHECK_",
     )
     for name in tuple(os.environ):
         if name.upper().startswith(prefixes):
             monkeypatch.delenv(name)
     # This explicit synthetic value never attests to the owner's broker account.
     monkeypatch.setenv("BROKER_ACCOUNT_TYPE", "CASH")
+
+
+@pytest.fixture(autouse=True)
+def isolated_sdk_egress_policy(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-30/31: legacy SDK fakes use an explicit allowlist and audit ledger."""
+    if Path(str(request.node.fspath)).name in {
+        "test_broker_state.py",
+        "test_data_layer.py",
+        "test_liquidity.py",
+    }:
+        from backend.core.ledger import Ledger
+        from backend.net import http
+        from backend.net.egress import EgressPolicy, build_allowlist
+
+        engine = request.getfixturevalue("engine")
+        clock = request.getfixturevalue("clock")
+        monkeypatch.setattr(http, "_policy", EgressPolicy(build_allowlist(), Ledger(engine, clock)))
 
 
 @pytest.fixture

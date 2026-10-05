@@ -34,4 +34,9 @@ coverage-stage-c.json
 coverage-stage-d*.json
 coverage*.json
 gitleaks*.json
+data/
+backups/
+logs/
+*.vwsbak
+compile-*.log
 secrets-report.json

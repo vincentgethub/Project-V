@@ -22,10 +22,18 @@ from backend.core.execution_policy import (
     BANNED_DYNAMIC_BUILTINS,
     BANNED_EXECUTION_METHODS,
     BANNED_IMPORT_FUNCTIONS,
+    BANNED_LLM_TOOL_FIELDS,
     BANNED_ORDER_REQUESTS,
+    BANNED_TLS_MEMBERS,
+    DIRECT_HTTP_CALLS,
     GENERATED_DIRECTORIES,
+    HTTP_CLIENT_TYPES,
+    HTTP_URL_PATTERN,
+    INBOUND_NETWORK_CALLS,
     MONEY_ENDPOINT_WORDS,
     MUTATING_HTTP_METHODS,
+    PRIVATE_LLM_FIELDS,
+    PRIVATE_LLM_MODELS,
     RESTRICTED_REFLECTION,
     TRANSFER_CREATION_WORDS,
 )
@@ -37,6 +45,9 @@ _ENDPOINT = re.compile(
     re.IGNORECASE,
 )
 _EXEMPT_RELATIVE_PATH = Path("backend/core/execution_policy.py")
+_HTTP_FACTORY_PATH = Path("backend/net/http.py")
+_CONFIG_SUFFIXES = frozenset({".yaml", ".yml", ".toml", ".json", ".ini", ".cfg", ".env"})
+_HTTP_LITERAL = re.compile(HTTP_URL_PATTERN, re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +272,50 @@ def _symbol_tables(
     return aliases, values
 
 
+def _scoped_tables(
+    tree: ast.Module,
+) -> dict[
+    ast.AST,
+    tuple[
+        dict[str, frozenset[str]],
+        dict[str, frozenset[str]],
+        dict[str, ast.AST],
+        set[str],
+    ],
+]:
+    """GD-07: propagate aliases within lexical scopes and their ancestors.
+
+    Separate functions cannot share local bindings. Treating them as one scope
+    can fabricate recursive strings from unrelated cryptographic operations.
+    Ancestor bindings remain conservative across local reassignments/shadowing.
+    """
+    scope_nodes: dict[ast.AST, list[ast.AST]] = {tree: []}
+    parents: dict[ast.AST, ast.AST] = {}
+    scopes: dict[ast.AST, ast.AST] = {}
+
+    def visit(node: ast.AST, scope: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            parents[node] = scope
+            scope = node
+            scope_nodes[scope] = []
+        scopes[node] = scope
+        scope_nodes[scope].append(node)
+        for child in ast.iter_child_nodes(node):
+            visit(child, scope)
+
+    visit(tree, tree)
+    scoped_nodes: dict[ast.AST, tuple[ast.AST, ...]] = {}
+    tables = {}
+    for scope, own_nodes in scope_nodes.items():
+        ancestors = scoped_nodes[parents[scope]] if scope in parents else ()
+        combined = (*ancestors, *own_nodes)
+        scoped_nodes[scope] = combined
+        aliases, values = _symbol_tables(combined)
+        assignments, private_names = _security_tables(combined)
+        tables[scope] = (aliases, values, assignments, private_names)
+    return {node: tables[scope] for node, scope in scopes.items()}
+
+
 def _dynamic_reference(ref: str) -> bool:
     leaf = ref.rsplit(".", 1)[-1]
     if leaf == "compile":
@@ -398,13 +453,175 @@ def _node_messages(
     return tuple(dict.fromkeys(messages))
 
 
-def _location(path: Path, node: ast.AST, message: str) -> Violation:
+def _location(path: Path, node: ast.AST, message: str, rule_id: str = "GD-07") -> Violation:
     if isinstance(node, (ast.expr, ast.stmt, ast.arg, ast.keyword)):
-        return Violation(path, node.lineno, node.col_offset + 1, message)
-    return Violation(path, 1, 1, message)
+        return Violation(path, node.lineno, node.col_offset + 1, message, rule_id)
+    return Violation(path, 1, 1, message, rule_id)
 
 
-def scan_file(path: Path) -> tuple[Violation, ...]:
+def _security_tables(nodes: tuple[ast.AST, ...]) -> tuple[dict[str, ast.AST], set[str]]:
+    """SEC-33/61: track literal option aliases and private payload provenance."""
+    assignments: dict[str, ast.AST] = {}
+    private_names: set[str] = set()
+    for node in nodes:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                for name in _assignment_names(target):
+                    assignments[name] = node.value
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+            for name in _assignment_names(node.target):
+                assignments[name] = node.value
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            if any(
+                isinstance(child, (ast.Name, ast.Attribute))
+                and (child.id if isinstance(child, ast.Name) else child.attr) in PRIVATE_LLM_MODELS
+                for child in ast.walk(node.annotation)
+            ):
+                private_names.add(node.arg)
+    return assignments, private_names
+
+
+def _resolve_node(node: ast.AST, assignments: dict[str, ast.AST]) -> ast.AST:
+    visited: set[str] = set()
+    while isinstance(node, ast.Name) and node.id in assignments and node.id not in visited:
+        visited.add(node.id)
+        node = assignments[node.id]
+    return node
+
+
+def _private_payload(
+    node: ast.AST,
+    assignments: dict[str, ast.AST],
+    private_names: set[str],
+    visited: frozenset[str] = frozenset(),
+) -> bool:
+    if isinstance(node, ast.Name):
+        if node.id in private_names or node.id.lower() in PRIVATE_LLM_FIELDS:
+            return True
+        if node.id in assignments and node.id not in visited:
+            return _private_payload(
+                assignments[node.id], assignments, private_names, visited | {node.id}
+            )
+    if isinstance(node, ast.Attribute) and node.attr.lower() in PRIVATE_LLM_FIELDS:
+        return True
+    if isinstance(node, ast.Dict):
+        for key in node.keys:
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                if key.value.lower() in PRIVATE_LLM_FIELDS:
+                    return True
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name) and node.func.id in PRIVATE_LLM_MODELS:
+            return True
+        if isinstance(node.func, ast.Attribute) and node.func.attr in PRIVATE_LLM_MODELS:
+            return True
+    return any(
+        _private_payload(child, assignments, private_names, visited)
+        for child in ast.iter_child_nodes(node)
+    )
+
+
+def _security_messages(
+    node: ast.AST,
+    aliases: dict[str, frozenset[str]],
+    values: dict[str, frozenset[str]],
+    assignments: dict[str, ast.AST],
+    private_names: set[str],
+    *,
+    factory: bool,
+    test_file: bool,
+) -> tuple[tuple[str, str], ...]:
+    messages: list[tuple[str, str]] = []
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr, ast.Return)):
+        assigned = node.value
+        if assigned is not None and not factory:
+            if any(ref in DIRECT_HTTP_CALLS for ref in _references(assigned, aliases)):
+                messages.append(("SEC-30", "direct HTTP aliases bypass the central factory"))
+    if isinstance(node, ast.Attribute) and node.attr in BANNED_TLS_MEMBERS:
+        messages.append(("SEC-33", "TLS verification bypass is prohibited"))
+    if isinstance(node, ast.Name) and any(
+        ref.rsplit(".", 1)[-1] in BANNED_TLS_MEMBERS for ref in _references(node, aliases)
+    ):
+        messages.append(("SEC-33", "TLS verification bypass alias is prohibited"))
+    if (
+        isinstance(node, ast.ClassDef)
+        and not factory
+        and any(
+            ref in HTTP_CLIENT_TYPES for base in node.bases for ref in _references(base, aliases)
+        )
+    ):
+        messages.append(("SEC-30", "HTTP client subclasses belong in the central HTTP factory"))
+    if isinstance(node, ast.Call):
+        refs = _references(node.func, aliases)
+        if any(ref in DIRECT_HTTP_CALLS for ref in refs) and not factory:
+            messages.append(("SEC-30", "direct HTTP creation or requests bypasses make_client"))
+        if any(ref in INBOUND_NETWORK_CALLS for ref in refs):
+            messages.append(("SEC-34", "inbound network server or bind is prohibited"))
+        # Socket variables lose constructor provenance in the general alias
+        # table; an explicit socket-style bind/listen call remains prohibited.
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {"bind", "listen"}:
+            if not any(ref.startswith("sqlalchemy.") for ref in refs):
+                messages.append(("SEC-34", "inbound socket bind/listen is prohibited"))
+        options = [(item.arg, item.value) for item in node.keywords if item.arg is not None]
+        for item in node.keywords:
+            if item.arg is None:
+                expanded = _resolve_node(item.value, assignments)
+                if isinstance(expanded, ast.Dict):
+                    options.extend(
+                        (key.value, value)
+                        for key, value in zip(expanded.keys, expanded.values, strict=True)
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    )
+        if any(ref in DIRECT_HTTP_CALLS for ref in refs):
+            request_refs = refs - {
+                "requests.Session",
+                "requests.sessions.Session",
+                "requests.session",
+            }
+            if request_refs and not any(key == "timeout" for key, _value in options):
+                messages.append(("SEC-30", "HTTP calls require an explicit bounded timeout"))
+        for key, value in options:
+            resolved = _resolve_node(value, assignments)
+            if (
+                key in {"verify", "check_hostname"}
+                and isinstance(resolved, ast.Constant)
+                and resolved.value is False
+            ):
+                messages.append(("SEC-33", "TLS verification must never be disabled"))
+            if key in BANNED_LLM_TOOL_FIELDS:
+                messages.append(("SEC-61", "LLM tool/function execution fields are prohibited"))
+            if key in {"messages", "prompt", "input"} and _private_payload(
+                value, assignments, private_names
+            ):
+                messages.append(("SEC-61", "private account data cannot enter an LLM payload"))
+        llm_call = any("completions.create" in ref or "responses.create" in ref for ref in refs)
+        if llm_call and not any(key == "max_tokens" for key, _value in options):
+            messages.append(("SEC-60", "every LLM request requires explicit max_tokens"))
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        assigned_value = node.value
+        if assigned_value is not None:
+            resolved = _resolve_node(assigned_value, assignments)
+            if isinstance(resolved, ast.Constant) and resolved.value is False:
+                for target in targets:
+                    if isinstance(target, ast.Attribute) and target.attr == "check_hostname":
+                        messages.append(
+                            ("SEC-33", "TLS hostname verification must never be disabled")
+                        )
+                    if isinstance(target, ast.Subscript) and "verify" in _literal_strings(
+                        target.slice, values
+                    ):
+                        messages.append(("SEC-33", "TLS verification must never be disabled"))
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        for match in _HTTP_LITERAL.finditer(node.value):
+            host = match.group(1).split(":", 1)[0].lower()
+            if not test_file or host not in {"localhost", "127.0.0.1", "["}:
+                messages.append(
+                    ("SEC-33", "unencrypted HTTP URL in code/configuration is prohibited")
+                )
+    return tuple(dict.fromkeys(messages))
+
+
+def scan_file(path: Path, *, factory_path: Path | None = None) -> tuple[Violation, ...]:
     """GD-07/R-02: parse one file, returning violations for unreadable/invalid source."""
     try:
         if path.is_symlink():
@@ -414,12 +631,24 @@ def scan_file(path: Path) -> tuple[Violation, ...]:
         source = path.read_text(encoding="utf-8-sig")
         tree = ast.parse(source, filename=str(path))
         nodes = tuple(ast.walk(tree))
-        aliases, values = _symbol_tables(nodes)
+        tables = _scoped_tables(tree)
+        factory = factory_path is not None and path.resolve() == factory_path.resolve()
+        test_file = path.name.startswith("test_") or path.name == "conftest.py"
         findings = {
             _location(path, node, message)
             for node in nodes
-            for message in _node_messages(node, aliases, values)
+            for message in _node_messages(node, tables[node][0], tables[node][1])
         }
+        findings.update(
+            _location(path, node, message, rule_id)
+            for node in nodes
+            for rule_id, message in _security_messages(
+                node,
+                *tables[node],
+                factory=factory,
+                test_file=test_file,
+            )
+        )
         # Conservative file-wide evidence also catches mutation requests built
         # through separate assignments and transport.send(request). A file that
         # reads order history may not also contain a mutating method declaration.
@@ -427,12 +656,13 @@ def scan_file(path: Path) -> tuple[Violation, ...]:
             node
             for node in nodes
             if isinstance(node, ast.expr)
-            and any(_ENDPOINT.match(value) for value in _literal_strings(node, values))
+            and any(_ENDPOINT.match(value) for value in _literal_strings(node, tables[node][1]))
         )
         mutation_present = any(
             isinstance(node, ast.expr)
             and any(
-                value.upper() in MUTATING_HTTP_METHODS for value in _literal_strings(node, values)
+                value.upper() in MUTATING_HTTP_METHODS
+                for value in _literal_strings(node, tables[node][1])
             )
             or isinstance(node, ast.Attribute)
             and node.attr.lstrip("_").upper() in MUTATING_HTTP_METHODS
@@ -480,7 +710,21 @@ def scan_project(root: Path) -> tuple[Violation, ...]:
                 elif (
                     path.suffix == ".py" and path.relative_to(source_root) != _EXEMPT_RELATIVE_PATH
                 ):
-                    findings.extend(scan_file(path))
+                    findings.extend(scan_file(path, factory_path=source_root / _HTTP_FACTORY_PATH))
+                elif path.suffix in _CONFIG_SUFFIXES or path.name.startswith(".env"):
+                    for number, line in enumerate(
+                        path.read_text(encoding="utf-8-sig").splitlines(), 1
+                    ):
+                        if _HTTP_LITERAL.search(line):
+                            findings.append(
+                                Violation(
+                                    path,
+                                    number,
+                                    1,
+                                    "unencrypted HTTP URL in configuration is prohibited",
+                                    "SEC-33",
+                                )
+                            )
     except Exception as error:
         findings.append(
             Violation(root, 1, 1, f"project cannot be verified: {type(error).__name__}")

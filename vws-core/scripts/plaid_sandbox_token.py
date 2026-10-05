@@ -1,9 +1,8 @@
-"""R-07/R-08: create a Sandbox-only token and store Fernet ciphertext.
+"""SEC-11/R-08: bootstrap a Sandbox item and save its token only to the keyring.
 
-Run ``python -m scripts.plaid_sandbox_token --output .secrets/plaid-token.fernet``.
-FERNET_KEY, PLAID_CLIENT_ID and PLAID_SECRET must already be configured. No token
-or key is printed. Balance requires another product entitlement; Auth is used
-only for Sandbox bootstrap. Runtime liquidity calls remain balance reads only.
+Run ``python -m scripts.plaid_sandbox_token --env-file .env`` after configuring
+Sandbox credentials. No token, key or credential path is printed. Auth is used
+only for Sandbox bootstrap; runtime liquidity calls remain balance reads only.
 """
 
 import argparse
@@ -13,16 +12,17 @@ from pathlib import Path
 from typing import Protocol, cast
 
 import plaid
-from cryptography.fernet import Fernet
 from plaid.api.plaid_api import PlaidApi
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.products import Products
 from plaid.model.sandbox_public_token_create_request import SandboxPublicTokenCreateRequest
+from pydantic import SecretStr
 
 from backend.core.config import Settings, load_settings
 from backend.core.errors import ConfigurationError, ProviderError, SafetyError
 from backend.core.logging import configure_logging, register_secrets
 from backend.data.liquidity import prepare_plaid_client, validated_liquidity_settings
+from backend.security.secrets import KeyringSecretStore, SecretStore, assert_secret_sources
 
 
 class SandboxTokenClient(Protocol):
@@ -39,23 +39,26 @@ class SandboxTokenClient(Protocol):
 
 def create_sandbox_token(
     settings: Settings,
-    output: Path,
     institution_id: str = "ins_109508",
     *,
     client: SandboxTokenClient | None = None,
-) -> Path:
-    """R-07/R-08: write ciphertext once; never overwrite an existing token file."""
+    secret_store: SecretStore | None = None,
+) -> None:
+    """SEC-11: keyring only; refuse an existing token before any provider call."""
     settings = validated_liquidity_settings(settings)
+    assert_secret_sources("MANUAL")
     if settings.plaid_env != "sandbox":
         raise ConfigurationError("token bootstrap is permitted only in Plaid Sandbox")
-    if not institution_id.strip():
+    if not isinstance(institution_id, str) or not institution_id.strip():
         raise ConfigurationError("Sandbox institution ID is required")
+    source = KeyringSecretStore() if secret_store is None else secret_store
     try:
-        cipher = Fernet(settings.fernet_key.get_secret_value().encode("ascii"))
-    except (ValueError, UnicodeError) as exc:
-        raise ConfigurationError("a valid FERNET_KEY is required before bootstrap") from exc
-    if output.exists():
-        raise ConfigurationError("token output already exists; choose a new file")
+        if source.get("PLAID_ACCESS_TOKEN") is not None:
+            raise ConfigurationError("Plaid keyring token already exists; use validated rotation")
+    except ConfigurationError:
+        raise
+    except Exception:
+        raise ConfigurationError("native keyring is unavailable before bootstrap") from None
     if client is None:
         if (
             not settings.plaid_client_id.get_secret_value()
@@ -84,25 +87,27 @@ def create_sandbox_token(
         # VERIFY: https://plaid.com/docs/balance/ (Balance is not standalone.)
         public_response = client.sandbox_public_token_create(
             SandboxPublicTokenCreateRequest(
-                institution_id=institution_id,
-                initial_products=[Products("auth")],
+                institution_id=institution_id, initial_products=[Products("auth")]
             ),
             _request_timeout=settings.request_timeout_seconds,
         )
         public_token = _token_field(public_response, "public_token")
         register_secrets(public_token)
         # VERIFY: https://plaid.com/docs/api/items/#itempublic_tokenexchange
-        exchange_response = client.item_public_token_exchange(
+        response = client.item_public_token_exchange(
             ItemPublicTokenExchangeRequest(public_token=public_token),
             _request_timeout=settings.request_timeout_seconds,
         )
-        access_token = _token_field(exchange_response, "access_token")
-        register_secrets(access_token)
-        ciphertext = cipher.encrypt(access_token.encode("utf-8"))
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with output.open("xb") as handle:
-            handle.write(ciphertext)
-        return output.resolve()
+        token = SecretStr(_token_field(response, "access_token"))
+        register_secrets(token)
+        try:
+            source.set("PLAID_ACCESS_TOKEN", token)
+            observed = source.get("PLAID_ACCESS_TOKEN")
+            if observed is None or observed.get_secret_value() != token.get_secret_value():
+                raise ConfigurationError("Sandbox keyring write could not be verified")
+        except Exception:
+            source.delete("PLAID_ACCESS_TOKEN")
+            raise
     except ConfigurationError:
         raise
     except Exception:
@@ -125,20 +130,19 @@ def _token_field(response: object, name: str) -> str:
 
 
 def main() -> None:
-    """R-07: CLI loads optional dotenv explicitly and prints only the file path."""
+    """SEC-11/R-07: optional dotenv is explicit; token values are never printed."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--institution", default="ins_109508")
     parser.add_argument("--env-file", type=Path, default=None)
     args = parser.parse_args()
     try:
         settings = load_settings(env_file=args.env_file)
         configure_logging()
-        result = create_sandbox_token(settings, args.output, args.institution)
+        create_sandbox_token(settings, args.institution)
     except SafetyError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from None
-    print(f"Encrypted Sandbox token saved to {result}")
+    print("Sandbox access token saved to the native keyring")
 
 
 if __name__ == "__main__":

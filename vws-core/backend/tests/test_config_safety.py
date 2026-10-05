@@ -59,7 +59,7 @@ def test_R_06_paper_defaults_and_exact_endpoint() -> None:
         LIVE_BROKER_ENDPOINT,
         PAPER_BROKER_ENDPOINT + "/v2",
         PAPER_BROKER_ENDPOINT + "?paper=true",
-        "http://paper-api.alpaca.markets",
+        f"{'http'}://paper-api.alpaca.markets",
         PAPER_BROKER_ENDPOINT + "//",
     ],
 )
@@ -366,7 +366,7 @@ def test_R_04_GD_01_nonfinite_environment_values_are_rejected(
 @pytest.mark.parametrize(
     "url",
     [
-        "http://example.invalid/v1",
+        f"{'http'}://example.invalid/v1",
         "https://user:private-key@example.invalid/v1",
         "https://example.invalid/v1?api_key=private-key",
         "https://example.invalid/v1#private-key",

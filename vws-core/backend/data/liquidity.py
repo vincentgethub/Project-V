@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import plaid
 import structlog
-from cryptography.fernet import Fernet, InvalidToken
 from plaid.api.plaid_api import PlaidApi
 from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 from plaid.model.accounts_balance_get_request_options import AccountsBalanceGetRequestOptions
@@ -28,6 +27,7 @@ from backend.core.errors import (
 from backend.core.logging import register_secrets
 from backend.core.money import MoneyInput, decimal_money
 from backend.domain.models import CapitalStatus, DeployableCapital, FrozenModel
+from backend.security.secrets import SecretStore, assert_secret_sources, plaid_access_token
 
 if TYPE_CHECKING:
     from backend.data.data_layer import ResilientReader
@@ -94,15 +94,19 @@ class PlaidLiquiditySource:
         client: PlaidBalanceClient | None = None,
         *,
         reader: ResilientReader | None = None,
+        secret_store: SecretStore | None = None,
     ) -> None:
-        """R-07/R-08: decrypt configured storage before constructing the client."""
+        """SEC-11/R-08: only native keyring storage supplies the access token."""
+        assert_secret_sources("MANUAL")
         self._config = validated_liquidity_settings(config)
         config = self._config
         self._clock = clock
         self._reader = reader
         if not config.plaid_account_id.strip():
             raise ConfigurationError("Plaid requires a pinned account ID")
-        self._token = _access_token(config)
+        if client is None and reader is None:
+            raise ConfigurationError("DAT-04: live Plaid reads require a resilient reader")
+        self._token = plaid_access_token(secret_store).get_secret_value()
         register_secrets(self._token)
         if client is None:
             if reader is None:
@@ -241,8 +245,8 @@ def _log_fault(event: str, error: Exception) -> None:
     """R-02/R-07: record only static event names and types; audit faults are typed."""
     try:
         structlog.get_logger().error(event, error_type=type(error).__name__)
-    except Exception as exc:
-        raise DataIntegrityError("liquidity fault audit failed") from exc
+    except Exception:
+        raise DataIntegrityError("liquidity fault audit failed") from None
 
 
 def validated_liquidity_settings(config: Settings) -> Settings:
@@ -279,23 +283,6 @@ def _raw_balance_payload(response: object) -> Mapping[str, Any]:
     if not isinstance(decoded, Mapping):
         raise DataIntegrityError("Plaid response must be a JSON object")
     return decoded
-
-
-def _access_token(config: Settings) -> str:
-    """R-07: load encrypted token storage, with explicit environment fallback."""
-    if config.plaid_token_path is None:
-        token = config.plaid_access_token.get_secret_value()
-        if not token.strip():
-            raise ConfigurationError("Plaid access token is required")
-        return token
-    try:
-        key = config.fernet_key.get_secret_value().encode("ascii")
-        token = Fernet(key).decrypt(config.plaid_token_path.read_bytes()).decode("utf-8")
-        if not token.strip():
-            raise ConfigurationError("decrypted Plaid token is empty")
-        return token
-    except (ValueError, UnicodeError, OSError, InvalidToken) as exc:
-        raise ConfigurationError("encrypted Plaid token cannot be read") from exc
 
 
 class ManualLiquiditySource:

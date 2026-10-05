@@ -282,7 +282,8 @@ def test_DAT_04_timeout_is_explicit_on_actual_session_request(
 
     monkeypatch.setattr(Session, "request", fake_request)
     response = TimeoutSession(30).request("GET", "https://paper-api.alpaca.markets")
-    assert observed["timeout"] == 30
+    assert observed["timeout"] == (5, 20)
+    assert observed["verify"] is True
     assert response.json()["price"] == Decimal("100.01")
 
 
@@ -302,7 +303,8 @@ def test_DAT_04_transport_counts_http_calls_and_disables_redirects(
 
     def fake_request(self: Session, method: Any, url: Any, *args: Any, **kwargs: Any) -> Response:
         calls.append("HTTP")
-        assert kwargs["timeout"] == 12
+        assert kwargs["timeout"] == (5, 12)
+        assert kwargs["verify"] is True
         assert kwargs["allow_redirects"] is False
         response = Response()
         response.status_code = 200
@@ -336,6 +338,8 @@ def test_R_06_transport_redirect_cannot_expose_account_headers(
     def fake_request(*args: Any, **kwargs: Any) -> Response:
         response = Response()
         response.status_code = code
+        response._content = b""
+        assert response.content == b""
         return response
 
     monkeypatch.setattr(Session, "request", fake_request)
@@ -602,7 +606,7 @@ def test_DAT_04_real_sdk_configuration_is_readonly_raw_paper_and_uses_reader(
     class FakeSdkClient(FakeClient):
         def __init__(self) -> None:
             super().__init__()
-            self._session = Session()
+            self._session = TimeoutSession(30)
             self._retry = 3
 
     client = FakeSdkClient()
@@ -796,11 +800,11 @@ def test_R_07_broker_constructor_exception_traceback_suppresses_untrusted_sdk_de
 
 
 def test_R_07_transport_contract_failure_has_static_error_without_sdk_details() -> None:
-    class BrokenSession(Session):
+    class BrokenSession(TimeoutSession):
         def close(self) -> None:
             raise RuntimeError("synthetic session credential never render")
 
-    client = SimpleNamespace(_session=BrokenSession(), _retry=3)
+    client = SimpleNamespace(_session=BrokenSession(30), _retry=3)
     with pytest.raises(ConfigurationError) as captured:
         configure_alpaca_transport(client)
     assert "synthetic session credential" not in "".join(traceback.format_exception(captured.value))

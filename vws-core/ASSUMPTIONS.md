@@ -8,8 +8,9 @@ The owner authorized automatic continuation: audit/fixes → S → D → E → F
 credentials/decisions, an unresolved gate, a STOP-class finding or a safety
 weakening stops progress. No push is authorized.
 
-Stages A–C have historical verified deliveries. The current audited baseline ran
-1,866 offline tests; audit corrections are under final verification. Stage D is
+Stages A–C have historical verified deliveries. The audit-fixes gate passed
+2,167 offline tests, with complete risk/state branch coverage. Stage S security
+components and host commands are under combined verification. Stage D is
 unfinished under the amended requirements. Order execution is absent before
 Stage I; current ledger orders are local proposal/audit records. Stage I alone
 may add the specified isolated executor. Money movement remains banned everywhere.
@@ -213,3 +214,63 @@ delivery and in VERIFY.md.
     scheduler_misfire_grace_seconds, daily_bar_sip_lag_seconds and
     alert_cooldown_sessions have one YAML home. Startup rejects these keys in
     process env, explicitly loaded dotenv or Settings, even at equal values.
+
+51. Stage S certifies tested security components and host commands. Scheduler,
+    bot-handler, digest, report and AUTO composition are wired in their specified
+    later stages. Passing a fake service test never proves a real account setting,
+    operating-system keyring, remote workflow or connected broker call.
+52. Native keyring storage uses Windows Credential Manager with local-machine
+    persistence or Linux Secret Service. No plugin-discovered plaintext backend,
+    environment fallback or encrypted-token-file fallback is permitted for a
+    Plaid access token. AUTO_LIVE rejects the specified env/dotenv live secrets.
+53. A key rotation requires a successful read-only provider validation before
+    replacement. Immutable evidence stores only a locally salted HMAC fingerprint
+    and date; failure restores the previous value. Unknown credential age is
+    UNKNOWN, and age at the configured maximum is WARN, not a pass.
+54. Account security settings are owner attestations. ATTESTED records include
+    their dates and never claim that the app remotely verified MFA, crypto access,
+    email notices, a carrier PIN or a password manager. Trading API credential
+    scopes and IP allowlisting remain UNVERIFIED until checked authoritatively.
+55. HTTP requests use the HTTPS factory, verified TLS, allowed DNS hosts, explicit
+    deadlines and checked redirects. The Python socket audit backstop guards
+    accidental SDK bypasses; it is not an operating-system sandbox against
+    malicious code or a compromised host. Loopback audit allowances support
+    runtime internals, not an inbound application server.
+56. POSIX private files and directories must be owned by the run user; unsafe or
+    unknown permissions refuse AUTO. Windows broad read ACLs WARN only, as the
+    amendment specifies. A positively world-writable database always refuses.
+57. SQLite backups use a consistent online image held in memory, authenticated
+    Fernet encryption, and a native-keyring recovery key. Images above 256 MiB
+    fail with a typed error. PostgreSQL backup tooling belongs to Stage H and is
+    not silently substituted. Restore scratch files are private and temporary;
+    a successful restore checks the plaintext SHA-256 and every ledger chain.
+58. Ledger anchors hash the globally ordered prefix of sequence, table name and
+    row hash across all eighteen immutable tables. They can detect a rewritten
+    table chain even if its local hashes were recomputed. The full 64-hex digest
+    is preserved in an anchor file; the displayed 16-hex Telegram value supports
+    the specified manual spot check. Durable dated verification evidence is kept.
+59. An unexplained effective-config change persistently pauses AUTO entries;
+    reverting the file does not clear that pause without a host acknowledgement.
+    An unexplained broker identity/fingerprint change halts entries. A legitimate
+    rotation needs later matching SECRET_ROTATED evidence; stale proof cannot
+    authorize a new fingerprint.
+60. Panic saves HALTED locally before callbacks and continues with a revoke
+    checklist even when notification, activity reads or entry-job shutdown fail.
+    Before Stage I there is no cancellation implementation; future AUTO wiring
+    can inject only unfilled-entry cancellation, retaining protective legs.
+    MANUAL never invokes that callback, imports an executor or flattens holdings.
+61. Telegram privacy, masking and admission services have fake acceptance tests.
+    Runtime handlers remain Stage F work. Numeric IDs, not usernames or account
+    numbers, are stored; strangers receive no reply. The emergency halt/pause
+    paths bypass rate limits. The progress command consumes the heavy allowance.
+62. Public text is bounded, sanitized and screened for instruction-like content.
+    The public-only prompt builder cannot accept account data or LLM tools.
+    Actual LLM calls, token caps and budget accounting still belong to Stage E.
+63. Every direct dependency needs a justification. Compiled runtime and dev locks
+    require package hashes and installation with --require-hashes --no-deps.
+    The old requirements-lock.txt records the historical baseline; it is not the
+    installation source for the amended security stage. The final locks contain
+    60 runtime and 121 development packages, including keyring's Linux transitive
+    requirements. Hash-enforced installs and pip check passed in the existing
+    and isolated fresh Windows environments; the 121-pin audit is clean.
+    Native Linux keyring operation and remote CI remain UNVERIFIED.

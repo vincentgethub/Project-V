@@ -53,3 +53,7 @@ class LiquidityUnavailable(SafetyError):
 
 class ProviderError(SafetyError):
     """R-02/DAT-04: an external read could not produce trusted data."""
+
+
+class EgressDeniedError(ProviderError):
+    """SEC-30/SEC-32: an outbound destination was refused and audited."""

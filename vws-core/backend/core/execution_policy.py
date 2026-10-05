@@ -75,6 +75,89 @@ RESTRICTED_REFLECTION: Final[frozenset[str]] = frozenset(
 )
 BANNED_IMPORT_FUNCTIONS: Final[frozenset[str]] = frozenset({"importlib.import_module"})
 MUTATING_HTTP_METHODS: Final[frozenset[str]] = frozenset({"POST", "DELETE", "PATCH", "PUT"})
+DIRECT_HTTP_CALLS: Final[frozenset[str]] = frozenset(
+    {
+        "requests.Session",
+        "requests.sessions.Session",
+        "requests.session",
+        "httpx.Client",
+        "httpx.AsyncClient",
+        "requests.request",
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.patch",
+        "requests.delete",
+        "requests.head",
+        "requests.options",
+        "requests.api.request",
+        "requests.api.get",
+        "requests.api.post",
+        "requests.api.put",
+        "requests.api.patch",
+        "requests.api.delete",
+        "requests.api.head",
+        "requests.api.options",
+        "httpx.request",
+        "httpx.get",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.delete",
+        "httpx.head",
+        "httpx.options",
+        "httpx.stream",
+    }
+)
+HTTP_CLIENT_TYPES: Final[frozenset[str]] = frozenset(
+    {"requests.Session", "requests.sessions.Session", "httpx.Client", "httpx.AsyncClient"}
+)
+BANNED_TLS_MEMBERS: Final[frozenset[str]] = frozenset({"CERT_NONE", "_create_unverified_context"})
+HTTP_URL_PATTERN: Final[str] = r"http://([^/\s'\"<>]+)"
+BANNED_LLM_TOOL_FIELDS: Final[frozenset[str]] = frozenset(
+    {"tools", "functions", "tool_choice", "function_call"}
+)
+PRIVATE_LLM_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "account",
+        "account_id",
+        "account_number",
+        "account_flags",
+        "portfolio",
+        "portfolio_snapshot",
+        "positions",
+        "buying_power",
+        "cash",
+        "settled_cash",
+        "equity",
+        "net_liquidation",
+        "cost_basis",
+        "cash_available",
+        "alpaca_api_key",
+        "alpaca_secret_key",
+        "plaid_access_token",
+        "telegram_bot_token",
+    }
+)
+PRIVATE_LLM_MODELS: Final[frozenset[str]] = frozenset(
+    {"PortfolioSnapshot", "AccountFlags", "PortfolioState", "PositionState", "Settings"}
+)
+INBOUND_NETWORK_CALLS: Final[frozenset[str]] = frozenset(
+    {
+        "socket.socket.bind",
+        "socket.socket.listen",
+        "socket.create_server",
+        "asyncio.start_server",
+        "asyncio.start_unix_server",
+        "asyncio.create_server",
+        "http.server.HTTPServer",
+        "http.server.ThreadingHTTPServer",
+        "socketserver.TCPServer",
+        "socketserver.ThreadingTCPServer",
+        "socketserver.UDPServer",
+        "socketserver.ThreadingUDPServer",
+    }
+)
 TRANSFER_CREATION_WORDS: Final[frozenset[str]] = frozenset(
     {
         "create",

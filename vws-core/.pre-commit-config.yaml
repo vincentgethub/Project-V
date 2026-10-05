@@ -13,12 +13,12 @@ repos:
         types: [python]
       - id: no-order-execution
         name: R-10 GD-07 source guard
-        entry: python -m backend.core.source_guard .
+        entry: python -c "from pathlib import Path; import backend.core.source_guard as guard; guard.require_safe_sources(Path(guard.__file__).resolve().parents[2])"
         language: system
         pass_filenames: false
         always_run: true
       - id: stage-audit-types
-        name: Audited source strict types
+        name: Whole authored-source strict types
         entry: python -m backend.core.check_stage_d
         language: system
         pass_filenames: false
@@ -27,4 +27,4 @@ repos:
         name: Secrets scan
         entry: detect-secrets-hook
         language: system
-        exclude: (^|/)(backend/tests/|requirements-lock\.txt$|deliveries/)
+        exclude: (^|/)(backend/tests/|requirements(-dev)?\.lock$|requirements-lock\.txt$|deliveries/)

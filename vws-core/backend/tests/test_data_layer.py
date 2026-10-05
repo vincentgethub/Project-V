@@ -612,7 +612,7 @@ class FakeSDK:
     """Return installed alpaca-py raw_data symbol maps, without HTTP envelopes."""
 
     def __init__(self, bars: tuple[Bar, ...]) -> None:
-        self._session = requests.Session()
+        self._session = TimeoutSession(30)
         self._retry = 3
         self.bars: dict[str, Any] = {"AAPL": [raw_bar(bar) for bar in bars]}
         self.quotes: dict[str, Any] = {
@@ -910,7 +910,10 @@ def test_DAT_04_actual_sdk_pagination_counts_every_http_request_with_timeout(
         with pytest.raises(ProviderError, match="budget"):
             provider.daily_bars("AAPL", date(2026, 9, 25), date(2026, 9, 28))
         assert len(calls) == 1 and reader.tripped and state.current() == SystemState.HALTED
-    assert all(call["timeout"] == 30 and call["allow_redirects"] is False for call in calls)
+    assert all(
+        call["timeout"] == (5, 20) and call["allow_redirects"] is False and call["verify"] is True
+        for call in calls
+    )
 
 
 @pytest.mark.parametrize("payload", [[], {"MSFT": []}, {"AAPL": [None]}, {"AAPL": [{"t": "bad"}]}])

@@ -183,7 +183,7 @@ def test_R_02_clock_is_injected(engine: Engine) -> None:
 
 
 def test_CRO_01_invalid_transition_arguments(engine: Engine, clock: FrozenClock) -> None:
-    store = SystemStateStore(engine, clock, RecordingNotifier(), verify=False)
+    store = SystemStateStore(engine, clock, RecordingNotifier(), verify_ledger=False)
     with pytest.raises(StateTransitionError):
         store.escalate(cast(SystemState, "BAD"), "reason")
     with pytest.raises(StateTransitionError):
@@ -198,7 +198,7 @@ def test_CRO_01_invalid_transition_arguments(engine: Engine, clock: FrozenClock)
 def test_R_02_startup_failure_notifies(
     engine: Engine, clock: FrozenClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    store = SystemStateStore(engine, clock, RecordingNotifier(), verify=False)
+    store = SystemStateStore(engine, clock, RecordingNotifier(), verify_ledger=False)
 
     def broken_verify() -> None:
         raise LedgerIntegrityError("injected chain corruption")
@@ -217,7 +217,7 @@ def test_R_02_startup_failure_notifies(
 def test_R_02_unverifiable_control_branches(
     engine: Engine, clock: FrozenClock, monkeypatch: pytest.MonkeyPatch, action: str
 ) -> None:
-    store = SystemStateStore(engine, clock, RecordingNotifier(), verify=False)
+    store = SystemStateStore(engine, clock, RecordingNotifier(), verify_ledger=False)
     with transaction(engine) as session:
         session.execute(delete(SystemControl))
     monkeypatch.setattr(store.ledger, "verify_chain", lambda: None)
@@ -233,7 +233,7 @@ def test_R_02_unverifiable_control_branches(
 
 @pytest.mark.parametrize("action", ["current", "escalate"])
 def test_R_02_invalid_control_branches(engine: Engine, clock: FrozenClock, action: str) -> None:
-    store = SystemStateStore(engine, clock, RecordingNotifier(), verify=False)
+    store = SystemStateStore(engine, clock, RecordingNotifier(), verify_ledger=False)
     with engine.begin() as connection:
         connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
         connection.execute(update(SystemControl).values(state="INVALID"))
@@ -248,7 +248,7 @@ def test_R_02_invalid_control_branches(engine: Engine, clock: FrozenClock, actio
 def test_R_02_emergency_latch_survives_successful_read(
     engine: Engine, clock: FrozenClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    store = SystemStateStore(engine, clock, RecordingNotifier(), verify=False)
+    store = SystemStateStore(engine, clock, RecordingNotifier(), verify_ledger=False)
 
     def broken_verify() -> None:
         raise LedgerIntegrityError("fault")
