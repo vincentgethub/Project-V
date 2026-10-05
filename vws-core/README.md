@@ -1,4 +1,4 @@
-# vws-core â€” defensive core and completion audit
+# vws-core — defensive core and completion audit
 
 The [master specification](docs/spec/MASTER_SPEC.md) and
 [Amendments 01](docs/spec/AMENDMENT_01.md), [02](docs/spec/AMENDMENT_02.md),
@@ -6,8 +6,8 @@ The [master specification](docs/spec/MASTER_SPEC.md) and
 project. Later amendments win over conflicting earlier specifications and
 addenda. See [owner progress](docs/PROGRESS.md) and [technical status](docs/STATUS.md).
 
-Work continues automatically through audit/fixes â†’ S â†’ D â†’ E â†’ F â†’ G â†’ H â†’ J â†’
-I â†’ K after each green gate and local commit. It stops only for the specified
+Work continues automatically through audit/fixes → S → D → E → F → G → H → J →
+I → K after each green gate and local commit. It stops only for the specified
 unresolved gate, required credential/decision, STOP-class finding, or safety
 weakening. Nothing is pushed without the owner's instruction.
 
@@ -25,7 +25,7 @@ and state machine each had 100% statement and branch coverage at that delivery.
 Stage C adds all seven pure compliance rules, exact wash-share allocation, tax
 contracts, T+1 cash reconstruction, both day-trade regimes, reconciliation export,
 and ComplianceBoundary for required HALTs and failed-finding audit logs.
-The historical Stage Aâ€“C delivery passed 1,441 offline tests; all risk modules,
+The historical Stage A–C delivery passed 1,441 offline tests; all risk modules,
 Stage C contracts and the persisted state machine had 100% statement and branch
 coverage at that delivery.
 

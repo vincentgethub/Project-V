@@ -6,17 +6,17 @@ persisted state reached **100% statement and branch coverage**: 1,238 statements
 400 branches. Ruff check/format (78 files), strict mypy (70 authored sources),
 the execution guard, production Bandit, pip check, pip-audit (109 unchanged
 pins), corrected source secrets scan and all five actual Git-root hooks passed.
-Full-history gitleaks 8.30.1: one initial commit, 2.11 MB, zero leaks.
+Full-history gitleaks 8.30.1: two commits, 2.19 MB, zero leaks.
 
 See docs/STATUS.md for changes, requirement traceability, commands, assumptions
 and UNVERIFIED checks. The results below are historical stage-delivery evidence.
 No PostgreSQL, Docker, mutation or real-account integration pass is claimed.
 
-# Stage A through C verification â€” 2026-10-04
+# Stage A through C verification — 2026-10-04
 
 ## Stage C result
 
-The final combined selected Stage Aâ€“C suite passed **1,441 tests in 118.28 seconds**
+The final combined selected Stage A–C suite passed **1,441 tests in 118.28 seconds**
 on Windows and Python 3.12.14, with sockets blocked. Stage C adds 274 cases:
 131 compliance-engine cases, 60 contract/matcher cases, 53 independent adversarial
 cases, and 30 durable-boundary cases. Hypothesis exercises exact proportional
@@ -24,14 +24,14 @@ allocation and input faults in addition to the explicit boundary fixtures.
 
 | Check | Observed result |
 | --- | --- |
-| Combined selected Stage Aâ€“C tests | 1,441 passed |
+| Combined selected Stage A–C tests | 1,441 passed |
 | Pure compliance engine | 100%; 300 statements, 106 branches |
 | Wash-sale matcher | 100%; 164 statements, 66 branches |
 | Compliance contracts | 100%; 104 statements, 28 branches |
 | ComplianceBoundary | 100%; 80 statements, 26 branches |
 | All risk modules, tax contracts and persisted state | 100%; 1,108 statements, 360 branches |
 | Ruff lint/format | passed; 62 authored Python files formatted |
-| Strict mypy | 56 source files passed; fixed Stage Aâ€“C gate passes 42 files |
+| Strict mypy | 56 source files passed; fixed Stage A–C gate passes 42 files |
 | Whole authored-source execution guard | passed |
 | Bandit completed core/domain/risk/calendar modules | zero findings |
 | pip-audit all 109 exact transitive pins | no known vulnerabilities |
@@ -80,7 +80,7 @@ invalid, stale or oversized sells do not qualify for that exception.
 SEC, FINRA and Alpaca links and distinguishes source requirements from software
 assumptions. No broker/bank request, transfer, LLM call or Telegram message was
 sent. There are no new dependencies. PostgreSQL runtime, Docker, full pipeline,
-mutation score and later Dâ€“F features remain outside this certification. The
+mutation score and later D–F features remain outside this certification. The
 historical Stage A/B delivery artifacts are retained unchanged.
 
 ## Stage B result
@@ -89,7 +89,7 @@ Stage B completed locally on Windows, Python 3.12.14. The combined selected
 Stage A/B suite passed **1,167 tests in 77.13 seconds**, with sockets blocked.
 This adds 322 Stage B cases, including Hypothesis-generated boundary inputs,
 forged Pydantic instances, provider/DB/calendar/audit faults, and independent
-regressions. It does not certify the preserved Câ€“D drafts or later services.
+regressions. It does not certify the preserved C–D drafts or later services.
 
 | Check | Observed result |
 | --- | --- |
@@ -222,7 +222,7 @@ No provider-specific model or token price is supplied by default.
 ## Complete VERIFY tag inventory
 
 Tags in the preserved Stage D draft are historical references, not certification
-of that draft. The completed Aâ€“C tags and earlier references are collected from
+of that draft. The completed A–C tags and earlier references are collected from
 current source locations below. External source scope is described above and in
 STAGE_C_SOURCE_NOTES.md.
 

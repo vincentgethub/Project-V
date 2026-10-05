@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 4, 2026 - audit fixes
+Last updated: October 4, 2026 - audit fixes verified
 
 ## Where things stand
 The safety rules, ledger and offline data tests work. The alert service is not

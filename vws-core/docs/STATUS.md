@@ -1,8 +1,8 @@
 # Technical status
 
 Audit date: 2026-10-04 America/Chicago. The initial audit results below describe the pre-fix working
-tree. The audit-fixes gate below certifies the current implementation. Amendments 01â€“04 supersede conflicts in the master and
-earlier addenda. Execution order: audit/fixes â†’ S â†’ D â†’ E â†’ F â†’ G â†’ H â†’ J â†’ I â†’ K.
+tree. The audit-fixes gate below certifies the current implementation. Amendments 01–04 supersede conflicts in the master and
+earlier addenda. Execution order: audit/fixes → S → D → E → F → G → H → J → I → K.
 Optional ideas require plain-words approval and live only in PROGRESS Suggestions.
 
 ## Stage inventory
@@ -14,7 +14,7 @@ Optional ideas require plain-words approval and live only in PROGRESS Suggestion
 | C | compliance, wash matching, tax models, compliance boundary; Stage_C.md | Original certified; shared tax-core move reserved for J |
 | D | data_layer/broker_state/liquidity/read boundary; indicators/scanner; Sandbox helper; six test modules | Original source tests pass; no final D delivery; DAT-05..12 missing |
 | S | SecretStr, redaction, append-only chains and source bans are foundations | New security stage not implemented |
-| Eâ€“K | Configuration/storage foundations only | Agents/swarm/bot/evaluation/ops/funding/P&L/tax/auto/extras not implemented |
+| E–K | Configuration/storage foundations only | Agents/swarm/bot/evaluation/ops/funding/P&L/tax/auto/extras not implemented |
 
 64 authored Python files: 39 production/script files and 25 test-package files.
 588 test function declarations; parametrized execution count is 1,866.
@@ -49,7 +49,7 @@ Final whole-suite gate: **2,167 passed**, one upstream SDK deprecation warning,
 (70 authored sources), execution guard, explicit production Bandit, pip check,
 pip-audit (109 unchanged exact pins), source secrets scan (0 findings), and all
 five actual Git-root pre-commit hooks passed. Gitleaks 8.30.1 scanned the full
-one-commit history, 2.11 MB, with no leaks; rerun after the audit-fixes commit.
+two-commit history, 2.19 MB, with no leaks after the audit-fixes commit.
 The current authored inventory is 70 Python files: 43 production/script and
 27 test-package files, with 631 test-function declarations.
 
@@ -67,7 +67,9 @@ Drawdown/fault states still latch; held exits bypass the daily entry block.
 private-chat subset. CI enforces progress changes alongside code; the Telegram
 command remains pending F. The page has 43 lines; AGENTS.md has 66.
 Verbatim specification and historical-delivery bytes are protected by Git
-attributes. An accidentally tracked generated coverage report is removed from
+attributes. A final blob comparison caught pre-existing Git newline normalization;
+explicit renormalization now makes every specification and historical delivery
+blob byte-identical to its saved source. An accidentally tracked generated coverage report is removed from
 the index; coverage outputs are ignored. No ledger rows or history were deleted.
 A collection-time synthetic Settings fixture needed explicit CASH after the
 required-field correction; it was fixed before the complete gate rerun.
@@ -82,11 +84,11 @@ triggers transactionally; incompatible schemas fail at lines 701/711.
 | Finding | Location before fixes | Required action |
 | --- | --- | --- |
 | LLM fundamental boolean verdicts | prompts/fundamental_analyst.md:34,39,41,56,60 | Replace unused prompt with narrative-only role |
-| Superseded floats/client/DROP plan | FUNDAMENTAL_ADDENDUM.md:20â€“30,46,50 | Mark superseded; use amended deterministic Decimal FA framework, default annotate |
-| Duplicated schedule homes | .env.example:73â€“74; config.py:115â€“116,205â€“206,558â€“559; config.yaml:10â€“11 | YAML only; reject those env keys |
+| Superseded floats/client/DROP plan | FUNDAMENTAL_ADDENDUM.md:20–30,46,50 | Mark superseded; use amended deterministic Decimal FA framework, default annotate |
+| Duplicated schedule homes | .env.example:73–74; config.py:115–116,205–206,558–559; config.yaml:10–11 | YAML only; reject those env keys |
 | Daily loss latches REDUCE_ONLY | system_state.py:87; risk_cro.py:134; data/boundary.py:104 | Session entry gate; next-open baseline rollover; drawdown/fault remains latched |
 | Account type defaults to CASH | config.py:164 | Require explicit account type |
-| Plaid token env/file source | liquidity.py:286â€“287 | Replace with keyring-only storage in S |
+| Plaid token env/file source | liquidity.py:286–287 | Replace with keyring-only storage in S |
 | SIP end lacks 16-minute clamp | data_layer.py:554,568 | DAT-07 in expanded D |
 | Old scanner anchor definition | scanner.py:142 | Amend exact anchor definition for playbooks in E |
 
@@ -96,7 +98,7 @@ production financial float, bare/swallowed exception, Decimal price truthiness,
 non-PK seq autoincrement or deprecated Alpaca-field read was found. No callback
 handler exists yet. `source_guard.py:53` split('_') normalizes identifiers only.
 Order strings in execution_policy/test_no_order_exec are guard declarations and
-positive controls, never executed. SentimentSignal.score (models.py:487â€“491) is
+positive controls, never executed. SentimentSignal.score (models.py:487–491) is
 an advisory sentiment field allowed by the master; no LLM caller exists. It must
 never set a playbook score or trade decision. No yfinance/WhaleAlert/Etherscan/
 LangGraph/FastAPI/frontend/genetic implementation exists.
@@ -166,8 +168,8 @@ Line references in contamination inventory above refer to the pre-fix snapshot.
 | GD-05 | core/database.py; core/ledger.py | test_research_ledger.py | Bot/storage foundation only; bot pending F |
 | GD-06 | core/ledger.py | test_research_ledger.py | Ticket storage only; secure approval/display pending F |
 | GD-07 | core/source_guard.py; core/execution_policy.py | test_no_order_exec.py | Original ban implemented; isolated I whitelist future |
-| GD-08 | â€” | â€” | Offline dry run missing |
-| GD-09 | â€” | â€” | Docker missing |
+| GD-08 | — | — | Offline dry run missing |
+| GD-09 | — | — | Docker missing |
 
 ## Amendment traceability and remaining work
 
