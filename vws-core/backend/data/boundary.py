@@ -18,7 +18,9 @@ from backend.core.errors import ConfigurationError, DataIntegrityError, StaleDat
 from backend.core.system_state import SystemState, SystemStateStore
 from backend.data.broker_state import BrokerStateProvider
 from backend.data.liquidity import LiquidityGate, validated_liquidity_settings
+from backend.data.market_calendar import MarketCalendar
 from backend.domain.models import AccountFlags, DeployableCapital, FrozenModel, PortfolioSnapshot
+from backend.risk.portfolio_marks import PersistedPortfolioMarks
 
 
 class BrokerReading(FrozenModel):
@@ -40,6 +42,7 @@ class ReadBoundary:
         liquidity: LiquidityGate,
         *,
         account_id: str,
+        marks: PersistedPortfolioMarks | None = None,
     ) -> None:
         """R-02: pin the operator's managed account rather than accepting any ID."""
         if (
@@ -54,6 +57,18 @@ class ReadBoundary:
         self.broker = broker
         self.liquidity = liquidity
         self.account_id = account_id
+        self.marks = (
+            PersistedPortfolioMarks(state.ledger, account_id, MarketCalendar(), self.config)
+            if marks is None
+            else marks
+        )
+        if (
+            not isinstance(self.marks, PersistedPortfolioMarks)
+            or self.marks.ledger.engine is not state.engine
+            or self.marks.account_id != account_id
+            or self.marks.config.config_hash != self.config.config_hash
+        ):
+            raise ConfigurationError("CRO-09/CRO-10: broker marks differ from account policy")
 
     def _fail(self, error: Exception) -> None:
         """R-02/R-07: static fault audit and typed failure even if storage is down."""
@@ -98,6 +113,7 @@ class ReadBoundary:
                 raise DataIntegrityError(
                     "R-02: broker snapshot account identity differs from policy"
                 )
+            snapshot = self.marks.observe(snapshot)
             reading = BrokerReading(snapshot=snapshot, flags=flags)
             if flags.blocked:
                 self.state.escalate(SystemState.HALTED, "CMP-06 broker account restricted")

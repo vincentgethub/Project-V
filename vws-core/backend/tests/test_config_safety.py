@@ -27,6 +27,21 @@ def isolated_settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name.upper(), raising=False)
     monkeypatch.delenv("ALPACA_API_KEY", raising=False)
     monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+    monkeypatch.setenv("BROKER_ACCOUNT_TYPE", "CASH")
+
+
+def test_R_06_broker_account_type_is_required_without_an_implicit_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-06/CMP-03: only the owner/provider supplies the account-type choice."""
+    assert Settings.model_fields["broker_account_type"].is_required()
+    monkeypatch.delenv("BROKER_ACCOUNT_TYPE")
+    with pytest.raises(ValidationError, match="broker_account_type"):
+        Settings()
+    with pytest.raises(ConfigurationError, match="configuration validation"):
+        load_settings()
+    assert Settings(broker_account_type="CASH").broker_account_type == "CASH"
+    assert Settings(broker_account_type="MARGIN").broker_account_type == "MARGIN"
 
 
 def test_R_06_paper_defaults_and_exact_endpoint() -> None:

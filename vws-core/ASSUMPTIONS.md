@@ -1,9 +1,18 @@
 # ASSUMPTIONS
 
-The newest master spec supersedes the earlier A–D blueprint and automatic
-continuation request. The current command authorizes Stage C, with Stages A and B
-already delivered. Stage D starts only after `Execute Stage D`. Order execution is permanently
-absent; orders in the ledger are local proposal/audit records.
+The master specification and Amendments 01–04 in docs/spec govern this project.
+Later amendments override conflicting earlier specifications and addenda. The
+earlier LLM fundamental addendum is superseded by deterministic Stage E rules.
+The owner authorized automatic continuation: audit/fixes → S → D → E → F → G → H
+→ J → I → K, with a report and local commit after each green stage. Required
+credentials/decisions, an unresolved gate, a STOP-class finding or a safety
+weakening stops progress. No push is authorized.
+
+Stages A–C have historical verified deliveries. The current audited baseline ran
+1,866 offline tests; audit corrections are under final verification. Stage D is
+unfinished under the amended requirements. Order execution is absent before
+Stage I; current ledger orders are local proposal/audit records. Stage I alone
+may add the specified isolated executor. Money movement remains banned everywhere.
 
 1. Financial inputs are exact decimal text, integers or Decimal. R-13 price
    boundaries specifically require positive Decimal cent prices; quantities are
@@ -39,7 +48,7 @@ absent; orders in the ledger are local proposal/audit records.
 14. Alpaca does not provide a settled-cash field in the required account contract.
     Cash-account purchases need an injected settlement ledger; absent proof means
     zero settled cash.
-15. In the preserved Stage D draft, Plaid Balance is not a standalone Link/Sandbox initialization product. Sandbox
+15. Plaid Balance is not a standalone Link/Sandbox initialization product. Sandbox
     setup uses the supported Auth entitlement to obtain an Item token; application
     runtime calls only the balance endpoint. No Auth data retrieval or funding exists.
 16. The account-schema test fixture is synthetic and follows verified current
@@ -49,19 +58,24 @@ absent; orders in the ledger are local proposal/audit records.
 Stage-specific additions and unresolved verification items are recorded with each
 delivery and in VERIFY.md.
 
-17. Settings() permits isolated offline core tests without credentials. Connected
+17. BROKER_ACCOUNT_TYPE is required with no default. Isolated tests explicitly
+    inject synthetic CASH, which is not an attestation about the owner's account.
+    Offline core tests otherwise need no connected credentials. Connected
     startup must call assert_research_ready() and/or assert_telegram_ready(). The
     model, credentials, nonempty user allowlist, and >=32-byte callback secret
     have no usable offline defaults. No model name is hard-coded.
 18. Zero LLM daily budget disables calls. Explicit verified input/output token
     rates plus assert_llm_call_budget_ready() are also required. Stage E implements
     actual calls and budget accounting; no cost is guessed.
-19. Additional source bounds resolve unspecified ceilings conservatively: setup
+19. Historical Stage A source bounds resolved unspecified ceilings: setup
     score 6..10, cooldown 1..30 sessions, LLM budget 0..1,000 USD/day, timeout 1..60
     seconds, max tokens 1..8,192. YAML is separate, frozen, exact Decimal, rejects
     risk keys/duplicates/anchors/aliases/oversize/depth >20, and requires an explicit
     instrument allowlist. Criterion weights support at most six decimal places.
     with_yaml_hash() combines the validated YAML with nonsecret environment policy.
+    Amendment 01 supersedes the historical LLM budget ceiling with 20 USD/day;
+    Stage E must enforce the amended optional-LLM configuration and accounting.
+    Schedule and alert-cooldown bounds now belong exclusively to YAML, not env.
 20. Alert.id is the stable alert ID. PENDING means not yet delivered; an append-only
     AlertEvent SENT makes the awaiting-human alert actionable. This resolves the
     spec's ambiguous requirement that a delivered alert still be called PENDING.
@@ -77,14 +91,16 @@ delivery and in VERIFY.md.
     protection from a privileged database owner.
 23. Every halt invokes a notifier. Repeated successful redacted state/reason
     messages are deduplicated for a local halt episode; failed delivery is retried.
-    Daily-loss reduction remains latched until an explicit operator reset, a
-    stricter interpretation of the spec's next-session recovery ambiguity.
+    Daily loss is a session-scoped ENTRY/ADD block through the next XNYS session
+    open, not a latched state transition. Drawdown tiers and fault HALTs remain
+    latched until explicit operator reset.
 24. The AST guard scans every authored Python file including tests/scripts/drafts;
     only execution_policy.py's banned-list constants are exempt. Generated virtual
     environments/caches/vendor dependencies are not authored repository sources.
     Builtin compile is banned; re.compile is permitted regex construction.
-25. The older Stage D draft and core/gate.py are preserved, not certified against the new master spec.
-    Minimal reflection/lint edits keep them compatible with the whole-source guard.
+25. Stage D's existing data providers, indicators and scanner form the audited
+    baseline, not completion of the amended Stage D scope. The older core/gate.py
+    remains uncertified as a human-approval boundary.
     The current Git root is Project V, so a root CI workflow mirrors the requested
     project workflow, pre-commit configuration, and .gitignore. These support
     nested or standalone project checkouts.
@@ -127,9 +143,11 @@ delivery and in VERIFY.md.
 36. MarketContext carries no symbol field in the specified contract. Stage D's
     per-symbol provider must bind its returned market data to the requested symbol.
     Stage B never fetches data or substitutes default quote/funding evidence.
-37. ProviderResult and research output contracts are present; actual providers,
-    deterministic scanners, LLM clients, scheduler and Telegram await their stages.
-    LLM contracts cannot set trade levels/qty or a CRO decision.
+37. ProviderResult and research output contracts, read-only data providers,
+    indicators and the deterministic scanner are present. Amended data additions,
+    research agents, optional LLM clients, scheduler and Telegram remain pending.
+    LLMs cannot set metrics, pass/fail status, trade levels/qty, setup score or a
+    CRO decision. The fundamental prompt is narrative-only.
 
 38. Stage C's account taxonomy attests accounts belonging to the same taxpayer.
     The supplied history must include relevant-window purchases/dispositions,
@@ -180,9 +198,18 @@ delivery and in VERIFY.md.
     tax/funding context; invalid or oversized sells do not get that exception.
     The later human gate must combine CRO/state and compliance evidence before
     authenticated fresh approval. No standalone compliance result authorizes a ticket.
-26. APScheduler 3.11.3 is the stable installed release with AsyncIOScheduler;
+47. APScheduler 3.11.3 is the stable installed release with AsyncIOScheduler;
     actual scheduling is deferred to Stage F. Full source delivery uses a local
     Markdown artifact: assumptions, SHA-256 manifest, then every file in full.
-27. SQLite recursive triggers are explicitly enabled to prevent REPLACE from
+48. SQLite recursive triggers are explicitly enabled to prevent REPLACE from
     deleting/replacing protected rows. State-control projections are verified
     against immutable events during live reads/transitions, not only at startup.
+49. Stage E fundamentals use exact Decimal ratios and cash flow. All five strict
+    thresholds must pass: gross margin >0.40, operating margin >0.15, ROIC >0.10,
+    FCF >0, interest coverage >3. Missing evidence is not a pass; ETFs, cash
+    equivalents and configured exempt sectors have explicit applicability status.
+    Code computes the report; an optional LLM only describes it.
+50. scan_interval_minutes, offhours_interval_minutes,
+    scheduler_misfire_grace_seconds, daily_bar_sip_lag_seconds and
+    alert_cooldown_sessions have one YAML home. Startup rejects these keys in
+    process env, explicitly loaded dotenv or Settings, even at equal values.

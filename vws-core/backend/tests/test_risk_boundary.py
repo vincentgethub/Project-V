@@ -36,6 +36,7 @@ from backend.domain.models import (
     Verdict,
 )
 from backend.risk.boundary import LoggingVetoSink, RiskBoundary, VetoSink
+from backend.risk.portfolio_marks import PersistedPortfolioMarks
 from backend.risk.risk_cro import ChiefRiskOfficer
 
 NOW = datetime(2026, 10, 2, 16, tzinfo=UTC)
@@ -86,7 +87,9 @@ def boundary_cro() -> ChiefRiskOfficer:
         tradable=True,
     )
     return ChiefRiskOfficer(
-        Settings(),
+        Settings(
+            broker_account_type="CASH",
+        ),
         InstrumentRegistry((instrument,)),
         MarketCalendar(start=date(2025, 1, 1), end=date(2027, 12, 31)),
     )
@@ -425,4 +428,98 @@ def test_R_02_fault_logger_failure_still_halts(
     monkeypatch.setattr(logging.getLogger("backend.risk.boundary"), "error", fail)
     with pytest.raises(DataIntegrityError, match="latched HALTED"):
         gate.evaluate(trade(), book(), quote())
+    assert gate.state.current() == SystemState.HALTED
+
+
+def test_CRO_10_session_breach_and_recovery_veto_without_state_latch(
+    engine: Engine, boundary_cro: ChiefRiskOfficer
+) -> None:
+    gate = boundary(engine, boundary_cro)
+    gate.marks = PersistedPortfolioMarks(
+        gate.state.ledger, "boundary-paper", boundary_cro.calendar, boundary_cro.config
+    )
+    assert (
+        gate.evaluate(trade(), book(), quote(), deployable=capital()).decision == Decision.APPROVED
+    )
+    loss = book(equity="9800", held=True).model_copy(update={"day_start_equity": Decimal("10000")})
+    result = gate.evaluate(trade(), loss, quote(), deployable=capital())
+    assert result.decision == Decision.VETOED
+    assert next(row for row in result.results if row.rule_id == "CRO-10").passed is False
+    assert gate.state.current() == SystemState.RUNNING
+    restarted = RiskBoundary(
+        boundary_cro,
+        SystemStateStore(engine, gate.clock, NoticeRecorder()),
+        gate.clock,
+        marks=PersistedPortfolioMarks(
+            gate.state.ledger, "boundary-paper", boundary_cro.calendar, boundary_cro.config
+        ),
+    )
+    assert (
+        restarted.evaluate(trade(), book(), quote(), deployable=capital()).decision
+        == Decision.VETOED
+    )
+    assert (
+        restarted.evaluate(trade(exit_=True), book(held=True), None).decision == Decision.APPROVED
+    )
+    assert restarted.state.current() == SystemState.RUNNING
+    next_open = boundary_cro.calendar.session_open(date(2026, 10, 5))
+    next_clock = FrozenClock(next_open)
+    restarted.clock = next_clock
+    restarted.state.clock = next_clock
+    restarted.state.ledger.clock = next_clock
+    assert restarted.marks is not None
+    restarted.marks.ledger.clock = next_clock
+    next_trade = trade().model_copy(
+        update={"created_at": next_open, "expires_at": next_open + timedelta(hours=1)}
+    )
+    next_book = book(equity="9800").model_copy(update={"as_of": next_open})
+    next_quote = quote().model_copy(update={"last_price_ts": next_open})
+    result = restarted.evaluate(next_trade, next_book, next_quote, deployable=capital())
+    assert result.decision == Decision.APPROVED
+    assert result.recommended_state == SystemState.RUNNING
+    assert restarted.state.current() == SystemState.RUNNING
+
+
+@pytest.mark.parametrize("fault", ["policy", "database"])
+def test_R_02_CRO_10_persisted_marks_must_share_risk_policy_and_ledger(
+    engine: Engine, boundary_cro: ChiefRiskOfficer, fault: str
+) -> None:
+    from backend.core.database import create_database
+    from backend.core.ledger import Ledger
+
+    other = create_database("sqlite://")
+    gate = boundary(engine, boundary_cro)
+    config = (
+        boundary_cro.config.model_copy(update={"daily_loss_limit": Decimal("0.03")})
+        if fault == "policy"
+        else boundary_cro.config
+    )
+    marks = PersistedPortfolioMarks(
+        Ledger(other if fault == "database" else engine, gate.clock),
+        "boundary-paper",
+        boundary_cro.calendar,
+        config,
+    )
+    try:
+        with pytest.raises(DataIntegrityError):
+            RiskBoundary(boundary_cro, gate.state, gate.clock, marks=marks)
+    finally:
+        other.dispose()
+
+
+def test_R_02_CRO_10_forged_approval_cannot_hide_persisted_session_breach(
+    engine: Engine, boundary_cro: ChiefRiskOfficer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cro = ChiefRiskOfficer(boundary_cro.config, boundary_cro.registry, boundary_cro.calendar)
+    gate = boundary(engine, cro)
+    gate.marks = PersistedPortfolioMarks(
+        gate.state.ledger, "boundary-paper", cro.calendar, cro.config
+    )
+    gate.marks.observe(
+        book(equity="9800").model_copy(update={"day_start_equity": Decimal("10000")})
+    )
+    forged = cro.evaluate(trade(), book(), quote(), SystemState.RUNNING, NOW, deployable=capital())
+    monkeypatch.setattr(cro, "evaluate", lambda *args, **kwargs: forged)
+    with pytest.raises(DataIntegrityError, match="latched HALTED"):
+        gate.evaluate(trade(), book(), quote(), deployable=capital())
     assert gate.state.current() == SystemState.HALTED

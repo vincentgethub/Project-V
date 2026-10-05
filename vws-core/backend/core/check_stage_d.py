@@ -11,6 +11,7 @@ from backend.core.errors import ConfigurationError
 TYPE_FILES = (
     *STAGE_C_TYPE_FILES,
     "backend/core/check_stage_d.py",
+    "backend/risk/portfolio_marks.py",
     "backend/data/data_layer.py",
     "backend/data/broker_state.py",
     "backend/data/liquidity.py",
@@ -25,6 +26,11 @@ TYPE_FILES = (
     "backend/tests/test_read_boundary.py",
     "backend/tests/test_indicators.py",
     "backend/tests/test_scanner.py",
+    "backend/tests/test_portfolio_marks.py",
+    "backend/tests/test_progress.py",
+    "vws/__init__.py",
+    "vws/__main__.py",
+    "vws/progress.py",
 )
 
 

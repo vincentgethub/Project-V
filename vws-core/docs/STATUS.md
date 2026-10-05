@@ -1,20 +1,20 @@
 # Technical status
 
-Audit date: 2026-10-04 America/Chicago. Source snapshot is the initial working
-tree before audit fixes. Amendments 01–04 supersede conflicts in the master and
-earlier addenda. Execution order: audit/fixes → S → D → E → F → G → H → J → I → K.
+Audit date: 2026-10-04 America/Chicago. The initial audit results below describe the pre-fix working
+tree. The audit-fixes gate below certifies the current implementation. Amendments 01â€“04 supersede conflicts in the master and
+earlier addenda. Execution order: audit/fixes â†’ S â†’ D â†’ E â†’ F â†’ G â†’ H â†’ J â†’ I â†’ K.
 Optional ideas require plain-words approval and live only in PROGRESS Suggestions.
 
 ## Stage inventory
 
 | Stage | Existing deliverable | Current amended status |
 | --- | --- | --- |
-| A | core config/money/clock/logging/database/ledger/state/guard; XNYS calendar; Stage_A.md | Original stage certified; audit corrections pending |
-| B | frozen contracts, registry, CRO, risk boundary; Stage_B.md | Original certified; daily-loss correction pending |
+| A | core config/money/clock/logging/database/ledger/state/guard; XNYS calendar; Stage_A.md | Original stage certified; configuration/guard corrections certified |
+| B | frozen contracts, registry, CRO, risk boundary; Stage_B.md | Original certified; session daily-loss correction certified |
 | C | compliance, wash matching, tax models, compliance boundary; Stage_C.md | Original certified; shared tax-core move reserved for J |
 | D | data_layer/broker_state/liquidity/read boundary; indicators/scanner; Sandbox helper; six test modules | Original source tests pass; no final D delivery; DAT-05..12 missing |
 | S | SecretStr, redaction, append-only chains and source bans are foundations | New security stage not implemented |
-| E–K | Configuration/storage foundations only | Agents/swarm/bot/evaluation/ops/funding/P&L/tax/auto/extras not implemented |
+| Eâ€“K | Configuration/storage foundations only | Agents/swarm/bot/evaluation/ops/funding/P&L/tax/auto/extras not implemented |
 
 64 authored Python files: 39 production/script files and 25 test-package files.
 588 test function declarations; parametrized execution count is 1,866.
@@ -41,6 +41,37 @@ exclusion and scanned dependency/cache/test files. Its corrected scan was rerun
 and returned zero authored-source findings. Neither noisy scan is reported PASS.
 The correct shell exclusion is `(^|[\\/])(\.venv|backend[\\/]tests|deliveries|\.git|\.mypy_cache|\.pytest_cache|\.ruff_cache|\.hypothesis|__pycache__|mutants|build|dist)[\\/]`.
 
+## Audit fixes gate
+
+Final whole-suite gate: **2,167 passed**, one upstream SDK deprecation warning,
+240.36 seconds. All risk modules, tax contracts and durable state: **100%** of
+1,238 statements and 400 branches. Ruff lint/format (78 files), strict mypy
+(70 authored sources), execution guard, explicit production Bandit, pip check,
+pip-audit (109 unchanged exact pins), source secrets scan (0 findings), and all
+five actual Git-root pre-commit hooks passed. Gitleaks 8.30.1 scanned the full
+one-commit history, 2.11 MB, with no leaks; rerun after the audit-fixes commit.
+The current authored inventory is 70 Python files: 43 production/script and
+27 test-package files, with 631 test-function declarations.
+
+Resolved: explicit broker account type; five YAML-only schedule/cooldown keys
+with wrong-home rejection; ten removed-field guard positive controls; extended
+crypto-wallet/money-movement bans; narrative-only fundamental prompt; and
+session daily-loss persistence. `risk/portfolio_marks.py` plus
+`test_portfolio_marks.py` bind observations and immutable breach evidence to
+account/session/source seq/stored limit/config hash. A breach survives recovery,
+restart and threshold changes until the next XNYS open. `data/boundary.py`
+records every valid broker read, and `risk/boundary.py` uses that evidence.
+Drawdown/fault states still latch; held exits bypass the daily entry block.
+
+`vws/progress.py`/`test_progress.py` provide the bounded progress command and
+private-chat subset. CI enforces progress changes alongside code; the Telegram
+command remains pending F. The page has 43 lines; AGENTS.md has 66.
+Verbatim specification and historical-delivery bytes are protected by Git
+attributes. An accidentally tracked generated coverage report is removed from
+the index; coverage outputs are ignored. No ledger rows or history were deleted.
+A collection-time synthetic Settings fixture needed explicit CASH after the
+required-field correction; it was fixed before the complete gate rerun.
+
 ## Contamination and STOP audit
 
 No reachable submit/replace/cancel/close/transfer/bank-link/crypto-wallet calls
@@ -51,11 +82,11 @@ triggers transactionally; incompatible schemas fail at lines 701/711.
 | Finding | Location before fixes | Required action |
 | --- | --- | --- |
 | LLM fundamental boolean verdicts | prompts/fundamental_analyst.md:34,39,41,56,60 | Replace unused prompt with narrative-only role |
-| Superseded floats/client/DROP plan | FUNDAMENTAL_ADDENDUM.md:20–30,46,50 | Mark superseded; use amended deterministic Decimal FA framework, default annotate |
-| Duplicated schedule homes | .env.example:73–74; config.py:115–116,205–206,558–559; config.yaml:10–11 | YAML only; reject those env keys |
+| Superseded floats/client/DROP plan | FUNDAMENTAL_ADDENDUM.md:20â€“30,46,50 | Mark superseded; use amended deterministic Decimal FA framework, default annotate |
+| Duplicated schedule homes | .env.example:73â€“74; config.py:115â€“116,205â€“206,558â€“559; config.yaml:10â€“11 | YAML only; reject those env keys |
 | Daily loss latches REDUCE_ONLY | system_state.py:87; risk_cro.py:134; data/boundary.py:104 | Session entry gate; next-open baseline rollover; drawdown/fault remains latched |
 | Account type defaults to CASH | config.py:164 | Require explicit account type |
-| Plaid token env/file source | liquidity.py:286–287 | Replace with keyring-only storage in S |
+| Plaid token env/file source | liquidity.py:286â€“287 | Replace with keyring-only storage in S |
 | SIP end lacks 16-minute clamp | data_layer.py:554,568 | DAT-07 in expanded D |
 | Old scanner anchor definition | scanner.py:142 | Amend exact anchor definition for playbooks in E |
 
@@ -65,7 +96,7 @@ production financial float, bare/swallowed exception, Decimal price truthiness,
 non-PK seq autoincrement or deprecated Alpaca-field read was found. No callback
 handler exists yet. `source_guard.py:53` split('_') normalizes identifiers only.
 Order strings in execution_policy/test_no_order_exec are guard declarations and
-positive controls, never executed. SentimentSignal.score (models.py:487–491) is
+positive controls, never executed. SentimentSignal.score (models.py:487â€“491) is
 an advisory sentiment field allowed by the master; no LLM caller exists. It must
 never set a playbook score or trade decision. No yfinance/WhaleAlert/Etherscan/
 LangGraph/FastAPI/frontend/genetic implementation exists.
@@ -113,7 +144,7 @@ Line references in contamination inventory above refer to the pre-fix snapshot.
 | CRO-07 | risk/risk_cro.py | test_risk_cro.py | Implemented |
 | CRO-08 | risk/risk_cro.py | test_risk_cro.py | Implemented |
 | CRO-09 | core/system_state.py; core/ledger.py; risk/risk_cro.py | test_system_state.py; test_ledger.py; test_risk_cro.py | Implemented |
-| CRO-10 | risk/risk_cro.py; core/system_state.py | test_risk_cro.py; test_system_state.py | Audit correction required |
+| CRO-10 | risk/risk_cro.py; risk/portfolio_marks.py; data/boundary.py | test_risk_cro.py; test_portfolio_marks.py; test_read_boundary.py | Session block corrected and certified |
 | CRO-11 | risk/risk_cro.py; domain/models.py | test_risk_cro.py | Implemented; macro loader pending K |
 | CRO-12 | data/liquidity.py; risk/risk_cro.py | test_liquidity.py; test_risk_cro.py | Implemented |
 | CRO-13 | risk/risk_cro.py | test_risk_cro.py; test_stage_b_adversarial.py | Known/unknown only; estimated earnings pending D |
@@ -135,8 +166,8 @@ Line references in contamination inventory above refer to the pre-fix snapshot.
 | GD-05 | core/database.py; core/ledger.py | test_research_ledger.py | Bot/storage foundation only; bot pending F |
 | GD-06 | core/ledger.py | test_research_ledger.py | Ticket storage only; secure approval/display pending F |
 | GD-07 | core/source_guard.py; core/execution_policy.py | test_no_order_exec.py | Original ban implemented; isolated I whitelist future |
-| GD-08 | — | — | Offline dry run missing |
-| GD-09 | — | — | Docker missing |
+| GD-08 | â€” | â€” | Offline dry run missing |
+| GD-09 | â€” | â€” | Docker missing |
 
 ## Amendment traceability and remaining work
 
@@ -152,8 +183,8 @@ pending H, except existing chain/schema/logging foundations. AX-01..06,10..16,
 money ban, record_cash_flow and Stage C tax matching are foundations. XK-01..10
 pending K except keyring/drill dependencies that earlier security/ops stages need.
 SEC-01..75 pending S/H/L according to placement; existing SecretStr, redaction,
-hash chains and AST bans are foundations. PG-01..04 documentation starts now;
-PG-05 CLI pending audit fixes, Telegram pending F. WZ-01..10 wizard pending H.
+hash chains and AST bans are foundations. PG-01..04 page/CI checks implemented;
+PG-05 CLI implemented and tested, Telegram pending F. WZ-01..10 wizard pending H.
 
 ## Owner choices and unverified checks
 

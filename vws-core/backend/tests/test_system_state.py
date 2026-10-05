@@ -73,7 +73,17 @@ def test_CRO_01_R_09_state_gate(state: SystemState, intent: str, source: str) ->
 def test_CRO_09_CRO_10_exact_boundaries(
     equity: str, hwm: str, start: str, expected: SystemState
 ) -> None:
-    assert financial_state(Decimal(equity), Decimal(hwm), Decimal(start), Settings()) == expected
+    assert (
+        financial_state(
+            Decimal(equity),
+            Decimal(hwm),
+            Decimal(start),
+            Settings(
+                broker_account_type="CASH",
+            ),
+        )
+        == expected
+    )
 
 
 def test_CRO_01_R_02_latch_restart_reset(engine: Engine, clock: FrozenClock) -> None:
@@ -115,11 +125,25 @@ def test_R_02_notifications_after_durable_halt(engine: Engine, clock: FrozenCloc
 def test_CRO_09_CRO_10_apply_tiers(engine: Engine, clock: FrozenClock) -> None:
     store = SystemStateStore(engine, clock, RecordingNotifier())
     assert (
-        store.apply_financial_limits(Decimal(98), Decimal(100), Decimal(100), Settings())
+        store.apply_financial_limits(
+            Decimal(98),
+            Decimal(100),
+            Decimal(100),
+            Settings(
+                broker_account_type="CASH",
+            ),
+        )
         == SystemState.RUNNING
     )
     with pytest.raises(DataIntegrityError):
-        store.apply_financial_limits(Decimal("NaN"), Decimal(100), Decimal(100), Settings())
+        store.apply_financial_limits(
+            Decimal("NaN"),
+            Decimal(100),
+            Decimal(100),
+            Settings(
+                broker_account_type="CASH",
+            ),
+        )
     assert store.current() == SystemState.HALTED
 
 
@@ -236,7 +260,9 @@ def test_R_02_emergency_latch_survives_successful_read(
 
 
 def test_CRO_09_R_04_low_precision_cannot_mask_boundaries() -> None:
-    config = Settings()
+    config = Settings(
+        broker_account_type="CASH",
+    )
     with localcontext() as context:
         context.prec = 2
         assert (
@@ -255,7 +281,14 @@ def test_R_02_R_04_financial_input_fault_halts(
 ) -> None:
     store = SystemStateStore(engine, clock, RecordingNotifier())
     with pytest.raises(DataIntegrityError):
-        store.apply_financial_limits(bad, Decimal("100"), Decimal("100"), Settings())
+        store.apply_financial_limits(
+            bad,
+            Decimal("100"),
+            Decimal("100"),
+            Settings(
+                broker_account_type="CASH",
+            ),
+        )
     assert store.current() == SystemState.HALTED
 
 
@@ -279,7 +312,14 @@ def test_R_02_unexpected_financial_fault_is_typed_and_halts(
     store = SystemStateStore(engine, clock, RecordingNotifier())
     monkeypatch.setattr(state_module, "financial_state", broken)
     with pytest.raises(DataIntegrityError):
-        store.apply_financial_limits(Decimal("100"), Decimal("100"), Decimal("100"), Settings())
+        store.apply_financial_limits(
+            Decimal("100"),
+            Decimal("100"),
+            Decimal("100"),
+            Settings(
+                broker_account_type="CASH",
+            ),
+        )
     assert store.current() == SystemState.HALTED
 
 

@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 4, 2026 — Step 0 audit
+Last updated: October 4, 2026 - audit fixes
 
 ## Where things stand
 The safety rules, ledger and offline data tests work. The alert service is not
@@ -9,10 +9,11 @@ ready yet. Automatic trading has not been built.
 From the vws-core folder in PowerShell:
 - Run the offline checks: `.venv\Scripts\python.exe -m pytest -q`
 - Check the trading-code ban: `.venv\Scripts\python.exe -m backend.core.source_guard .`
+- Read this page in the terminal: `.venv\Scripts\python.exe -m vws progress`
 
 ## What's being built next
-Audit fixes, then security protections, then the expanded data stage.
-These prepare reliable data for the alert service.
+The audit fixes passed. Security protections come next, then the expanded data stage.
+Daily losses now block new entries until the next market opening.
 
 ## Waiting on you
 No answer is needed for the current offline work. Later setup will need:

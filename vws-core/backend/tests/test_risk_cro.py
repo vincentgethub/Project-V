@@ -153,7 +153,13 @@ def test_CRO_01_to_12_R_03_approval_is_complete_exact_and_deterministic(
     clock: FrozenClock,
     risk_calendar: MarketCalendar,
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     proposal, snapshot, market = _proposal(clock), _snapshot(clock), _market(clock)
     first = cro.evaluate(
         proposal, snapshot, market, SystemState.RUNNING, clock.now(), deployable=_capital()
@@ -197,7 +203,13 @@ def test_CRO_01_R_09_state_gate_and_manual_escape(
     snapshot = _snapshot(
         clock, positions={"AAPL": _position(1)} if intent in {Intent.EXIT, Intent.REDUCE} else {}
     )
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     verdict = cro.evaluate(
         proposal, snapshot, _market(clock), state, clock.now(), deployable=_capital()
     )
@@ -210,7 +222,13 @@ def test_CRO_02_R_09_exit_ignores_missing_market_unknown_instrument_and_all_othe
     clock: FrozenClock,
     risk_calendar: MarketCalendar,
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     proposal = _proposal(
         clock,
         symbol="UNKNOWN",
@@ -235,7 +253,13 @@ def test_CRO_02_R_09_exit_ignores_missing_market_unknown_instrument_and_all_othe
 def test_CRO_02_R_02_entry_missing_market_vetoes(
     clock: FrozenClock, risk_calendar: MarketCalendar
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     verdict = cro.evaluate(
         _proposal(clock),
         _snapshot(clock),
@@ -269,9 +293,13 @@ def test_CRO_02_R_01_held_share_boundary_and_pending_sell_reservations(
         clock, positions={"AAPL": _position(held)} if held else {}, open_orders=pending
     )
     proposal = _proposal(clock, side=Side.SELL, intent=Intent.REDUCE, stop_price=None, qty=qty)
-    verdict = ChiefRiskOfficer(Settings(), _registry(), risk_calendar).evaluate(
-        proposal, snapshot, _market(clock), SystemState.RUNNING, clock.now()
-    )
+    verdict = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    ).evaluate(proposal, snapshot, _market(clock), SystemState.RUNNING, clock.now())
     assert verdict.results[1].passed == passed
 
 
@@ -295,7 +323,13 @@ def test_CRO_02_R_02_defensive_shape_veto_even_if_model_validation_bypassed(
     changes: dict[str, Any],
 ) -> None:
     proposal = _proposal(clock).model_copy(update=changes)
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     verdict = cro.evaluate(
         proposal,
         _snapshot(clock),
@@ -315,14 +349,30 @@ def test_CRO_02_R_01_instrument_safety(
     clock: FrozenClock, risk_calendar: MarketCalendar, metadata: dict[str, Any]
 ) -> None:
     registry = InstrumentRegistry((_instrument("AAPL", **metadata),))
-    assert not _rule(ChiefRiskOfficer(Settings(), registry, risk_calendar), clock, "CRO-02").passed
+    assert not _rule(
+        ChiefRiskOfficer(
+            Settings(
+                broker_account_type="CASH",
+            ),
+            registry,
+            risk_calendar,
+        ),
+        clock,
+        "CRO-02",
+    ).passed
 
 
 def test_CRO_02_R_02_unknown_suspect_future_snapshot_nonpositive_equity(
     clock: FrozenClock,
     risk_calendar: MarketCalendar,
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     for proposal, snapshot, market in (
         (_proposal(clock, symbol="UNKNOWN"), _snapshot(clock), _market(clock)),
         (_proposal(clock), _snapshot(clock), _market(clock, status=MarketStatus.SUSPECT)),
@@ -362,7 +412,13 @@ def test_CRO_03_single_stock_exact_boundary_and_one_share(
     )
     qty = int(equity * Decimal("0.10") / Decimal("100")) + extra
     result = _rule(
-        ChiefRiskOfficer(Settings(), _registry(), risk_calendar),
+        ChiefRiskOfficer(
+            Settings(
+                broker_account_type="CASH",
+            ),
+            _registry(),
+            risk_calendar,
+        ),
         clock,
         "CRO-03",
         proposal=_proposal(clock, qty=qty),
@@ -375,7 +431,11 @@ def test_CRO_03_pending_buy_counts_and_ETF_cap(
     clock: FrozenClock, risk_calendar: MarketCalendar
 ) -> None:
     cro = ChiefRiskOfficer(
-        Settings(), _registry(_instrument("SPY", asset_class=AssetClass.BROAD_ETF)), risk_calendar
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(_instrument("SPY", asset_class=AssetClass.BROAD_ETF)),
+        risk_calendar,
     )
     assert _rule(cro, clock, "CRO-03", proposal=_proposal(clock, symbol="SPY", qty=40)).passed
     assert not _rule(cro, clock, "CRO-03", proposal=_proposal(clock, symbol="SPY", qty=41)).passed
@@ -405,7 +465,13 @@ def test_CRO_04_exact_risk_budget_and_one_cent_over(
         clock, equity=equity, cash=equity, high_water_mark=equity, day_start_equity=equity
     )
     qty = int(equity / Decimal("1000"))
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     assert _rule(
         cro,
         clock,
@@ -423,7 +489,13 @@ def test_CRO_04_exact_risk_budget_and_one_cent_over(
 def test_CRO_04_ADD_includes_existing_last_to_new_stop(
     clock: FrozenClock, risk_calendar: MarketCalendar
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     snapshot = _snapshot(clock, positions={"AAPL": _position(20)})
     assert not _rule(
         cro, clock, "CRO-04", proposal=_proposal(clock, intent=Intent.ADD), snapshot=snapshot
@@ -439,7 +511,13 @@ def test_CRO_04_ADD_includes_existing_last_to_new_stop(
 def test_CRO_05_sector_cap_boundary(
     clock: FrozenClock, risk_calendar: MarketCalendar, existing: int, passed: bool
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     assert (
         _rule(
             cro, clock, "CRO-05", snapshot=_snapshot(clock, positions={"MSFT": _position(existing)})
@@ -454,7 +532,13 @@ def test_CRO_05_themes_unknown_sectors_and_ETF_lookthrough(
     themes = InstrumentRegistry(
         (_instrument("AAPL", themes=("AI_SEMIS",)), _instrument("MSFT", themes=("AI_SEMIS",)))
     )
-    cro = ChiefRiskOfficer(Settings(), themes, risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        themes,
+        risk_calendar,
+    )
     assert _rule(
         cro, clock, "CRO-05", snapshot=_snapshot(clock, positions={"MSFT": _position(24)})
     ).passed
@@ -462,15 +546,25 @@ def test_CRO_05_themes_unknown_sectors_and_ETF_lookthrough(
         cro, clock, "CRO-05", snapshot=_snapshot(clock, positions={"MSFT": _position(25)})
     ).passed
     unknown_theme = ChiefRiskOfficer(
-        Settings(), InstrumentRegistry((_instrument("AAPL", themes=("UNLISTED",)),)), risk_calendar
+        Settings(
+            broker_account_type="CASH",
+        ),
+        InstrumentRegistry((_instrument("AAPL", themes=("UNLISTED",)),)),
+        risk_calendar,
     )
     assert not _rule(unknown_theme, clock, "CRO-05").passed
     unknown_sector = ChiefRiskOfficer(
-        Settings(), InstrumentRegistry((_instrument("AAPL", gics_sector="UNKNOWN"),)), risk_calendar
+        Settings(
+            broker_account_type="CASH",
+        ),
+        InstrumentRegistry((_instrument("AAPL", gics_sector="UNKNOWN"),)),
+        risk_calendar,
     )
     assert not _rule(unknown_sector, clock, "CRO-05").passed
     financials = ChiefRiskOfficer(
-        Settings(),
+        Settings(
+            broker_account_type="CASH",
+        ),
         InstrumentRegistry((_instrument("AAPL", gics_sector="Financials"),)),
         risk_calendar,
     )
@@ -481,7 +575,13 @@ def test_CRO_05_themes_unknown_sectors_and_ETF_lookthrough(
             "SPY": {"Information Technology": Decimal("0.5"), "Financials": Decimal("0.5")}
         },
     )
-    lookthrough = ChiefRiskOfficer(Settings(), registry, risk_calendar)
+    lookthrough = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry,
+        risk_calendar,
+    )
     snapshot = _snapshot(clock, positions={"AAPL": _position(20)})
     assert _rule(
         lookthrough,
@@ -503,7 +603,11 @@ def test_CRO_05_themes_unknown_sectors_and_ETF_lookthrough(
 def test_CRO_06_gross_boundary(
     clock: FrozenClock, risk_calendar: MarketCalendar, existing: int, passed: bool
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(max_gross_exposure=Decimal("0.50")), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(broker_account_type="CASH", max_gross_exposure=Decimal("0.50")),
+        _registry(),
+        risk_calendar,
+    )
     assert (
         _rule(
             cro, clock, "CRO-06", snapshot=_snapshot(clock, positions={"MSFT": _position(existing)})
@@ -518,7 +622,13 @@ def test_CRO_06_gross_boundary(
 def test_CRO_06_cash_buffer_pending_notional_boundary(
     clock: FrozenClock, risk_calendar: MarketCalendar, cash: Decimal, passed: bool
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     snapshot = _snapshot(
         clock,
         cash=cash,
@@ -530,7 +640,9 @@ def test_CRO_06_cash_buffer_pending_notional_boundary(
 def test_CRO_06_position_count_boundary_and_zero_holdings(
     clock: FrozenClock, risk_calendar: MarketCalendar
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(max_open_positions=2), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(broker_account_type="CASH", max_open_positions=2), _registry(), risk_calendar
+    )
     assert _rule(
         cro,
         clock,
@@ -557,7 +669,13 @@ def test_CRO_06_position_count_boundary_and_zero_holdings(
 def test_CRO_07_price_collar_exact_and_cent_boundary(
     clock: FrozenClock, risk_calendar: MarketCalendar, limit: Decimal, passed: bool
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     assert (
         _rule(cro, clock, "CRO-07", proposal=_proposal(clock, limit_price=limit)).passed == passed
     )
@@ -567,7 +685,13 @@ def test_CRO_07_price_collar_exact_and_cent_boundary(
 def test_CRO_07_quote_age_boundary_and_future(
     clock: FrozenClock, risk_calendar: MarketCalendar, seconds: int, passed: bool
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     assert (
         _rule(
             cro,
@@ -585,7 +709,13 @@ def test_CRO_07_quote_age_boundary_and_future(
 def test_CRO_07_minimum_price_boundary(
     clock: FrozenClock, risk_calendar: MarketCalendar, price: Decimal, passed: bool
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     assert (
         _rule(
             cro,
@@ -603,7 +733,13 @@ def test_CRO_07_DAT_01_weekend_quote_uses_last_close(
 ) -> None:
     weekend = FrozenClock(datetime(2026, 10, 4, 15, 0, tzinfo=UTC))
     close = risk_calendar.session_close(date(2026, 10, 2))
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     assert _rule(cro, weekend, "CRO-07", market=_market(weekend, last_price_ts=close)).passed
     assert not _rule(
         cro, weekend, "CRO-07", market=_market(weekend, last_price_ts=close - timedelta(seconds=61))
@@ -622,7 +758,13 @@ def test_CRO_07_DAT_01_weekend_quote_uses_last_close(
 def test_CRO_08_ADV_exact_boundary(
     clock: FrozenClock, risk_calendar: MarketCalendar, adv: Decimal, passed: bool
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     assert _rule(cro, clock, "CRO-08", market=_market(clock, adv20_usd=adv)).passed == passed
 
 
@@ -638,7 +780,13 @@ def test_CRO_08_ADV_exact_boundary(
 def test_CRO_09_drawdown_inclusive_tiers(
     clock: FrozenClock, risk_calendar: MarketCalendar, equity: Decimal, passed: bool
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     assert _rule(cro, clock, "CRO-09", snapshot=_snapshot(clock, equity=equity)).passed == passed
 
 
@@ -649,14 +797,96 @@ def test_CRO_09_drawdown_inclusive_tiers(
 def test_CRO_10_daily_loss_inclusive_boundary(
     clock: FrozenClock, risk_calendar: MarketCalendar, equity: Decimal, passed: bool
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     assert _rule(cro, clock, "CRO-10", snapshot=_snapshot(clock, equity=equity)).passed == passed
+
+
+def test_CRO_10_explicit_session_block_survives_recovery_and_never_blocks_exit(
+    clock: FrozenClock,
+    risk_calendar: MarketCalendar,
+) -> None:
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
+    entry = cro.evaluate(
+        _proposal(clock),
+        _snapshot(clock),
+        _market(clock),
+        SystemState.RUNNING,
+        clock.now(),
+        deployable=_capital(),
+        daily_loss_blocked=True,
+    )
+    assert entry.decision == Decision.VETOED
+    assert entry.recommended_state == SystemState.RUNNING
+    assert not next(row for row in entry.results if row.rule_id == "CRO-10").passed
+    sold = cro.evaluate(
+        _proposal(clock, side=Side.SELL, intent=Intent.EXIT, stop_price=None),
+        _snapshot(clock, positions={"AAPL": _position(1)}),
+        None,
+        SystemState.RUNNING,
+        clock.now(),
+        daily_loss_blocked=True,
+    )
+    assert sold.decision == Decision.APPROVED
+    batch = cro.evaluate_batch(
+        (_proposal(clock),),
+        _snapshot(clock),
+        {"AAPL": _market(clock)},
+        SystemState.RUNNING,
+        clock.now(),
+        deployable=_capital(),
+        daily_loss_blocked=True,
+    )
+    assert batch[0].decision == Decision.VETOED
+    assert batch[0].recommended_state == SystemState.RUNNING
+
+
+@pytest.mark.parametrize("bad", [None, 0, "false"])
+def test_R_02_CRO_10_session_block_evidence_is_strict_boolean(
+    clock: FrozenClock,
+    risk_calendar: MarketCalendar,
+    bad: Any,
+) -> None:
+    result = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    ).evaluate(
+        _proposal(clock),
+        _snapshot(clock),
+        _market(clock),
+        SystemState.RUNNING,
+        clock.now(),
+        deployable=_capital(),
+        daily_loss_blocked=bad,
+    )
+    assert result.decision == Decision.VETOED
+    assert result.recommended_state == SystemState.HALTED
 
 
 def test_CRO_09_CRO_10_first_baselines_zero_and_nonpositive_equity(
     clock: FrozenClock, risk_calendar: MarketCalendar
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     fresh = _snapshot(clock, high_water_mark=Decimal(0), day_start_equity=Decimal(0))
     assert not _rule(cro, clock, "CRO-09", snapshot=fresh).passed
     assert not _rule(cro, clock, "CRO-10", snapshot=fresh).passed
@@ -687,11 +917,22 @@ def test_CRO_11_blackout_start_end_and_symbol_boundaries(
         reason="fixture",
     )
     registry = _registry(blackout_windows=(window,))
-    cro = ChiefRiskOfficer(Settings(), registry, risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry,
+        risk_calendar,
+    )
     assert _rule(cro, clock, "CRO-11").passed == passed
     if offset == -1:
         explicit = ChiefRiskOfficer(
-            Settings(), _registry(), risk_calendar, blackout_windows=(window,)
+            Settings(
+                broker_account_type="CASH",
+            ),
+            _registry(),
+            risk_calendar,
+            blackout_windows=(window,),
         )
         assert not _rule(explicit, clock, "CRO-11").passed
 
@@ -700,7 +941,13 @@ def test_CRO_11_blackout_start_end_and_symbol_boundaries(
 def test_CRO_12_funding_all_statuses(
     clock: FrozenClock, risk_calendar: MarketCalendar, status: CapitalStatus
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     verdict = cro.evaluate(
         _proposal(clock),
         _snapshot(clock),
@@ -721,7 +968,13 @@ def test_CRO_12_funding_all_statuses(
 def test_CRO_02_R_02_faults_produce_veto_or_typed_error(
     clock: FrozenClock, risk_calendar: MarketCalendar, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
 
     def broken_calendar(now: datetime) -> bool:
         raise RuntimeError("injected calendar fault")
@@ -761,7 +1014,13 @@ def test_CRO_02_R_02_faults_produce_veto_or_typed_error(
 def test_CRO_03_to_08_max_qty_is_largest_whole_share(
     clock: FrozenClock, risk_calendar: MarketCalendar, equity: Decimal
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     snapshot = _snapshot(
         clock, equity=equity, cash=equity, high_water_mark=equity, day_start_equity=equity
     )
@@ -791,7 +1050,13 @@ def test_CRO_03_to_08_max_qty_is_largest_whole_share(
 def test_CRO_03_to_08_sizing_fail_closed_and_sell_zero(
     clock: FrozenClock, risk_calendar: MarketCalendar
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     exit_proposal = _proposal(clock, side=Side.SELL, intent=Intent.EXIT, stop_price=None)
     assert cro.max_allowed_qty(exit_proposal, _snapshot(clock), _market(clock), clock.now()) == 0
     assert (
@@ -822,7 +1087,13 @@ def test_CRO_03_to_08_sizing_fail_closed_and_sell_zero(
 def test_CRO_03_CRO_06_batch_reserves_approved_buys_and_sells(
     clock: FrozenClock, risk_calendar: MarketCalendar
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     buy = _proposal(clock, qty=6, stop_price=Decimal("99"))
     verdicts = cro.evaluate_batch(
         (buy, buy),
@@ -851,7 +1122,13 @@ def test_CRO_03_CRO_06_batch_reserves_approved_buys_and_sells(
 def test_CRO_03_CRO_04_R_03_property_no_overweight_or_overrisk(equity: int, qty: int) -> None:
     clock = FrozenClock(datetime(2026, 9, 29, 15, 0, tzinfo=UTC))
     calendar = MarketCalendar(start=date(2026, 9, 1), end=date(2026, 10, 31))
-    cro = ChiefRiskOfficer(Settings(), _registry(), calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        calendar,
+    )
     capital = Decimal(equity)
     snapshot = _snapshot(
         clock, equity=capital, cash=capital, high_water_mark=capital, day_start_equity=capital
@@ -875,7 +1152,11 @@ def test_CRO_03_CRO_04_R_03_property_no_overweight_or_overrisk(equity: int, qty:
 def test_CRO_02_R_01_property_never_oversells(held: int, extra: int) -> None:
     clock = FrozenClock(datetime(2026, 9, 29, 15, 0, tzinfo=UTC))
     cro = ChiefRiskOfficer(
-        Settings(), _registry(), MarketCalendar(start=date(2026, 9, 1), end=date(2026, 10, 31))
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        MarketCalendar(start=date(2026, 9, 1), end=date(2026, 10, 31)),
     )
     proposal = _proposal(
         clock, side=Side.SELL, intent=Intent.REDUCE, qty=held + extra, stop_price=None
@@ -895,7 +1176,11 @@ def test_CRO_02_R_01_property_never_oversells(held: int, extra: int) -> None:
 def test_CRO_01_property_never_enters_nonrunning(qty: int, state: SystemState) -> None:
     clock = FrozenClock(datetime(2026, 9, 29, 15, 0, tzinfo=UTC))
     cro = ChiefRiskOfficer(
-        Settings(), _registry(), MarketCalendar(start=date(2026, 9, 1), end=date(2026, 10, 31))
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        MarketCalendar(start=date(2026, 9, 1), end=date(2026, 10, 31)),
     )
     assert (
         cro.evaluate(
@@ -918,13 +1203,19 @@ def test_CRO_02_R_02_constructor_requires_verified_dependencies(
     registry = cast(InstrumentRegistry, None) if invalid_dependency == "registry" else _registry()
     calendar = cast(MarketCalendar, None) if invalid_dependency == "calendar" else risk_calendar
     with pytest.raises(ConfigurationError):
-        ChiefRiskOfficer(Settings(), registry, calendar)
+        ChiefRiskOfficer(
+            Settings(
+                broker_account_type="CASH",
+            ),
+            registry,
+            calendar,
+        )
 
 
 def test_CRO_02_R_07_explicit_telegram_allowlist_preserved(
     risk_calendar: MarketCalendar,
 ) -> None:
-    config = Settings(telegram_allowed_user_ids=(123,))
+    config = Settings(broker_account_type="CASH", telegram_allowed_user_ids=(123,))
     cro = ChiefRiskOfficer(config, _registry(), risk_calendar)
     assert cro.config.telegram_allowed_user_ids == (123,)
     assert cro.config.config_hash == config.config_hash
@@ -934,7 +1225,13 @@ def test_CRO_04_R_02_protection_fault_never_becomes_zero_risk(
     clock: FrozenClock,
     risk_calendar: MarketCalendar,
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     forged = _proposal(clock).model_copy(update={"stop_price": None})
     with pytest.raises(DataIntegrityError):
         cro._risk(forged, _snapshot(clock))
@@ -950,7 +1247,11 @@ def test_CRO_13_zero_sessions_blocks_same_day_and_unresolved_past(
     earnings: date,
     passed: bool,
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(earnings_blackout_sessions=0), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(broker_account_type="CASH", earnings_blackout_sessions=0),
+        _registry(),
+        risk_calendar,
+    )
     rule = _rule(cro, clock, "CRO-13", market=_market(clock, next_earnings_date=earnings))
     assert rule.passed == passed
     assert rule.severity == Severity.BLOCK
@@ -961,7 +1262,11 @@ def test_CRO_13_uses_exchange_date_after_UTC_midnight(
 ) -> None:
     clock = FrozenClock(datetime(2026, 9, 30, 0, 30, tzinfo=UTC))
     close = risk_calendar.session_close(date(2026, 9, 29))
-    cro = ChiefRiskOfficer(Settings(earnings_blackout_sessions=0), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(broker_account_type="CASH", earnings_blackout_sessions=0),
+        _registry(),
+        risk_calendar,
+    )
     rule = _rule(
         cro,
         clock,
@@ -987,7 +1292,13 @@ def test_CRO_09_CRO_10_recommendations_are_pure_and_do_not_trap_exits(
     equity: Decimal,
     expected: SystemState,
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     snapshot = _snapshot(clock, equity=equity, positions={"AAPL": _position(1)})
     exit_proposal = _proposal(clock, side=Side.SELL, intent=Intent.EXIT, stop_price=None)
     verdict = cro.evaluate(exit_proposal, snapshot, None, SystemState.RUNNING, clock.now())
@@ -1000,7 +1311,13 @@ def test_CRO_03_to_08_advisory_sizing_never_increases_requested_qty(
     clock: FrozenClock,
     risk_calendar: MarketCalendar,
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     assert (
         cro.max_allowed_qty(_proposal(clock, qty=2), _snapshot(clock), _market(clock), clock.now())
         == 2
@@ -1015,7 +1332,13 @@ def test_CRO_03_CRO_06_batch_iteration_fault_is_typed(
         def __iter__(self) -> Any:
             raise RuntimeError("batch source unavailable")
 
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     with pytest.raises(DataIntegrityError):
         cro.evaluate_batch(BrokenBatch(), _snapshot(clock), {}, SystemState.RUNNING, clock.now())
 
@@ -1024,7 +1347,13 @@ def test_CRO_01_R_02_batch_unverifiable_market_latches_local_halt(
     clock: FrozenClock,
     risk_calendar: MarketCalendar,
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     bad = _proposal(clock, symbol="MSFT")
     good = _proposal(clock)
     verdicts = cro.evaluate_batch(
@@ -1044,7 +1373,13 @@ def test_CRO_04_batch_approved_but_unsubmitted_stop_risk_is_reserved(
     clock: FrozenClock,
     risk_calendar: MarketCalendar,
 ) -> None:
-    cro = ChiefRiskOfficer(Settings(), _registry(), risk_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    )
     first = _proposal(clock, qty=4, stop_price=Decimal("80"))
     second = _proposal(clock, proposal_id=UUID(int=3), intent=Intent.ADD, stop_price=Decimal("80"))
     verdicts = cro.evaluate_batch(
@@ -1078,7 +1413,13 @@ def test_R_02_CRO_02_unknown_inventory_is_not_ignored_for_new_entries(
             )
         }
     )
-    verdict = ChiefRiskOfficer(Settings(), _registry(), risk_calendar).evaluate(
+    verdict = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        _registry(),
+        risk_calendar,
+    ).evaluate(
         _proposal(clock),
         _snapshot(clock, **changes),
         _market(clock),

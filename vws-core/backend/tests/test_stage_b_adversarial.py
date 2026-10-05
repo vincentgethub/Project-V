@@ -169,7 +169,13 @@ def test_R_02_R_13_forged_frozen_proposal_is_revalidated(
     # Deliberately mutate instance storage without invoking Pydantic validation.
     forged = proposal()
     forged.__dict__[field] = bad
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     assert verdict(cro, trade=forged).decision == Decision.VETOED
 
 
@@ -188,7 +194,13 @@ def test_R_02_nested_instances_cannot_smuggle_invalid_inventory(
         pending.__dict__["qty"] = -1
         book = snapshot()
         book.__dict__["open_orders"] = (pending,)
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     assert verdict(cro, book=book).decision == Decision.VETOED
 
 
@@ -196,7 +208,9 @@ def test_R_02_hard_ceiling_cannot_be_bypassed_by_forged_settings(
     adversarial_calendar: MarketCalendar,
 ) -> None:
     """R-02: CRO construction rejects an unvalidated policy object."""
-    config = Settings()
+    config = Settings(
+        broker_account_type="CASH",
+    )
     config.__dict__["max_single_stock_weight"] = Decimal("1.00")
     with pytest.raises(SafetyError):
         ChiefRiskOfficer(config, registry(), adversarial_calendar)
@@ -235,7 +249,13 @@ def test_R_02_proposal_expiry_is_exclusive_at_exact_equality(
     trade = proposal(
         created_at=NOW - timedelta(hours=1), expires_at=NOW - timedelta(seconds=seconds)
     )
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     assert verdict(cro, trade=trade).decision == Decision.VETOED
 
 
@@ -243,7 +263,13 @@ def test_R_02_future_creation_and_inventory_cannot_be_approved(
     adversarial_calendar: MarketCalendar,
 ) -> None:
     """R-02/R-05: an aware UTC timestamp can still be unverifiable future data."""
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     assert (
         verdict(cro, trade=proposal(created_at=NOW + timedelta(seconds=1))).decision
         == Decision.VETOED
@@ -255,7 +281,13 @@ def test_R_02_R_09_stale_inventory_does_not_prove_a_valid_exit(
     adversarial_calendar: MarketCalendar,
 ) -> None:
     """R-09: only verified held inventory establishes the valid-exit exception."""
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     trade = proposal(side=Side.SELL, intent=Intent.EXIT, stop_price=None, target_price=None)
     book = snapshot(as_of=NOW - timedelta(seconds=61), positions={"AAPL": position()})
     assert verdict(cro, trade=trade, book=book).decision == Decision.VETOED
@@ -268,7 +300,13 @@ def test_R_02_CRO_09_CRO_10_zero_baseline_never_resets_risk(
     """CRO-09/CRO-10: first-run baselines must be initialized outside the rules."""
     book = snapshot()
     book.__dict__[field] = Decimal("0")
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     assert verdict(cro, book=book).decision == Decision.VETOED
 
 
@@ -277,7 +315,9 @@ def test_CRO_04_pending_same_symbol_buys_reserve_stop_risk(
 ) -> None:
     """CRO-04: pending additions cannot spend the same stop-risk budget twice."""
     cro = ChiefRiskOfficer(
-        Settings(max_single_stock_weight=Decimal("0.20")), registry(), adversarial_calendar
+        Settings(broker_account_type="CASH", max_single_stock_weight=Decimal("0.20")),
+        registry(),
+        adversarial_calendar,
     )
     trade = proposal(intent=Intent.ADD, stop_price=Decimal("90.00"))
     clear = snapshot(positions={"AAPL": position()})
@@ -303,7 +343,13 @@ def test_CRO_03_to_08_sizing_requires_complete_rule_evidence(
     adversarial_calendar: MarketCalendar, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """R-02: all(empty) must never turn missing sizing evidence into capacity."""
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
 
     def missing_rules(*args: object, **kwargs: object) -> tuple[RuleResult, ...]:
         return ()
@@ -326,7 +372,13 @@ def test_CRO_13_earnings_uses_sessions_across_holiday_and_early_close(
 ) -> None:
     """CRO-13: Thanksgiving and the shortened Friday do not count as extra days."""
     now = datetime(2026, 11, 25, 16, tzinfo=UTC)
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     result = verdict(cro, context=market(now, next_earnings_date=earnings), now=now)
     earnings_result = next(item for item in result.results if item.rule_id == "CRO-13")
     assert earnings_result.passed == (not blocked)
@@ -337,7 +389,13 @@ def test_R_02_CRO_13_out_of_range_earnings_calendar_fails_closed(
     adversarial_calendar: MarketCalendar,
 ) -> None:
     """R-02/CRO-13: an unverifiable session distance is never favorable evidence."""
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     assert (
         verdict(cro, context=market(next_earnings_date=date(2035, 1, 2))).decision
         == Decision.VETOED
@@ -348,7 +406,13 @@ def test_R_09_manual_exit_ignores_irrelevant_entry_provider_inputs(
     adversarial_calendar: MarketCalendar,
 ) -> None:
     """R-09: bad bank/market inputs cannot trap a verified manual liquidation."""
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     trade = proposal(
         symbol="UNKNOWN",
         side=Side.SELL,
@@ -374,7 +438,13 @@ def test_R_09_batch_exit_does_not_require_a_market_mapping(
     adversarial_calendar: MarketCalendar,
 ) -> None:
     """R-09: the batch helper preserves the same valid-exit contract."""
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     trade = proposal(side=Side.SELL, intent=Intent.EXIT, stop_price=None, target_price=None)
     results = cro.evaluate_batch(
         (trade,), snapshot(positions={"AAPL": position()}), {}, SystemState.RUNNING, NOW
@@ -386,7 +456,13 @@ def test_R_03_R_04_ambient_decimal_precision_does_not_change_risk(
     adversarial_calendar: MarketCalendar,
 ) -> None:
     """R-03/R-04: unrelated caller math cannot round a boundary into approval."""
-    cro = ChiefRiskOfficer(Settings(), registry(), adversarial_calendar)
+    cro = ChiefRiskOfficer(
+        Settings(
+            broker_account_type="CASH",
+        ),
+        registry(),
+        adversarial_calendar,
+    )
     trade = proposal(qty=10, stop_price=Decimal("90.20"))
     exact = verdict(cro, trade=trade)
     with localcontext() as context:

@@ -352,7 +352,13 @@ def test_DAT_04_real_plaid_requires_resilience_before_any_network_call() -> None
         PlaidLiquiditySource(plaid_settings(), FrozenClock(NOW))
 
 
-@pytest.mark.parametrize("settings", [Settings(), Settings(plaid_account_id="checking-test")])
+@pytest.mark.parametrize(
+    "settings",
+    [
+        Settings(broker_account_type="CASH"),
+        Settings(broker_account_type="CASH", plaid_account_id="checking-test"),
+    ],
+)
 def test_R_07_R_08_plaid_rejects_missing_pin_or_access_token(settings: Settings) -> None:
     with pytest.raises(ConfigurationError):
         PlaidLiquiditySource(settings, FrozenClock(NOW), FakePlaid({"accounts": []}))

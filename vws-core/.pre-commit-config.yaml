@@ -17,9 +17,9 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
-      - id: stage-abc-types
-        name: Stage A through C strict types
-        entry: python -m backend.core.check_stage_c
+      - id: stage-audit-types
+        name: Audited source strict types
+        entry: python -m backend.core.check_stage_d
         language: system
         pass_filenames: false
         types: [python]

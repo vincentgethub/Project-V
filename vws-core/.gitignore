@@ -31,4 +31,7 @@ bandit-report.json
 coverage.xml
 coverage-stage-b.json
 coverage-stage-c.json
+coverage-stage-d*.json
+coverage*.json
+gitleaks*.json
 secrets-report.json

@@ -51,8 +51,10 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "SCHEDULER_",
     )
     for name in tuple(os.environ):
-        if name.startswith(prefixes):
+        if name.upper().startswith(prefixes):
             monkeypatch.delenv(name)
+    # This explicit synthetic value never attests to the owner's broker account.
+    monkeypatch.setenv("BROKER_ACCOUNT_TYPE", "CASH")
 
 
 @pytest.fixture

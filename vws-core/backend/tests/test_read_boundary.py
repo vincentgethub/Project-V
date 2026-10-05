@@ -86,7 +86,13 @@ def boundary(
 ) -> ReadBoundary:
     """R-02: real SQLite state boundary with network-free injected providers."""
     local_clock = FrozenClock(NOW) if clock is None else clock
-    policy = Settings() if config is None else config
+    policy = (
+        Settings(
+            broker_account_type="CASH",
+        )
+        if config is None
+        else config
+    )
     bank = (
         FakeLiquiditySource(
             BalanceReading(
@@ -135,6 +141,33 @@ def test_R_02_managed_account_must_be_explicit_and_unambiguous(
         )
 
 
+def test_CRO_10_monitor_read_records_breach_through_recovery(engine: Engine) -> None:
+    """CRO-10: no risk evaluation is needed to remember a witnessed loss."""
+    broker = Broker(snapshot(equity=Decimal("24500")))
+    reads = boundary(engine, broker=broker)
+    assert reads.portfolio().snapshot.equity == Decimal("24500")
+    assert reads.state.current() == SystemState.RUNNING
+    broker.value = snapshot(equity=Decimal("25000"))
+    assert reads.portfolio().snapshot.equity == Decimal("25000")
+    assert reads.marks.daily_loss_blocked(NOW)
+
+
+def test_CRO_09_CRO_10_read_boundary_refuses_marks_for_other_account(engine: Engine) -> None:
+    """R-02: a supplied marks callback cannot cross the managed account binding."""
+    reads = boundary(engine)
+    reads.marks.account_id = "other"
+    with pytest.raises(ConfigurationError, match="marks differ"):
+        ReadBoundary(
+            reads.config,
+            reads.state,
+            reads.clock,
+            reads.broker,
+            reads.liquidity,
+            account_id="managed-test",
+            marks=reads.marks,
+        )
+
+
 @pytest.mark.parametrize(
     "updates",
     [
@@ -163,8 +196,11 @@ def test_CMP_06_broker_restrictions_latch_halt_but_holdings_remain_readable(engi
 
 @pytest.mark.parametrize(
     "equity,state",
-    [(Decimal("24500"), SystemState.RUNNING), (Decimal("23000"), SystemState.REDUCE_ONLY),
-     (Decimal("22000"), SystemState.HALTED)],
+    [
+        (Decimal("24500"), SystemState.RUNNING),
+        (Decimal("23000"), SystemState.REDUCE_ONLY),
+        (Decimal("22000"), SystemState.HALTED),
+    ],
 )
 def test_CRO_09_CRO_10_reads_latch_financial_tiers(
     engine: Engine, equity: Decimal, state: SystemState

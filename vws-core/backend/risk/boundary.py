@@ -20,6 +20,7 @@ from backend.domain.models import (
     Verdict,
     snapshot_hash,
 )
+from backend.risk.portfolio_marks import PersistedPortfolioMarks
 from backend.risk.risk_cro import ChiefRiskOfficer
 
 
@@ -58,11 +59,18 @@ class RiskBoundary:
         clock: Clock,
         *,
         veto_sink: VetoSink | None = None,
+        marks: PersistedPortfolioMarks | None = None,
     ) -> None:
         self.cro = cro
         self.state = state
         self.clock = clock
         self.veto_sink = LoggingVetoSink() if veto_sink is None else veto_sink
+        self.marks = marks
+        if marks is not None and (
+            marks.ledger.engine is not state.engine
+            or marks.config.config_hash != cro.config.config_hash
+        ):
+            raise DataIntegrityError("CRO-09/CRO-10: persisted marks differ from risk policy")
 
     def _checked(
         self,
@@ -70,6 +78,7 @@ class RiskBoundary:
         proposal: TradeProposal,
         snapshot: PortfolioSnapshot,
         market: MarketContext | None,
+        daily_loss_blocked: bool = False,
     ) -> Verdict:
         """R-02/R-03: an altered verdict cannot become passing audit evidence."""
         checked = Verdict.model_validate(verdict)
@@ -85,6 +94,10 @@ class RiskBoundary:
             raise DataIntegrityError("R-02: risk verdict identity or rule evidence is invalid")
         if checked.decision == Decision.APPROVED:
             proposal = TradeProposal.model_validate(proposal)
+            if daily_loss_blocked and proposal.intent in {Intent.ENTRY, Intent.ADD}:
+                raise DataIntegrityError(
+                    "CRO-10: approval concealed a witnessed session loss block"
+                )
             if (
                 proposal.intent in {Intent.ENTRY, Intent.ADD}
                 and checked.recommended_state != SystemState.RUNNING
@@ -144,22 +157,42 @@ class RiskBoundary:
         try:
             now = ensure_utc(self.clock.now())
             self.state.ledger.verify_chain()
+            daily_loss_blocked = False
+            if self.marks is not None:
+                snapshot = self.marks.observe(snapshot)
+                daily_loss_blocked = self.marks.daily_loss_blocked(now)
             initial = self.state.current()
             verdict = self._checked(
-                self.cro.evaluate(proposal, snapshot, market, initial, now, deployable=deployable),
+                self.cro.evaluate(
+                    proposal,
+                    snapshot,
+                    market,
+                    initial,
+                    now,
+                    deployable=deployable,
+                    daily_loss_blocked=daily_loss_blocked,
+                ),
                 proposal,
                 snapshot,
                 market,
+                daily_loss_blocked,
             )
             current = self.state.current()
             if current != initial:
                 verdict = self._checked(
                     self.cro.evaluate(
-                        proposal, snapshot, market, current, now, deployable=deployable
+                        proposal,
+                        snapshot,
+                        market,
+                        current,
+                        now,
+                        deployable=deployable,
+                        daily_loss_blocked=daily_loss_blocked,
                     ),
                     proposal,
                     snapshot,
                     market,
+                    daily_loss_blocked,
                 )
             if verdict.evaluated_at != now:
                 raise DataIntegrityError("R-05: verdict time does not match injected clock")
@@ -169,17 +202,22 @@ class RiskBoundary:
             if latched != current and latched != verdict.recommended_state:
                 verdict = self._checked(
                     self.cro.evaluate(
-                        proposal, snapshot, market, latched, now, deployable=deployable
+                        proposal,
+                        snapshot,
+                        market,
+                        latched,
+                        now,
+                        deployable=deployable,
+                        daily_loss_blocked=daily_loss_blocked,
                     ),
                     proposal,
                     snapshot,
                     market,
+                    daily_loss_blocked,
                 )
                 if verdict.evaluated_at != now:
                     raise DataIntegrityError("R-05: rechecked verdict time differs from clock")
-                self.state.escalate(
-                    verdict.recommended_state, "CRO-09 concurrent state recheck"
-                )
+                self.state.escalate(verdict.recommended_state, "CRO-09 concurrent state recheck")
             for result in verdict.results:
                 if not result.passed and result.severity == Severity.BLOCK:
                     self.veto_sink.record(result.rule_id, verdict.proposal_id)

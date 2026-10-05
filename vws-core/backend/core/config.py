@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Collection, Mapping
 from decimal import Decimal, InvalidOperation, localcontext
@@ -33,6 +34,34 @@ from backend.core.money import decimal_money, validate_cent_price
 PAPER_BROKER_ENDPOINT = "https://paper-api.alpaca.markets"
 LIVE_BROKER_ENDPOINT = "https://api.alpaca.markets"
 LIVE_CONFIRMATION = "I_ACCEPT_REAL_MONEY_RISK"
+YAML_INTEGER_BOUNDS: Mapping[str, tuple[int, int]] = MappingProxyType(
+    {
+        "scan_interval_minutes": (1, 1440),
+        "offhours_interval_minutes": (1, 10080),
+        "scheduler_misfire_grace_seconds": (1, 3600),
+        "daily_bar_sip_lag_seconds": (900, 3600),
+        "alert_cooldown_sessions": (1, 30),
+    }
+)
+YAML_ALLOWED_SETTING_NAMES = frozenset(YAML_INTEGER_BOUNDS)
+
+
+def _reject_yaml_environment_keys() -> None:
+    """R-06/R-07: every strategy/schedule key has exactly one YAML home."""
+    if any(name.casefold() in YAML_ALLOWED_SETTING_NAMES for name in os.environ):
+        raise ValueError("YAML-only schedule/cooldown settings cannot appear in environment")
+
+
+def _bounded_integer(value: object, name: str, bounds: tuple[int, int]) -> int:
+    """R-06/GD-04: whole integer bounds share logic but keep distinct homes."""
+    if isinstance(value, str) and value.isdecimal():
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("integer setting requires a whole integer")
+    lower, upper = bounds
+    if not lower <= value <= upper:
+        raise ValueError(f"{name} must be between {lower} and {upper}")
+    return value
 
 
 def _exact_decimal(value: object) -> Decimal:
@@ -77,6 +106,14 @@ class Settings(BaseSettings):
         enable_decoding=False,
     )
 
+    def __init__(self, **values: Any) -> None:
+        """R-06/R-07: validate required fields from explicit values or env.
+
+        An env-backed required field need not be a Python keyword argument.
+        BaseSettings still rejects an absent source or an unknown field.
+        """
+        super().__init__(**values)
+
     # Source constants cannot be raised by an environment variable.
     DECIMAL_BOUNDS: ClassVar[Mapping[str, tuple[Decimal, Decimal]]] = MappingProxyType(
         {
@@ -108,14 +145,9 @@ class Settings(BaseSettings):
             "request_timeout_seconds": (1, 60),
             "earnings_blackout_sessions": (0, 10),
             "max_alerts_per_day": (0, 20),
-            "alert_cooldown_sessions": (1, 30),
             "proposal_ttl_sessions": (1, 3),
             "llm_timeout_seconds": (1, 60),
             "llm_max_tokens": (1, 8192),
-            "scan_interval_minutes": (1, 1440),
-            "offhours_interval_minutes": (1, 10080),
-            "scheduler_misfire_grace_seconds": (1, 3600),
-            "daily_bar_sip_lag_seconds": (900, 3600),
         }
     )
     SECRET_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -161,7 +193,7 @@ class Settings(BaseSettings):
     wash_sale_mode: Literal["BLOCK", "WARN"] = "BLOCK"
     day_trade_regime: Literal["INTRADAY_MARGIN", "LEGACY_PDT"] = "INTRADAY_MARGIN"
     min_margin_equity: Decimal = Decimal("2000")
-    broker_account_type: Literal["CASH", "MARGIN"] = "CASH"
+    broker_account_type: Literal["CASH", "MARGIN"]
     paper_trading: bool = True
     live_trading_enabled: bool = False
     live_trading_confirm: str = ""
@@ -186,7 +218,6 @@ class Settings(BaseSettings):
     earnings_blackout_sessions: int = 2
     min_setup_score: Decimal = Decimal("7.0")
     max_alerts_per_day: int = 5
-    alert_cooldown_sessions: int = 1
     proposal_ttl_sessions: int = 1
     enable_intraday_playbooks: bool = False
     # None is an offline-only sentinel; connected research requires explicit values.
@@ -202,10 +233,13 @@ class Settings(BaseSettings):
     telegram_allowed_user_ids: tuple[int, ...] = ()
     telegram_callback_secret: SecretStr = Field(default=SecretStr(""), repr=False)
     newsapi_key: SecretStr = Field(default=SecretStr(""), repr=False)
-    scan_interval_minutes: int = 15
-    offhours_interval_minutes: int = 60
-    scheduler_misfire_grace_seconds: int = 60
-    daily_bar_sip_lag_seconds: int = 900
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_wrong_configuration_home(cls, value: object) -> object:
+        """R-06: process env cannot silently override YAML-only settings."""
+        _reject_yaml_environment_keys()
+        return value
 
     @field_validator(*DECIMAL_BOUNDS.keys(), mode="before")
     @classmethod
@@ -300,14 +334,8 @@ class Settings(BaseSettings):
     @classmethod
     def validate_integer_limit(cls, value: object, info: ValidationInfo) -> int:
         """R-06: reject booleans, fractions, and values beyond source bounds."""
-        if isinstance(value, str) and value.isdecimal():
-            value = int(value)
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("integer setting requires a whole integer")
-        lower, upper = cls.INTEGER_BOUNDS[str(info.field_name)]
-        if not lower <= value <= upper:
-            raise ValueError(f"{info.field_name} must be between {lower} and {upper}")
-        return value
+        name = str(info.field_name)
+        return _bounded_integer(value, name, cls.INTEGER_BOUNDS[name])
 
     @field_validator("sector_caps", "theme_caps", mode="before")
     @classmethod
@@ -569,8 +597,9 @@ class ScheduleConfig(_FrozenYamlModel):
     )
     @classmethod
     def validate_interval(cls, value: object, info: ValidationInfo) -> int:
-        """GD-04/R-02: YAML intervals share source ceilings with env settings."""
-        return Settings.validate_integer_limit(value, info)
+        """GD-04/R-02: schedule bounds belong exclusively to YAML."""
+        name = str(info.field_name)
+        return _bounded_integer(value, name, YAML_INTEGER_BOUNDS[name])
 
 
 class AlertConfig(_FrozenYamlModel):
@@ -582,7 +611,8 @@ class AlertConfig(_FrozenYamlModel):
     @classmethod
     def validate_cooldown(cls, value: object, info: ValidationInfo) -> int:
         """GD-04: require at least one session between repeated cards."""
-        return Settings.validate_integer_limit(value, info)
+        name = str(info.field_name)
+        return _bounded_integer(value, name, YAML_INTEGER_BOUNDS[name])
 
 
 class PlaybookConfig(_FrozenYamlModel):
@@ -695,16 +725,15 @@ class YamlConfig(_FrozenYamlModel):
             raise ConfigurationError("watchlist contains an unknown or unconfigured instrument")
 
     def assert_settings_consistent(self, settings: Settings) -> None:
-        """R-02/GD-04: conflicting explicit env schedules/cooldowns fail startup."""
-        policy = {
-            **self.schedule.__dict__,
-            "alert_cooldown_sessions": self.alerts.alert_cooldown_sessions,
-        }
-        for name, value in policy.items():
-            if name in settings.model_fields_set and settings.__dict__[name] != value:
-                raise ConfigurationError(
-                    "environment and YAML schedule/cooldown definitions conflict"
-                )
+        """R-02/GD-04: wrong-home keys fail even when their values agree."""
+        try:
+            _reject_yaml_environment_keys()
+            if YAML_ALLOWED_SETTING_NAMES.intersection(settings.__dict__) or (
+                YAML_ALLOWED_SETTING_NAMES.intersection(settings.model_fields_set)
+            ):
+                raise ValueError("YAML-only schedule/cooldown settings cannot appear in Settings")
+        except ValueError as exc:
+            raise ConfigurationError("YAML-only settings are configured in the wrong home") from exc
 
     def nonsecret_snapshot(self) -> dict[str, object]:
         """R-03/GD-02: deterministic exact-value snapshot suitable for hashing."""
@@ -719,16 +748,7 @@ class YamlConfig(_FrozenYamlModel):
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-YAML_ALLOWED_SETTING_NAMES = frozenset(
-    {
-        "scan_interval_minutes",
-        "offhours_interval_minutes",
-        "scheduler_misfire_grace_seconds",
-        "daily_bar_sip_lag_seconds",
-        "alert_cooldown_sessions",
-    }
-)
-YAML_FORBIDDEN_SETTING_NAMES = frozenset(Settings.model_fields) - YAML_ALLOWED_SETTING_NAMES
+YAML_FORBIDDEN_SETTING_NAMES = frozenset(Settings.model_fields)
 
 
 def _reject_yaml_risk_keys(value: object, depth: int = 0) -> None:

@@ -111,6 +111,7 @@ class ChiefRiskOfficer:
         now: datetime,
         *,
         deployable: DeployableCapital | None = None,
+        daily_loss_blocked: bool = False,
     ) -> Verdict:
         """CRO-01..13/R-02/R-03: all evidence; only CRO-01 short-circuits.
 
@@ -144,6 +145,8 @@ class ChiefRiskOfficer:
                 return self._verdict(
                     proposal, snapshot, instant, (state_result, shape), recommended
                 )
+            if type(daily_loss_blocked) is not bool:
+                raise DataIntegrityError("CRO-10: session entry-block evidence must be boolean")
             if market is None:
                 raise DataIntegrityError("CRO-02: entry requires verified market context")
             market = MarketContext.model_validate(market)
@@ -159,7 +162,9 @@ class ChiefRiskOfficer:
                     max(len(value.as_tuple().digits) for value in limits) + 40,
                 )
                 shape = self._shape(proposal, snapshot, market, instant)
-                results = self._rules(proposal, snapshot, market, instant, deployable)
+                results = self._rules(
+                    proposal, snapshot, market, instant, deployable, daily_loss_blocked
+                )
             return self._verdict(
                 proposal, snapshot, instant, (state_result, shape, *results), recommended
             )
@@ -319,6 +324,7 @@ class ChiefRiskOfficer:
         market: MarketContext,
         now: datetime,
         deployable: DeployableCapital | None,
+        daily_loss_blocked: bool,
     ) -> tuple[RuleResult, ...]:
         instrument = self.registry.get(proposal.symbol)
         pending = self._pending(snapshot)
@@ -382,6 +388,7 @@ class ChiefRiskOfficer:
             "CRO-10",
             equity > 0
             and day_start > 0
+            and not daily_loss_blocked
             and day_start - equity < self.config.daily_loss_limit * day_start,
             daily_loss,
             self.config.daily_loss_limit,
@@ -565,6 +572,7 @@ class ChiefRiskOfficer:
         now: datetime,
         *,
         deployable: DeployableCapital | None = None,
+        daily_loss_blocked: bool = False,
     ) -> tuple[Verdict, ...]:
         """CRO-03/CRO-04/CRO-06/R-09: sequential notional, protection/inventory reservations."""
         current = snapshot
@@ -574,7 +582,13 @@ class ChiefRiskOfficer:
             for proposal in proposals:
                 market = markets.get(proposal.symbol) if _entry(proposal) else None
                 verdict = self.evaluate(
-                    proposal, current, market, current_state, now, deployable=deployable
+                    proposal,
+                    current,
+                    market,
+                    current_state,
+                    now,
+                    deployable=deployable,
+                    daily_loss_blocked=daily_loss_blocked,
                 )
                 verdicts.append(verdict)
                 if (

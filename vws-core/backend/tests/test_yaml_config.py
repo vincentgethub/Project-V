@@ -9,8 +9,10 @@ import yaml
 from pydantic import SecretStr, ValidationError
 
 from backend.core.config import (
+    YAML_INTEGER_BOUNDS,
     Settings,
     YamlConfig,
+    load_settings,
     load_yaml_config,
 )
 from backend.core.errors import ConfigurationError
@@ -26,6 +28,7 @@ def isolated_yaml_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name.upper(), raising=False)
     monkeypatch.delenv("ALPACA_API_KEY", raising=False)
     monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+    monkeypatch.setenv("BROKER_ACCOUNT_TYPE", "CASH")
 
 
 @pytest.fixture
@@ -216,26 +219,90 @@ def test_GD_02_playbook_invalid_levels_fail_closed(
         ("alert_cooldown_sessions", 2),
     ],
 )
-def test_GD_04_explicit_env_and_yaml_conflicts_fail(
-    monkeypatch: pytest.MonkeyPatch, field: str, value: int
+@pytest.mark.parametrize("use_yaml_value", [False, True])
+def test_GD_04_yaml_only_keys_in_process_env_fail_even_when_values_agree(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: int, use_yaml_value: bool
 ) -> None:
+    """R-06/GD-04: equal values do not excuse a second configuration home."""
+    config = load_yaml_config(REPOSITORY_CONFIG, allowed_symbols=ALLOWED_SYMBOLS)
+    settings = Settings()
+    if use_yaml_value:
+        model = config.alerts if field == "alert_cooldown_sessions" else config.schedule
+        value = model.__dict__[field]
     monkeypatch.setenv(field.upper(), str(value))
-    with pytest.raises(ConfigurationError, match="conflict"):
-        load_yaml_config(REPOSITORY_CONFIG, allowed_symbols=ALLOWED_SYMBOLS, settings=Settings())
+    with pytest.raises(ValidationError, match="YAML-only"):
+        Settings()
+    with pytest.raises(ConfigurationError, match="wrong home"):
+        config.assert_settings_consistent(settings)
 
 
-def test_GD_04_consistent_explicit_env_values_and_yaml_only_overrides_pass(
-    monkeypatch: pytest.MonkeyPatch, valid_payload: dict[str, Any], tmp_path: Path
+@pytest.mark.parametrize("field", sorted(YAML_INTEGER_BOUNDS))
+@pytest.mark.parametrize("spelling", ["upper", "lower"])
+def test_GD_04_yaml_only_keys_in_dotenv_are_rejected(
+    tmp_path: Path, field: str, spelling: str
 ) -> None:
-    monkeypatch.setenv("SCAN_INTERVAL_MINUTES", "15")
-    load_yaml_config(REPOSITORY_CONFIG, allowed_symbols=ALLOWED_SYMBOLS, settings=Settings())
-    monkeypatch.delenv("SCAN_INTERVAL_MINUTES")
+    """R-06/R-07: explicitly loaded dotenv cannot hold YAML-only parameters."""
+    key = field.upper() if spelling == "upper" else field
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"{key}={YAML_INTEGER_BOUNDS[field][0]}\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError):
+        load_settings(env_file=env_file)
+
+
+@pytest.mark.parametrize("field", sorted(YAML_INTEGER_BOUNDS))
+@pytest.mark.parametrize("value", ["", "unparseable"])
+def test_GD_04_wrong_home_process_values_cannot_be_silently_ignored(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: str
+) -> None:
+    """R-06: even empty removed env values must fail startup."""
+    monkeypatch.setenv(field, value)
+    with pytest.raises(ValidationError, match="YAML-only"):
+        Settings()
+
+
+@pytest.mark.parametrize("field", sorted(YAML_INTEGER_BOUNDS))
+def test_GD_04_wrong_home_constructor_and_forged_settings_are_rejected(
+    field: str,
+) -> None:
+    """R-02/R-06: model_copy cannot smuggle duplicate schedule definitions."""
+    value = YAML_INTEGER_BOUNDS[field][0]
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        Settings(**{field: value})
+    forged = Settings().model_copy(update={field: value})
+    with pytest.raises(ConfigurationError, match="wrong home"):
+        load_yaml_config(REPOSITORY_CONFIG, allowed_symbols=ALLOWED_SYMBOLS, settings=forged)
+
+
+@pytest.mark.parametrize("field,bounds", list(YAML_INTEGER_BOUNDS.items()))
+@pytest.mark.parametrize("boundary_index", [0, 1])
+def test_GD_04_yaml_integer_bounds_are_separate_and_preserved(
+    valid_payload: dict[str, Any], field: str, bounds: tuple[int, int], boundary_index: int
+) -> None:
+    """R-06/GD-04: every YAML bound is tested independently of env settings."""
+    assert not set(YAML_INTEGER_BOUNDS).intersection(Settings.INTEGER_BOUNDS)
+    container = valid_payload["alerts" if field == "alert_cooldown_sessions" else "schedule"]
+    container[field] = bounds[boundary_index]
+    config = YamlConfig.model_validate(valid_payload)
+    model = config.alerts if field == "alert_cooldown_sessions" else config.schedule
+    assert model.__dict__[field] == bounds[boundary_index]
+    container[field] += -1 if boundary_index == 0 else 1
+    with pytest.raises(ValidationError, match="must be between"):
+        YamlConfig.model_validate(valid_payload)
+    container[field] = True
+    with pytest.raises(ValidationError, match="whole integer"):
+        YamlConfig.model_validate(valid_payload)
+
+
+def test_GD_04_yaml_only_overrides_pass_and_do_not_enter_env_settings(
+    valid_payload: dict[str, Any], tmp_path: Path
+) -> None:
     valid_payload["schedule"]["scan_interval_minutes"] = 20
     config = load_yaml_config(
         write_yaml(tmp_path, valid_payload), allowed_symbols=ALLOWED_SYMBOLS, settings=Settings()
     )
     assert config.schedule.scan_interval_minutes == 20
-    assert Settings().scan_interval_minutes == 15
+    assert "scan_interval_minutes" not in Settings.model_fields
+    assert "alert_cooldown_sessions" not in Settings.model_fields
 
 
 def test_R_03_GD_02_combined_hash_tracks_yaml_and_ignores_credentials(
