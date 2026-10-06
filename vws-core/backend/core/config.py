@@ -762,6 +762,90 @@ class NewsConfig(_FrozenYamlModel):
         return value
 
 
+class FundamentalsConfig(_FrozenYamlModel):
+    """FA-01..09: exact mandated thresholds, distinct from portfolio risk limits."""
+
+    enabled: bool = True
+    mode: Literal["annotate", "require"] = "annotate"
+    gross_margin_min: Decimal = Decimal("0.40")
+    operating_margin_min: Decimal = Decimal("0.15")
+    roic_min: Decimal = Decimal("0.10")
+    fcf_min: Decimal = Decimal("0")
+    interest_coverage_min: Decimal = Decimal("3.0")
+    exempt_sectors: tuple[str, ...] = ("Financials", "Real Estate")
+    max_filing_age_days: int = Field(default=200, strict=True, ge=1, le=200)
+    cache_hours: int = Field(default=24, strict=True, ge=1, le=24)
+
+    @field_validator(
+        "gross_margin_min",
+        "operating_margin_min",
+        "roic_min",
+        "fcf_min",
+        "interest_coverage_min",
+        mode="before",
+    )
+    @classmethod
+    def exact_framework_thresholds(cls, value: object, info: ValidationInfo) -> Decimal:
+        thresholds = {
+            "gross_margin_min": Decimal("0.40"),
+            "operating_margin_min": Decimal("0.15"),
+            "roic_min": Decimal("0.10"),
+            "fcf_min": Decimal("0"),
+            "interest_coverage_min": Decimal("3.0"),
+        }
+        number = _exact_decimal(value)
+        if number != thresholds[info.field_name or ""]:
+            raise ValueError("fundamental thresholds must match the mandated strict framework")
+        return number
+
+    @field_validator("exempt_sectors")
+    @classmethod
+    def valid_exempt_sectors(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        from backend.domain.instruments import GICS_SECTORS
+
+        if (
+            len(value) > 11
+            or len(set(value)) != len(value)
+            or not set(value).issubset(GICS_SECTORS)
+        ):
+            raise ValueError("fundamental exemptions require unique known GICS sectors")
+        return value
+
+    @model_validator(mode="after")
+    def required_framework_is_enabled(self) -> Self:
+        if self.mode == "require" and not self.enabled:
+            raise ValueError("required fundamentals cannot be disabled")
+        return self
+
+
+class SizingConfig(_FrozenYamlModel):
+    """GD-03: deterministic target sizing, capped again by the CRO."""
+
+    target_risk_per_trade: Decimal = Decimal("0.005")
+    max_stop_pct: Decimal = Decimal("0.12")
+    stop_atr_mult: Decimal = Decimal("2.0")
+    target_r: Decimal = Decimal("2.0")
+    swing_lookback: int = Field(default=10, strict=True, ge=1, le=60)
+
+    @field_validator(
+        "target_risk_per_trade", "max_stop_pct", "stop_atr_mult", "target_r", mode="before"
+    )
+    @classmethod
+    def exact_sizing_bounds(cls, value: object, info: ValidationInfo) -> Decimal:
+        bounds = {
+            "target_risk_per_trade": (Decimal("0.000001"), Decimal("0.01")),
+            "max_stop_pct": (Decimal("0.000001"), Decimal("0.12")),
+            "stop_atr_mult": (Decimal("0.5"), Decimal("10")),
+            "target_r": (Decimal("1.5"), Decimal("10")),
+        }
+        number = _exact_decimal(value)
+        lower, upper = bounds[info.field_name or ""]
+        if not lower <= number <= upper:
+            raise ValueError("sizing parameter exceeds its specified bounds")
+        decimal_money(number)
+        return number
+
+
 class PlaybookConfig(_FrozenYamlModel):
     """GD-02/R-04: exact weights and reproducible ATR/target parameters."""
 
@@ -825,6 +909,8 @@ class YamlConfig(_FrozenYamlModel):
     alerts: AlertConfig = Field(default_factory=AlertConfig)
     egress: EgressConfig = Field(default_factory=EgressConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)
+    fundamentals: FundamentalsConfig = Field(default_factory=FundamentalsConfig)
+    sizing: SizingConfig = Field(default_factory=SizingConfig)
     playbooks: Mapping[str, PlaybookConfig]
 
     @model_validator(mode="before")
@@ -881,6 +967,8 @@ class YamlConfig(_FrozenYamlModel):
                 YAML_ALLOWED_SETTING_NAMES.intersection(settings.model_fields_set)
             ):
                 raise ValueError("YAML-only schedule/cooldown settings cannot appear in Settings")
+            if self.sizing.target_risk_per_trade > settings.max_risk_per_trade:
+                raise ValueError("target sizing risk cannot exceed the CRO risk limit")
         except ValueError as exc:
             raise ConfigurationError("YAML-only settings are configured in the wrong home") from exc
 

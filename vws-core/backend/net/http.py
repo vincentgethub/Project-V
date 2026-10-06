@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any
 
@@ -43,11 +43,13 @@ class GuardedAsyncClient:
         *,
         policy: EgressPolicy,
         transport: httpx.AsyncBaseTransport | None = None,
+        request_hook: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,47}", purpose):
             raise ConfigurationError("HTTP purpose must be a short nonsecret identifier")
         self.purpose = purpose
         self.policy = policy
+        self.request_hook = request_hook
         self._client = httpx.AsyncClient(
             verify=True,
             trust_env=False,
@@ -77,6 +79,8 @@ class GuardedAsyncClient:
                 request = self._client.build_request(method, url, **kwargs)
                 for _redirect in range(21):
                     self.policy.check_url(str(request.url), purpose=self.purpose)
+                    if self.request_hook is not None:
+                        await self.request_hook()
                     response = await self._client.send(request, stream=True, follow_redirects=False)
                     await response.aread()
                     next_request = response.next_request
@@ -125,9 +129,12 @@ def make_client(
     *,
     policy: EgressPolicy | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    request_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> GuardedAsyncClient:
     """SEC-30: the one application HTTP factory; transport injection is for tests."""
-    return GuardedAsyncClient(purpose, policy=_require_policy(policy), transport=transport)
+    return GuardedAsyncClient(
+        purpose, policy=_require_policy(policy), transport=transport, request_hook=request_hook
+    )
 
 
 class ExactJSONResponse(Response):

@@ -1,0 +1,47 @@
+[
+  {
+    "symbol": "MSFT",
+    "cik": "0000789019",
+    "fetched_at": "2026-10-06T04:51:13.061967+00:00",
+    "data_sha256": "f8aae2965b20ad0df44bdf7ccbedf797d275b6b8dc030154a7a311361bb7246f",
+    "bytes": 4881196,
+    "file": "msft_companyfacts.json",
+    "source": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000789019.json"
+  },
+  {
+    "symbol": "COST",
+    "cik": "0000909832",
+    "fetched_at": "2026-10-06T04:51:13.563022+00:00",
+    "data_sha256": "71a4fd99c86f27c3aa27b8f05b3a9705c16f0060b425395bb1a367ce239b7d1f",
+    "bytes": 3617189,
+    "file": "cost_companyfacts.json",
+    "source": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000909832.json"
+  },
+  {
+    "symbol": "JPM",
+    "cik": "0000019617",
+    "fetched_at": "2026-10-06T04:51:14.008893+00:00",
+    "data_sha256": "aca9a8075ba86537ff8e67f712ca22770ef2b9a840f69a98ff47037d848fbb44",
+    "bytes": 7973923,
+    "file": "jpm_companyfacts.json",
+    "source": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000019617.json"
+  },
+  {
+    "symbol": "AAPL",
+    "cik": "0000320193",
+    "fetched_at": "2026-10-06T04:51:14.501271+00:00",
+    "data_sha256": "73a86c6aedc31f77cac2ea4df5f80f0b3bd7e6eb58bb4e01444fbedf3afb9c43",
+    "bytes": 3789099,
+    "file": "aapl_companyfacts.json",
+    "source": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
+  },
+  {
+    "symbol": "SNAP",
+    "cik": "0001564408",
+    "fetched_at": "2026-10-06T04:51:15.090460+00:00",
+    "data_sha256": "8618cf9ed2d5a68488682be3e8184b74557ee6c3e218fb709c2f3705d5d783d8",
+    "bytes": 1765262,
+    "file": "snap_companyfacts.json",
+    "source": "https://data.sec.gov/api/xbrl/companyfacts/CIK0001564408.json"
+  }
+]
