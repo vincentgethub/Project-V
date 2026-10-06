@@ -204,6 +204,11 @@ class AlpacaBrokerState:
             assert_broker_endpoint(self._config, endpoint)
             # VERIFY: https://alpaca.markets/sdks/python/api_reference/trading/account.html
             account = _mapping(self._read(self._client.get_account), "account")
+            if "account_type" in account and (
+                account["account_type"] not in {"CASH", "MARGIN"}
+                or account["account_type"] != self._config.broker_account_type
+            ):
+                raise DataIntegrityError("DAT-12: reported broker account type differs from policy")
             positions_raw = self._read(self._client.get_all_positions)
             # VERIFY: https://alpaca.markets/sdks/python/api_reference/trading/orders.html
             orders_raw = self._read(

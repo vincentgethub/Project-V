@@ -409,7 +409,7 @@ def reader_fixture(
     engine: Engine,
     *,
     attempts: int = 3,
-    calls_per_minute: int = 200,
+    calls_per_minute: int = 180,
 ) -> tuple[ResilientReader, SystemStateStore, list[float]]:
     state = SystemStateStore(engine, FrozenClock(NOW), RecordingNotifier())
     sleeps: list[float] = []
@@ -663,7 +663,7 @@ def test_DAT_03_official_sdk_symbol_shapes_and_sip_iex_request_contracts(
     assert request.feed == DataFeed.SIP and request.adjustment == Adjustment.ALL
     # Pinned alpaca-py normalizes aware inputs to naive UTC in the request model.
     assert request.start == datetime(2026, 8, 31, 4, 0)
-    assert request.end == datetime(2026, 9, 30, 4, 0)
+    assert request.end == datetime(2026, 9, 28, 20, 0)
     context = provider.latest_market("AAPL", NOW)
     assert context.last_price == Decimal("100") and context.adv20_usd == Decimal("100000")
     assert context.last_price_ts == NOW - timedelta(seconds=10)

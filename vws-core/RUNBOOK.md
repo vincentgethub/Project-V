@@ -71,6 +71,27 @@ a restore; it does not replace your current ledger. Full recovery belongs on a
 clean host, with a verified backup and key. Do not overwrite a suspect ledger.
 You may keep encrypted copies off-box; never copy a plaintext database as backup.
 
+## Data checks and existing database versions
+
+Stage D adds shared read budgets, completed daily-bar caching, public headlines,
+corporate-action evidence, earnings windows and manual CSV account reads.
+Manual CSV is available only in MANUAL; it also needs fresh prices and explicit
+account-restriction and pending-order evidence. Missing evidence refuses entries.
+Confirmed earnings near a proposal block entries; estimated or unknown dates
+show warnings. The account-type check halts on a reported CASH/MARGIN mismatch.
+
+The current fresh schema is version 3. Normal startup refuses a version-2
+database; never delete it or change its version number by hand. Stage H supplies
+the explicit backup-first additive migration. Host `python -m vws ops panic --operator NAME --reason REASON` remains available for the exact compatible
+version-2 schema and persists HALTED without upgrading it. It does not certify
+old or damaged ledger chains. An incompatible control schema is refused.
+
+The real paper check is UNVERIFIED. After paper credentials exist, use
+`python -m pytest -m integration --paper-integration-env-file PRIVATE_PAPER_CONFIG`.
+This explicitly selected private file must bind MANUAL, paper keys and account
+type. Default tests read neither real dotenv files nor native keyring secrets.
+The integration reads an account and delayed SIP bars; it never submits orders.
+
 ## Independent ledger anchors and configuration drift
 
 The evening digest will send `Ledger anchor · seq N · HASH` and optionally append

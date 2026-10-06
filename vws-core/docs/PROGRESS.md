@@ -1,18 +1,20 @@
 # Project V progress
-Last updated: October 5, 2026 - security stage checked
+Last updated: October 5, 2026 - data stage checked
 
 ## Where things stand
-The safety rules, security protections and offline data tests passed their checks,
-and the alert service and automatic trading are unfinished.
+The safety rules, security protections and expanded data services passed their
+offline checks. Alerts and automatic trading are unfinished.
 
 ## What works now
 From the vws-core folder in PowerShell:
 - Run the offline checks: `.venv\Scripts\python.exe -m pytest -q`
 - Read this page in the terminal: `.venv\Scripts\python.exe -m vws progress`
 - Test encrypted backups and emergency halts: `.venv\Scripts\python.exe -m pytest -q backend/tests/test_backups.py backend/tests/test_ops_security.py`
+- Test news and earnings reads: `.venv\Scripts\python.exe -m pytest -q backend/tests/test_news.py backend/tests/test_earnings.py`
 
 ## What's being built next
-Expand market and account data reads, with shared limits, news and earnings checks.
+Build company checks and scored daily trade setups.
+Optional AI summaries will describe public evidence; code makes every decision.
 
 ## Waiting on you
 No answer is needed for the current offline work. Later setup will need:
@@ -30,12 +32,14 @@ Setup will guide these choices; do not paste secrets into chat.
 
 ## Not checked yet
 Real broker, bank and Telegram connections need your saved credentials.
+The paper integration check was skipped because paper keys were not supplied.
 AI service checks matter only if you choose to turn summaries on.
 Your computer's secret storage, account protections and real backup need checking.
 Broker key scopes and approved-IP restrictions have not been confirmed.
 Checks that deliberately change code, another database and deployment packaging
 have not run on this computer. Remote checks have not run.
 Setup, connected alerts, reports and automatic trading are unfinished.
+An older database needs the backed-up upgrade supplied in the setup stage.
 
 ## Try this next
 Run `.venv\Scripts\python.exe -m vws progress` from the vws-core folder.

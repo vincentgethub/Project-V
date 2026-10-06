@@ -39,7 +39,8 @@ YAML_INTEGER_BOUNDS: Mapping[str, tuple[int, int]] = MappingProxyType(
         "scan_interval_minutes": (1, 1440),
         "offhours_interval_minutes": (1, 10080),
         "scheduler_misfire_grace_seconds": (1, 3600),
-        "daily_bar_sip_lag_seconds": (900, 3600),
+        "daily_bar_sip_lag_seconds": (960, 3600),
+        "daily_scan_delay_minutes": (30, 1440),
         "alert_cooldown_sessions": (1, 30),
     }
 )
@@ -198,6 +199,10 @@ class Settings(BaseSettings):
     day_trade_regime: Literal["INTRADAY_MARGIN", "LEGACY_PDT"] = "INTRADAY_MARGIN"
     min_margin_equity: Decimal = Decimal("2000")
     broker_account_type: Literal["CASH", "MARGIN"]
+    broker_state_source: Literal["ALPACA", "MANUAL_CSV"] = "ALPACA"
+    alpaca_data_plan: Literal["BASIC", "ALGO_TRADER_PLUS"] = "BASIC"
+    news_provider: Literal["ALPACA", "RSS", "NEWSAPI"] = "ALPACA"
+    sec_user_agent: str | None = Field(default=None, repr=False, max_length=280)
     paper_trading: bool = True
     live_trading_enabled: bool = False
     live_trading_confirm: str = ""
@@ -242,6 +247,22 @@ class Settings(BaseSettings):
     tg_rate_per_min: int = 20
     tg_heavy_rate_per_min: int = 5
     healthcheck_ping_url: SecretStr = Field(default=SecretStr(""), repr=False)
+
+    @field_validator("sec_user_agent")
+    @classmethod
+    def validate_sec_contact(cls, value: str | None) -> str | None:
+        """DAT-11/FA-02: public SEC reads require descriptive ASCII contact headers."""
+        if value is None:
+            return None
+        contact = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", value)
+        if (
+            not value.strip()
+            or any(not 32 <= ord(character) <= 126 for character in value)
+            or contact is None
+            or len((value[: contact.start()] + value[contact.end() :]).strip()) < 3
+        ):
+            raise ValueError("SEC_USER_AGENT requires an application/name and contact email")
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -621,6 +642,7 @@ class _FrozenYamlModel(BaseModel):
         allow_inf_nan=False,
         validate_default=True,
         hide_input_in_errors=True,
+        revalidate_instances="always",
     )
 
 
@@ -630,13 +652,15 @@ class ScheduleConfig(_FrozenYamlModel):
     scan_interval_minutes: int = 15
     offhours_interval_minutes: int = 60
     scheduler_misfire_grace_seconds: int = 60
-    daily_bar_sip_lag_seconds: int = 900
+    daily_bar_sip_lag_seconds: int = 960
+    daily_scan_delay_minutes: int = 30
 
     @field_validator(
         "scan_interval_minutes",
         "offhours_interval_minutes",
         "scheduler_misfire_grace_seconds",
         "daily_bar_sip_lag_seconds",
+        "daily_scan_delay_minutes",
         mode="before",
     )
     @classmethod
@@ -710,6 +734,34 @@ class EgressConfig(_FrozenYamlModel):
         return value
 
 
+class NewsConfig(_FrozenYamlModel):
+    """DAT-09/SEC-31: explicitly configured, bounded public RSS feeds."""
+
+    rss_urls: tuple[str, ...] = Field(default=(), max_length=20)
+
+    @field_validator("rss_urls")
+    @classmethod
+    def validate_rss_urls(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """SEC-30/31: RSS grants require HTTPS DNS identities without credentials."""
+        if len(set(value)) != len(value):
+            raise ValueError("RSS URLs cannot be duplicated")
+        for url in value:
+            if len(url) > 2048 or not url.isascii() or any(ord(char) <= 32 for char in url):
+                raise ValueError("RSS URL is malformed or exceeds its boundary")
+            parsed = urlsplit(url)
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname is None
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.port not in {None, 443}
+                or parsed.fragment
+            ):
+                raise ValueError("RSS URL requires an ordinary HTTPS destination")
+            EgressHost.validate_host(parsed.hostname)
+        return value
+
+
 class PlaybookConfig(_FrozenYamlModel):
     """GD-02/R-04: exact weights and reproducible ATR/target parameters."""
 
@@ -772,6 +824,7 @@ class YamlConfig(_FrozenYamlModel):
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
     egress: EgressConfig = Field(default_factory=EgressConfig)
+    news: NewsConfig = Field(default_factory=NewsConfig)
     playbooks: Mapping[str, PlaybookConfig]
 
     @model_validator(mode="before")

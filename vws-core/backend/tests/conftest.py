@@ -13,6 +13,15 @@ from backend.core.clock import FrozenClock
 from backend.core.database import create_database, create_schema
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """R-07: real paper credentials are read only from an explicitly named file."""
+    parser.addoption(
+        "--paper-integration-env-file",
+        default=None,
+        help="Explicit private paper-only configuration file; integration only",
+    )
+
+
 def pytest_asyncio_loop_factories() -> dict[str, Callable[[], asyncio.AbstractEventLoop]]:
     """SEC-30: create asyncio's local self-pipe, then keep test sockets blocked.
 
@@ -62,6 +71,7 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "LLM_",
         "TELEGRAM_",
         "NEWSAPI_",
+        "NEWS_",
         "EARNINGS_",
         "ALERT_",
         "PROPOSAL_",
@@ -75,6 +85,7 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "TG_",
         "ANCHOR_",
         "HEALTHCHECK_",
+        "SEC_",
     )
     for name in tuple(os.environ):
         if name.upper().startswith(prefixes):

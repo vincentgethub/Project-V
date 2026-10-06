@@ -121,6 +121,14 @@ class MarketStatus(StrEnum):
     SUSPECT = "SUSPECT"
 
 
+class EarningsStatus(StrEnum):
+    """DAT-11/CRO-13: an estimated or unknown date never establishes clearance."""
+
+    KNOWN = "KNOWN"
+    ESTIMATED = "ESTIMATED"
+    UNKNOWN = "UNKNOWN"
+
+
 class CapitalStatus(StrEnum):
     OK = "OK"
     BUFFER_BREACH = "BUFFER_BREACH"
@@ -314,6 +322,34 @@ class PortfolioSnapshot(FrozenModel):
         return {symbol: value[symbol] for symbol in sorted(value)}
 
 
+class EarningsInfo(FrozenModel):
+    """DAT-11: dated evidence distinguishes confirmed events from estimate windows."""
+
+    date: SessionDate | None = None
+    status: EarningsStatus
+    source: str = Field(strict=True, min_length=1, max_length=280)
+    window_start: SessionDate | None = None
+    window_end: SessionDate | None = None
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> Self:
+        """R-02: no partial window or invented date can imply a known event."""
+        if self.status == EarningsStatus.KNOWN:
+            if self.date is None or self.window_start is not None or self.window_end is not None:
+                raise ValueError("known earnings require one exact date and no estimate window")
+        elif self.status == EarningsStatus.ESTIMATED:
+            if (
+                self.date is not None
+                or self.window_start is None
+                or self.window_end is None
+                or self.window_start > self.window_end
+            ):
+                raise ValueError("estimated earnings require an ordered window and no exact date")
+        elif self.date is not None or self.window_start is not None or self.window_end is not None:
+            raise ValueError("unknown earnings cannot contain a date or window")
+        return self
+
+
 class MarketContext(FrozenModel):
     """DAT-01/DAT-02/CRO-07/CRO-08: validated per-symbol pricing state."""
 
@@ -321,7 +357,19 @@ class MarketContext(FrozenModel):
     last_price_ts: UTCDateTime
     adv20_usd: Money = Field(ge=Decimal(0))
     next_earnings_date: SessionDate | None = None
+    earnings: EarningsInfo | None = None
     status: MarketStatus
+
+    @model_validator(mode="after")
+    def validate_earnings_binding(self) -> Self:
+        """DAT-11: the legacy confirmed date cannot contradict richer evidence."""
+        if self.earnings is not None and self.next_earnings_date is not None:
+            if (
+                self.earnings.status != EarningsStatus.KNOWN
+                or self.earnings.date != self.next_earnings_date
+            ):
+                raise ValueError("earnings evidence conflicts with the confirmed date")
+        return self
 
 
 class DeployableCapital(FrozenModel):

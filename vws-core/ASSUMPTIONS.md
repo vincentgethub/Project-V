@@ -245,7 +245,7 @@ delivery and in VERIFY.md.
     not silently substituted. Restore scratch files are private and temporary;
     a successful restore checks the plaintext SHA-256 and every ledger chain.
 58. Ledger anchors hash the globally ordered prefix of sequence, table name and
-    row hash across all eighteen immutable tables. They can detect a rewritten
+    row hash across all registered immutable tables. They can detect a rewritten
     table chain even if its local hashes were recomputed. The full 64-hex digest
     is preserved in an anchor file; the displayed 16-hex Telegram value supports
     the specified manual spot check. Durable dated verification evidence is kept.
@@ -274,3 +274,31 @@ delivery and in VERIFY.md.
     requirements. Hash-enforced installs and pip check passed in the existing
     and isolated fresh Windows environments; the 121-pin audit is clean.
     Native Linux keyring operation and remote CI remain UNVERIFIED.
+64. Stage D uses a shared async Alpaca reader for physical SDK GETs, including
+    pagination, news, corporate actions and IEX quote/trade reads. A timed-out
+    worker retains its concurrency slot until it actually stops. Late account
+    and bar results cannot become valid stored evidence. SQLite work also runs
+    through bounded workers; an unavailable provider cannot certify a symbol.
+65. Incremental daily-bar evidence is immutable per symbol/session. Only bars
+    that were completed at their fetch time enter the cache. Legacy partial
+    bars are checked for provenance but fetched again after completion. Revised
+    adjusted history that conflicts with stored evidence fails closed; this
+    stage does not rewrite it. SIP end stays at least sixteen minutes delayed.
+66. News stores bounded public headlines with provider IDs and normalized hashes.
+    Duplicate injection-like occurrences still create hash-only security evidence;
+    immutable canonical headline rows are retained. Paid NewsAPI terms must be
+    explicitly attested; RSS hosts come from validated configuration.
+67. Corporate-actions process dates identify provider announcement history;
+    effective dates identify actual session adjustments. Unavailable actions
+    leave unexplained gaps SUSPECT. SEC filing dates estimate earnings windows,
+    not confirmed release dates. Unknown and estimated dates never certify clear.
+68. MANUAL_CSV requires fresh marks, explicit account restrictions and evidence
+    about pending orders. Missing restrictions or orders are never invented.
+    It is available only in MANUAL. Reported Alpaca account types must match the
+    operator's CASH/MARGIN configuration; an absent field is not inferred.
+69. The news ledger adds the nineteenth immutable table and schema version 3.
+    Ordinary startup refuses version 2 until an explicit backed-up additive
+    migration. Emergency host panic can persist HALTED on the exact compatible
+    version-2 inventory without upgrading it or certifying its ledger chains.
+    Incompatible emergency control schemas are refused. Stage H adds migration
+    tooling; no owner's database was migrated during development.

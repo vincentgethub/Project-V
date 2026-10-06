@@ -91,12 +91,17 @@ def build_allowlist(
     llm_base_url: str | None = None,
     healthcheck_url: str | None = None,
     rss_urls: Iterable[str] = (),
+    news_provider: str = "ALPACA",
     extra_hosts: Mapping[str, str] | Iterable[tuple[str, str]] = (),
 ) -> frozenset[str]:
     """SEC-31: derive a startup allowlist from verified, explicit configuration."""
     if mode not in {"MANUAL", "AUTO_PAPER", "AUTO_LIVE"}:
         raise ConfigurationError("unknown execution mode cannot expand egress")
-    if plaid_env not in _PLAID_HOSTS or type(llm_enabled) is not bool:
+    if (
+        plaid_env not in _PLAID_HOSTS
+        or type(llm_enabled) is not bool
+        or news_provider not in {"ALPACA", "RSS", "NEWSAPI"}
+    ):
         raise ConfigurationError("egress environment or LLM enablement is invalid")
     hosts = set(_BASE_HOSTS)
     hosts.add(_PLAID_HOSTS[plaid_env])
@@ -109,6 +114,8 @@ def build_allowlist(
     if healthcheck_url:
         hosts.add(_configured_url_host(healthcheck_url))
     hosts.update(_configured_url_host(url) for url in rss_urls)
+    if news_provider == "NEWSAPI":
+        hosts.add("newsapi.org")
     entries = extra_hosts.items() if isinstance(extra_hosts, Mapping) else extra_hosts
     for host, comment in entries:
         if not isinstance(comment, str) or not comment.strip():

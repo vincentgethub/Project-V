@@ -15,7 +15,7 @@ from sqlalchemy.engine import Engine, make_url
 
 from backend.core.clock import SystemClock
 from backend.core.config import Settings, load_settings, load_yaml_config
-from backend.core.database import create_database, create_schema
+from backend.core.database import create_database, create_schema, prepare_panic_schema
 from backend.core.errors import ConfigurationError, DataIntegrityError, ProviderError
 from backend.core.ledger import Ledger
 from backend.core.logging import configure_logging
@@ -83,7 +83,10 @@ def open_context(env_file: Path | None = None, *, for_panic: bool = False) -> Se
         )
         configure_logging()
         engine = create_database(settings.db_url.get_secret_value())
-        create_schema(engine)
+        if for_panic:
+            prepare_panic_schema(engine)
+        else:
+            create_schema(engine)
         clock = SystemClock()
         state = SystemStateStore(engine, clock, ConsoleNotifier(), verify_ledger=not for_panic)
         ledger = state.ledger
@@ -131,6 +134,8 @@ def configure_egress(context: SecurityContext) -> SDKSocketGuard:
             llm_enabled=settings.llm_daily_budget_usd > 0,
             llm_base_url=settings.llm_base_url,
             healthcheck_url=settings.healthcheck_ping_url.get_secret_value() or None,
+            rss_urls=yaml.news.rss_urls,
+            news_provider=settings.news_provider,
             extra_hosts={entry.host: entry.comment for entry in yaml.egress.extra_hosts},
         ),
         context.ledger,

@@ -1,3 +1,82 @@
+# Stage D verification - 2026-10-05
+
+The final whole-suite Stage D gate passed 2,901 cases in 404.77 seconds, with
+one paper integration skipped and two warnings. Risk/state/contracts reached
+100% across 1,253 statements and 402 branches. The results below are actual
+focused/static checks; they are not added to the whole-suite count.
+Historical audit-fixes and Stage S counts remain preserved below.
+
+| Check | Actual evidence |
+| --- | --- |
+| Final whole suite and risk/state/contract coverage | 2,901 passed, 1 skipped, 2 warnings; 100% of 1,253 statements/402 branches |
+| Async reader, batch/cache, indicator memo and legacy data | 161 focused cases passed: 38 new and 123 legacy |
+| News and corporate actions | 132 focused cases passed: 78 news and 54 corporate actions |
+| Earnings and manual CSV | 111 focused cases passed |
+| Scanner with injected indicator memo | 27 cases passed; final scanner/indicator regression gate 87 passed |
+| Earnings risk and SEC header configuration | 25 cases passed |
+| Selected risk/state/contracts coverage | 644 cases passed; 1,253 statements/402 branches, 100% |
+| Prior-schema emergency panic compatibility | Four cases passed; old version retained, normal startup refused |
+| Whole Ruff lint/format and strict mypy | PASS: 112 formatted files and 112 strictly typed sources |
+| Source guard, production Bandit and source secrets | PASS: zero findings |
+| Dev lock audit and pip check | PASS: unchanged 121 exact pins, no known vulnerabilities or broken requirements |
+| Actual Git-root pre-commit hooks | All five passed |
+| Real paper integration | UNVERIFIED: explicit credentials absent; one test skipped |
+
+The 50-symbol warm-scan fixture includes benchmark ETFs and makes one physical
+bar GET for the new session, within the specified ten-call maximum. A repeat
+scan makes no new GET. SDK pagination is charged per physical request; the plan
+budgets are 180/min and 9,000/min. IEX quotes reuse the completed batch for ADV20.
+Timeout slots remain occupied until the worker stops; late portfolio/bar data
+cannot become stored evidence. Database reads/writes also use bounded workers.
+
+Installed alpaca-py 0.44.0 signatures and raw mappings are exercised by synthetic
+SDK tests. Public SDK prose still says raw_data is unimplemented in places;
+the installed code and fixtures verify this pinned version's actual behavior.
+This does not verify a real paper account or subscription entitlement.
+
+| Contract | Primary source and exact verified use |
+| --- | --- |
+| Multi-symbol daily bars and pagination | [Alpaca stock bars](https://docs.alpaca.markets/us/reference/stockbars); pinned get_stock_bars, explicit SIP/ALL, repeated GET /v2/stocks/bars |
+| Latest quotes/trades | [Stock data SDK](https://alpaca.markets/sdks/python/api_reference/data/stock/historical.html), [latest quotes](https://docs.alpaca.markets/us/reference/stocklatestquotes-1), [latest trades](https://docs.alpaca.markets/us/reference/stocklatesttrades-1); explicit IEX |
+| Default news | [Alpaca news](https://docs.alpaca.markets/us/reference/news-3); pinned NewsClient.get_news(NewsRequest), GET /v1beta1/news, comma-separated symbols |
+| Corporate actions | [Alpaca actions](https://docs.alpaca.markets/us/reference/corporateactions-1), [SDK client](https://alpaca.markets/sdks/python/api_reference/data/corporate_actions/historical.html); submodule import, GET /v1/corporate-actions, process-date bounds distinct from effective/ex dates |
+| Opt-in NewsAPI | [Everything endpoint](https://newsapi.org/docs/endpoints/everything); explicit paid-terms attestation and key required, actual entitlement UNVERIFIED |
+
+News dedupe keeps immutable canonical rows while repeated suspicious input
+still receives hash-only injection evidence. Earnings precedence is manual
+calendar, optional provider, SEC filing-window estimate. Confirmed dates block
+nearby entries; estimated/unknown dates WARN. Manual CSV needs fresh prices,
+account restrictions and pending-order evidence; missing proof never passes.
+
+The added nineteenth ledger table uses schema version 3. Existing version 2
+requires Stage H's explicit backed-up additive migration. Emergency host panic
+can halt on the exact compatible prior schema without upgrading/certifying it.
+Unknown versions and incompatible control inventories refuse.
+
+The first whole-suite attempt found one Decimal-context regression in cached
+indicator validation (2,900 passed, one failed, one skipped). The fix uses an
+explicit precision; all 87 scanner/indicator cases and the full rerun passed.
+The warnings are the pinned SDK deprecation and a deliberate socket-blocking
+positive control. No failed run is labeled PASS.
+
+Reproduction from an activated venv in vws-core:
+
+```text
+python -m pytest -q --cov --cov-branch --cov-report=term-missing --cov-fail-under=100
+python -m backend.core.check_stage_d
+python -m backend.core.source_guard .
+python -m pytest -m integration --paper-integration-env-file PRIVATE_PAPER_CONFIG
+python -m mutmut run
+docker compose build
+```
+
+The integration configuration is read only when explicitly selected; normal
+tests do not read real dotenv files or native keyring secrets. It reads account
+and safely delayed SIP bars without submitting orders. Real paper/news/action
+services, NewsAPI paid terms, mutation/PostgreSQL/Docker and remote CI remain
+UNVERIFIED. PostgreSQL reproduction is detailed in docs/STATUS.md; its service
+acceptance and the deployment/mutation jobs are completed in Stage H.
+
 # Stage S verification - 2026-10-05
 
 Stage S offline gates passed. Actual remote services and CI remain UNVERIFIED.

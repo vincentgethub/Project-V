@@ -9,18 +9,39 @@ required. A halted system can still read holdings needed for a manual held exit.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import timedelta
 from decimal import Decimal, localcontext
+from typing import Protocol, TypeVar
 
 from backend.core.clock import Clock, ensure_utc
 from backend.core.config import Settings
 from backend.core.errors import ConfigurationError, DataIntegrityError, StaleDataError
+from backend.core.ledger import Ledger
 from backend.core.system_state import SystemState, SystemStateStore
 from backend.data.broker_state import BrokerStateProvider
 from backend.data.liquidity import LiquidityGate, validated_liquidity_settings
 from backend.data.market_calendar import MarketCalendar
 from backend.domain.models import AccountFlags, DeployableCapital, FrozenModel, PortfolioSnapshot
 from backend.risk.portfolio_marks import PersistedPortfolioMarks
+
+ReadT = TypeVar("ReadT")
+
+
+class AsyncReadExecutor(Protocol):
+    """DAT-08: share the bounded worker admission boundary across read providers."""
+
+    async def run(self, operation: Callable[[], ReadT], *, budget_request: bool = False) -> ReadT:
+        """DAT-08: admit a worker, discard late results and retain its slot until completion."""
+        raise NotImplementedError("async read executor must supply run")
+
+    def bind_policy(self, settings: Settings, ledger: Ledger) -> None:
+        """DAT-06/R-06: share only the same bound account policy and ledger."""
+        raise NotImplementedError("async read executor must supply bind_policy")
+
+    def ensure_active(self) -> None:
+        """DAT-08: refuse publication by an expired admitted worker."""
+        raise NotImplementedError("async read executor must supply ensure_active")
 
 
 class BrokerReading(FrozenModel):
@@ -88,6 +109,10 @@ class ReadBoundary:
             ) from halt_error
 
     def portfolio(self) -> BrokerReading:
+        """CMP-06/DAT-01: synchronous read boundary for host commands and tests."""
+        return self._portfolio()
+
+    def _portfolio(self, active: Callable[[], None] | None = None) -> BrokerReading:
         """CMP-06/DAT-01/DAT-02: fresh, bound account reads or a durable HALT.
 
         Freshness uses wall-clock age even off-hours because account holdings can
@@ -99,6 +124,8 @@ class ReadBoundary:
         try:
             started = ensure_utc(self.clock.now())
             self.state.ledger.verify_chain()
+            if active is not None:
+                active()
             snapshot = PortfolioSnapshot.model_validate(self.broker.snapshot(started))
             flags = AccountFlags.model_validate(self.broker.last_flags)
             finished = ensure_utc(self.clock.now())
@@ -113,6 +140,8 @@ class ReadBoundary:
                 raise DataIntegrityError(
                     "R-02: broker snapshot account identity differs from policy"
                 )
+            if active is not None:
+                active()
             snapshot = self.marks.observe(snapshot)
             reading = BrokerReading(snapshot=snapshot, flags=flags)
             if flags.blocked:
@@ -149,3 +178,15 @@ class ReadBoundary:
             if isinstance(exc, DataIntegrityError):
                 raise
             raise DataIntegrityError("R-02: funding read failed and latched HALTED") from exc
+
+    async def portfolio_async(self, reader: AsyncReadExecutor) -> BrokerReading:
+        """DAT-08: account SDK calls and database checks leave the event loop free."""
+        reader.bind_policy(self.config, self.state.ledger)
+        return await reader.run(lambda: self._portfolio(reader.ensure_active))
+
+    async def funding_async(
+        self, reader: AsyncReadExecutor, *, refresh: bool = False
+    ) -> DeployableCapital:
+        """DAT-08: bank SDK calls share bounded workers and discard late results."""
+        reader.bind_policy(self.config, self.state.ledger)
+        return await reader.run(lambda: self.funding(refresh=refresh))

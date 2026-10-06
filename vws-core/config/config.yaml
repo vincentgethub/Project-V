@@ -10,12 +10,16 @@ schedule:
   scan_interval_minutes: 15
   offhours_interval_minutes: 60
   scheduler_misfire_grace_seconds: 60
-  daily_bar_sip_lag_seconds: 900
+  daily_bar_sip_lag_seconds: 960
+  daily_scan_delay_minutes: 30
 alerts:
   alert_cooldown_sessions: 1
 egress:
   # Additional entries require both a DNS host and a readable comment.
   extra_hosts: []
+news:
+  # RSS is secondary. Only explicit HTTPS feeds receive network grants.
+  rss_urls: []
 playbooks:
   TREND_50EMA:
     criteria_weights:

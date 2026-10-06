@@ -91,6 +91,37 @@ def test_gd03_scanner_deterministic_anomalous_rvol_positive_momentum(
         result.reason = "tampered"
 
 
+def test_DAT_05_scanner_reuses_series_and_refreshes_result_provenance(
+    bars: tuple[Bar, ...], calendar: MarketCalendar, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+    original = indicators.macd
+
+    def observed(
+        prices: tuple[Decimal, ...], fast: int = 12, slow: int = 26, signal: int = 9
+    ) -> indicators.MACDSeries:
+        nonlocal calls
+        calls += 1
+        return original(prices, fast, slow, signal)
+
+    monkeypatch.setattr(indicators, "macd", observed)
+    memo = indicators.IndicatorMemo()
+    first = _scan(bars, calendar, memo=memo)
+    second = _scan(
+        bars,
+        calendar,
+        memo=memo,
+        now=first.as_of + timedelta(minutes=1),
+        data_snapshot_hash="b" * 64,
+    )
+    assert calls == 1 and second.indicators == first.indicators
+    assert second.as_of > first.as_of and second.data_snapshot_hash == "b" * 64
+    assert second.hits[0].as_of == second.as_of
+    changed = (*bars[:-1], bars[-1].model_copy(update={"volume": 151}))
+    with pytest.raises(DataIntegrityError, match="same-session"):
+        _scan(changed, calendar, memo=memo)
+
+
 @pytest.mark.parametrize("volume,expected", [(149, 0), (150, 1), (151, 1)])
 def test_gd03_rvol_threshold_exact_boundary_and_one_share(
     bars: tuple[Bar, ...], calendar: MarketCalendar, volume: int, expected: int

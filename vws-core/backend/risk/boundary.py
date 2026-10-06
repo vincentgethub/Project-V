@@ -21,7 +21,7 @@ from backend.domain.models import (
     snapshot_hash,
 )
 from backend.risk.portfolio_marks import PersistedPortfolioMarks
-from backend.risk.risk_cro import ChiefRiskOfficer
+from backend.risk.risk_cro import ChiefRiskOfficer, earnings_rule
 
 
 class VetoSink(Protocol):
@@ -113,14 +113,8 @@ class RiskBoundary:
                 raise DataIntegrityError("R-02: approval has altered blocking-rule evidence")
             if len(required) == 13:
                 earnings = checked.results[-1]
-                unknown_warning = (
-                    market is not None
-                    and market.next_earnings_date is None
-                    and not earnings.passed
-                    and earnings.severity == Severity.WARN
-                )
-                if not unknown_warning and (
-                    not earnings.passed or earnings.severity != Severity.BLOCK
+                if market is None or earnings != earnings_rule(
+                    market, ensure_utc(self.clock.now()), self.cro.config, self.cro.calendar
                 ):
                     raise DataIntegrityError("CRO-13: approval has invalid earnings evidence")
         elif not any(

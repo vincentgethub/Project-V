@@ -175,6 +175,7 @@ def scan(
     market_status: MarketStatus,
     earnings_gap: date | None = None,
     config: ScannerConfig | None = None,
+    memo: indicators.IndicatorMemo | None = None,
 ) -> ScannerResult:
     """R-02/R-03/GD-03: deterministic high-volume positive-momentum daily facts.
 
@@ -183,7 +184,8 @@ def scan(
     must be strictly positive after boundary cent quantization. The earnings
     date is a caller-attested latest earnings gap, not inferred from price.
     Missing warmup/anchor/ratios returns UNAVAILABLE and zero hits. Invalid,
-    stale, suspect or future data never produces a hit. No state is changed.
+    stale, suspect or future data never produces a hit. An optional explicitly
+    injected memo reuses indicator series; no provider, ledger or clock is read.
     """
     try:
         validate_symbol(symbol)
@@ -221,19 +223,22 @@ def scan(
         anchor = _anchor(checked, earnings_gap, settings)
         if anchor is None:
             return unavailable("GD-03: no attested earnings gap or confirmed swing-low anchor")
-        prices = tuple(bar.close for bar in checked)
-        macd = indicators.macd(prices)
+        if memo is not None and not isinstance(memo, indicators.IndicatorMemo):
+            raise DataIntegrityError("DAT-05: indicator memo must be explicitly validated")
+        series = (memo if memo is not None else indicators.IndicatorMemo()).calculate(
+            symbol, checked, anchor[0]
+        )
         values = (
-            indicators.ema(prices, 20)[-1],
-            indicators.ema(prices, 50)[-1],
-            indicators.ema(prices, 200)[-1],
-            indicators.rsi(prices)[-1],
-            indicators.atr(checked)[-1],
-            macd.line[-1],
-            macd.signal[-1],
-            macd.histogram[-1],
-            indicators.rvol(tuple(bar.volume for bar in checked))[-1],
-            indicators.anchored_vwap(checked, anchor[0])[-1],
+            series.ema20[-1],
+            series.ema50[-1],
+            series.ema200[-1],
+            series.rsi14[-1],
+            series.atr14[-1],
+            series.macd.line[-1],
+            series.macd.signal[-1],
+            series.macd.histogram[-1],
+            series.rvol20[-1],
+            series.anchored_vwap[-1],
         )
         if any(value is None for value in values):
             return unavailable("GD-03: one or more required indicators are undefined")

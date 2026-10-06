@@ -30,10 +30,13 @@ Stage C contracts and the persisted state machine had 100% statement and branch
 coverage at that delivery.
 
 The audit-fixes gate passed 2,167 offline tests; the risk modules, tax contracts
-and persisted state have 100% statement and branch coverage. Stage D already contains read-only
-market/broker/liquidity providers, indicators and a deterministic scanner; its
-amended batching, async, news, earnings and manual-account requirements remain
-pending. The older core/gate.py is not a certified human-approval boundary.
+and persisted state have 100% statement and branch coverage. Stage D contains
+read-only market/broker/liquidity providers, shared asynchronous request budgets,
+incremental daily-bar caching, news and corporate-action evidence, earnings
+windows, manual CSV account evidence, indicators and a deterministic scanner.
+Its final combined gate passed 2,901 tests, with one paper integration skipped;
+risk/state/contracts retain 100% statement and branch coverage. The older core/gate.py is not a
+certified human-approval boundary.
 The research swarm and Telegram bot are still pending. The project is not
 finished, and no broker order execution path currently exists. Stage I alone
 may add the specified isolated order executor; money movement remains banned.

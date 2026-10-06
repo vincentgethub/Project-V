@@ -9,8 +9,9 @@ notional. Unconfigured known sectors use 35%; unconfigured themes use zero.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, localcontext
+from typing import cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,7 @@ from backend.domain.models import (
     CapitalStatus,
     Decision,
     DeployableCapital,
+    EarningsStatus,
     Intent,
     MarketContext,
     MarketStatus,
@@ -66,6 +68,61 @@ def _result(
 
 def _entry(proposal: TradeProposal) -> bool:
     return proposal.intent in {Intent.ENTRY, Intent.ADD}
+
+
+def earnings_rule(
+    market: MarketContext, now: datetime, config: Settings, calendar: MarketCalendar
+) -> RuleResult:
+    """DAT-11/CRO-13: confirmed dates block; estimated and absent dates warn."""
+    market = MarketContext.model_validate(market)
+    now = ensure_utc(now)
+    evidence = market.earnings
+    if evidence is not None and evidence.status == EarningsStatus.ESTIMATED:
+        # Revalidated EarningsInfo requires both dates for ESTIMATED.
+        start, end = cast(date, evidence.window_start), cast(date, evidence.window_end)
+        today = now.astimezone(EXCHANGE_TIMEZONE).date()
+        calendar.is_session(today)
+        on_session = calendar.is_session(start)
+        calendar.is_session(end)
+        count = config.earnings_blackout_sessions + (0 if on_session else 1)
+        earliest = start if count == 0 else calendar.previous_sessions(start, count)[0]
+        overlap = earliest <= today <= end
+        return _result(
+            "CRO-13",
+            False,
+            f"estimated {start.isoformat()}..{end.isoformat()}",
+            "verified earnings date",
+            "estimated earnings window overlaps the blackout; operator review required"
+            if overlap
+            else "earnings window is estimated; next confirmed date remains unavailable",
+            Severity.WARN,
+        )
+    earnings = evidence.date if evidence is not None else market.next_earnings_date
+    if earnings is None:
+        return _result(
+            "CRO-13",
+            False,
+            "unknown",
+            "verified earnings date",
+            "earnings unavailable; operator must review unknown event risk",
+            Severity.WARN,
+        )
+    today = now.astimezone(EXCHANGE_TIMEZONE).date()
+    calendar.is_session(today)
+    on_session = calendar.is_session(earnings)
+    if earnings <= today:
+        blocked = True
+    else:
+        count = config.earnings_blackout_sessions + (0 if on_session else 1)
+        earliest = earnings if count == 0 else calendar.previous_sessions(earnings, count)[0]
+        blocked = today >= earliest
+    return _result(
+        "CRO-13",
+        not blocked,
+        earnings.isoformat(),
+        f"outside {config.earnings_blackout_sessions} XNYS sessions",
+        "known earnings within inclusive blackout or unresolved past date blocks",
+    )
 
 
 class ChiefRiskOfficer:
@@ -483,34 +540,7 @@ class ChiefRiskOfficer:
 
     def _earnings(self, market: MarketContext, now: datetime) -> RuleResult:
         """CRO-13: inclusive XNYS proximity; unknown warns, never counts as neutral."""
-        earnings = market.next_earnings_date
-        if earnings is None:
-            return _result(
-                "CRO-13",
-                False,
-                "unknown",
-                "verified earnings date",
-                "earnings unavailable; operator must review unknown event risk",
-                Severity.WARN,
-            )
-        today = now.astimezone(EXCHANGE_TIMEZONE).date()
-        self.calendar.is_session(today)  # Enforce bounds even for a past event.
-        on_session = self.calendar.is_session(earnings)
-        if earnings <= today:
-            blocked = True
-        else:
-            count = self.config.earnings_blackout_sessions + (0 if on_session else 1)
-            earliest = (
-                earnings if count == 0 else self.calendar.previous_sessions(earnings, count)[0]
-            )
-            blocked = today >= earliest
-        return _result(
-            "CRO-13",
-            not blocked,
-            earnings.isoformat(),
-            f"outside {self.config.earnings_blackout_sessions} XNYS sessions",
-            "known earnings within inclusive blackout or unresolved past date blocks",
-        )
+        return earnings_rule(market, now, self.config, self.calendar)
 
     def max_allowed_qty(
         self,

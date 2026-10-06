@@ -11,13 +11,21 @@ from typing import Any, TypeVar
 import httpx
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import select
+from sqlalchemy import inspect, select, update
 from sqlalchemy.engine import Engine
 
 from backend.core.clock import FrozenClock
 from backend.core.config import Settings
-from backend.core.database import SecurityEvent, SystemControl, transaction
-from backend.core.errors import ConfigurationError, LedgerIntegrityError, SafetyError
+from backend.core.database import (
+    NewsHeadlineRecord,
+    SchemaMeta,
+    SecurityEvent,
+    SystemControl,
+    create_schema,
+    prepare_panic_schema,
+    transaction,
+)
+from backend.core.errors import ConfigurationError, DatabaseError, LedgerIntegrityError, SafetyError
 from backend.core.notifier import ConsoleNotifier
 from backend.core.system_state import SystemState, SystemStateStore
 from backend.net.egress import EgressPolicy, build_allowlist
@@ -240,6 +248,52 @@ def test_SEC_73_cli_panic_still_persists_halt_with_a_corrupted_ledger(
     assert "Regenerate" in output and "/revoke" in output
     with pytest.raises(LedgerIntegrityError):
         context.ledger.verify_chain()
+
+
+def make_pre_news_schema(engine: Engine) -> None:
+    """SEC-73: synthetic prior schema, without changing an owner's database."""
+    with engine.begin() as connection:
+        NewsHeadlineRecord.metadata.tables[NewsHeadlineRecord.__tablename__].drop(connection)
+        connection.execute(update(SchemaMeta).where(SchemaMeta.id == 1).values(version=2))
+
+
+def test_SEC_73_old_schema_panic_halts_without_silent_migration(
+    context: module.SecurityContext,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    make_pre_news_schema(context.engine)
+    with pytest.raises(DatabaseError, match="version"):
+        create_schema(context.engine)
+    monkeypatch.setenv("DB_URL", str(context.engine.url))
+    monkeypatch.setattr(module, "check_permissions", lambda **kwargs: ())
+    monkeypatch.setattr(module, "SystemClock", lambda: context.ledger.clock)
+    assert cli.main(["ops", "panic", "--operator", "Owner", "--reason", "local emergency"]) == 0
+    with transaction(context.engine) as session:
+        control = session.get(SystemControl, 1)
+        assert control is not None and control.state == SystemState.HALTED.value
+        assert session.scalar(select(SchemaMeta.version)) == 2
+    assert "news_headlines" not in inspect(context.engine).get_table_names()
+    assert events(context.engine, "PANIC")
+    assert "Local state: HALTED" in capsys.readouterr().out
+    with pytest.raises(ConfigurationError, match="verified ledger"):
+        module.open_context()
+
+
+@pytest.mark.parametrize("damage", ["table", "column", "version"])
+def test_SEC_73_old_schema_panic_refuses_incompatible_controls(engine: Engine, damage: str) -> None:
+    make_pre_news_schema(engine)
+    with engine.begin() as connection:
+        if damage == "table":
+            connection.exec_driver_sql("CREATE TABLE unexpected_fixture (id INTEGER)")
+        elif damage == "column":
+            connection.exec_driver_sql(
+                "ALTER TABLE system_control ADD COLUMN unexpected_fixture INTEGER"
+            )
+        else:
+            connection.execute(update(SchemaMeta).where(SchemaMeta.id == 1).values(version=1))
+    with pytest.raises(DatabaseError):
+        prepare_panic_schema(engine)
 
 
 @pytest.mark.parametrize(

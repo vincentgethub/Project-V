@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from decimal import ROUND_FLOOR, Decimal, localcontext
-from typing import Any, Protocol, TypeVar
+from functools import partial
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from zoneinfo import ZoneInfo
 
 import requests
@@ -43,6 +44,10 @@ from backend.domain.models import (
 
 ReadT = TypeVar("ReadT")
 NEW_YORK = ZoneInfo("America/New_York")
+
+if TYPE_CHECKING:
+    from backend.data.async_reader import AsyncAlpacaReader
+    from backend.data.corporate_actions import CorporateActionsResult
 
 
 class Bar(FrozenModel):
@@ -140,20 +145,25 @@ class ResilientReader:
         state: SystemStateStore,
         *,
         attempts: int = 3,
-        calls_per_minute: int = 200,
+        calls_per_minute: int | None = None,
+        plan: str = "BASIC",
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        if calls_per_minute is None:
+            calls_per_minute = 180 if plan == "BASIC" else 9000
         if (
             type(attempts) is not int
             or type(calls_per_minute) is not int
             or not 1 <= attempts <= 10
-            or not 1 <= calls_per_minute <= 200
+            or plan not in {"BASIC", "ALGO_TRADER_PLUS"}
+            or not 1 <= calls_per_minute <= (180 if plan == "BASIC" else 9000)
         ):
             raise ProviderError("DAT-04: invalid resilience bounds")
         self.clock = clock
         self.state = state
         self.attempts = attempts
         self.calls_per_minute = calls_per_minute
+        self.plan = plan
         self.sleep = sleep
         self.tripped = False
         self._calls: deque[datetime] = deque()
@@ -227,49 +237,23 @@ def validate_clock_skew(broker_time: datetime, now: datetime, config: Settings) 
         raise DataIntegrityError("DAT-02: broker/local clock skew exceeds ceiling")
 
 
-class DataLayer:
-    """DAT-01..04: validation, provenance and state escalation around provider reads."""
+class _DailySymbolStatus:
+    """DAT-02: one durable gap/acknowledgment rule shared by both data paths."""
 
     def __init__(
         self,
         config: Settings,
-        provider: MarketDataProvider,
         calendar: MarketCalendar,
         clock: Clock,
         state: SystemStateStore,
         ledger: Ledger,
-        *,
-        sip_grace_seconds: int = 900,
         corporate_actions: frozenset[tuple[str, date]] = frozenset(),
-        reader: ResilientReader | None = None,
     ) -> None:
-        if type(sip_grace_seconds) is not int or not 0 <= sip_grace_seconds <= 900:
-            raise DataIntegrityError("DAT-01: invalid completed-bar grace")
-        self.config = config
-        self.provider = provider
-        self.calendar = calendar
-        self.clock = clock
-        self.state = state
-        self.ledger = ledger
-        self.sip_grace_seconds = sip_grace_seconds
+        self.config, self.calendar, self.clock = config, calendar, clock
+        self.state, self.ledger = state, ledger
         self.corporate_actions = corporate_actions
-        self.reader = reader or ResilientReader(clock, state)
         self._suspect: set[str] = set()
         self._acknowledged_through: dict[str, date] = {}
-        try:
-            self.config = _checked_settings(config)
-            if not isinstance(corporate_actions, frozenset):
-                raise DataIntegrityError("DAT-02: corporate actions must be immutable")
-            for corporate_symbol, corporate_day in corporate_actions:
-                validate_symbol(corporate_symbol)
-                if type(corporate_day) is not date:
-                    raise DataIntegrityError("DAT-02: corporate action date is invalid")
-            self._reload_symbol_status()
-        except Exception as exc:
-            self.state.halt_for_error(exc)
-            if isinstance(exc, SafetyError):
-                raise exc from None
-            raise DataIntegrityError("DAT-02: persisted symbol status is unverifiable") from None
 
     def _reload_symbol_status(self) -> None:
         """DAT-02/R-02: verify durable flags so another worker cannot leave a stale OK."""
@@ -341,6 +325,97 @@ class DataLayer:
                 raise exc from None
             raise DataIntegrityError("DAT-02: symbol acknowledgment failed") from None
 
+    def evaluate(
+        self,
+        symbol: str,
+        bars: tuple[Bar, ...],
+        *,
+        known_actions: frozenset[tuple[str, date]] = frozenset(),
+    ) -> MarketStatus:
+        for left, right in zip(bars, bars[1:], strict=False):
+            with localcontext() as context:
+                context.prec = 50
+                gap_amount = abs(right.open - left.close)
+                gap_limit = self.config.gap_alert_pct * left.close
+            if (
+                gap_amount > gap_limit
+                and (symbol, right.session_date) not in self.corporate_actions
+                and (symbol, right.session_date) not in known_actions
+                and right.session_date > self._acknowledged_through.get(symbol, date.min)
+            ):
+                if symbol not in self._suspect:
+                    self._record_symbol_status(symbol, "SUSPECT", None, "unexplained overnight gap")
+                self._suspect.add(symbol)
+        return MarketStatus.SUSPECT if symbol in self._suspect else MarketStatus.OK
+
+
+class DataLayer:
+    """DAT-01..04: validation, provenance and state escalation around provider reads."""
+
+    def __init__(
+        self,
+        config: Settings,
+        provider: MarketDataProvider,
+        calendar: MarketCalendar,
+        clock: Clock,
+        state: SystemStateStore,
+        ledger: Ledger,
+        *,
+        sip_grace_seconds: int = 900,
+        corporate_actions: frozenset[tuple[str, date]] = frozenset(),
+        reader: ResilientReader | None = None,
+    ) -> None:
+        if type(sip_grace_seconds) is not int or not 0 <= sip_grace_seconds <= 900:
+            raise DataIntegrityError("DAT-01: invalid completed-bar grace")
+        self.config = config
+        self.provider = provider
+        self.calendar = calendar
+        self.clock = clock
+        self.state = state
+        self.ledger = ledger
+        self.sip_grace_seconds = sip_grace_seconds
+        self.corporate_actions = corporate_actions
+        self.reader = reader or ResilientReader(clock, state)
+        try:
+            self.config = _checked_settings(config)
+            if not isinstance(corporate_actions, frozenset):
+                raise DataIntegrityError("DAT-02: corporate actions must be immutable")
+            for corporate_symbol, corporate_day in corporate_actions:
+                validate_symbol(corporate_symbol)
+                if type(corporate_day) is not date:
+                    raise DataIntegrityError("DAT-02: corporate action date is invalid")
+            self._status = _DailySymbolStatus(
+                self.config, calendar, clock, state, ledger, corporate_actions
+            )
+            self._status._reload_symbol_status()
+        except Exception as exc:
+            self.state.halt_for_error(exc)
+            if isinstance(exc, SafetyError):
+                raise exc from None
+            raise DataIntegrityError("DAT-02: persisted symbol status is unverifiable") from None
+
+    def acknowledge_gap(self, symbol: str, operator_id: str, reason: str) -> None:
+        """DAT-02: preserve the explicit local-only durable acknowledgment API."""
+        self._status.acknowledge_gap(symbol, operator_id, reason)
+
+    def _record_symbol_status(
+        self,
+        symbol: str,
+        status: str,
+        operator_id: str | None,
+        reason: str,
+        *,
+        acknowledged_through: date | None = None,
+    ) -> None:
+        """DAT-02: preserve the internal audited status boundary for existing callers."""
+        self._status._record_symbol_status(
+            symbol,
+            status,
+            operator_id,
+            reason,
+            acknowledged_through=acknowledged_through,
+        )
+
     def latest_market(self, symbol: str) -> MarketContext:
         """DAT-01/R-02: every malformed or stale provider quote halts."""
         try:
@@ -352,8 +427,8 @@ class DataLayer:
                 context = self.reader.run(lambda: self.provider.latest_market(symbol, now))
             context = MarketContext.model_validate(context)
             validate_quote(context, now, self.config, self.calendar)
-            self._reload_symbol_status()
-            if symbol in self._suspect:
+            self._status._reload_symbol_status()
+            if symbol in self._status._suspect:
                 context = context.model_copy(update={"status": MarketStatus.SUSPECT})
             return context
         except Exception as exc:
@@ -369,7 +444,7 @@ class DataLayer:
             now = ensure_utc(self.clock.now())
             end = now.astimezone(NEW_YORK).date()
             _validate_daily_window(start, end)
-            self._reload_symbol_status()
+            self._status._reload_symbol_status()
             if isinstance(self.provider, AlpacaMarketData):
                 fetched = self.provider.daily_bars(symbol, start, end)
             else:
@@ -427,20 +502,7 @@ class DataLayer:
             for left, right in zip(completed, completed[1:], strict=False):
                 if self.calendar.add_sessions(left.session_date, 1) != right.session_date:
                     raise DataIntegrityError("DAT-02: exchange session missing from daily data")
-                with localcontext() as ctx:
-                    ctx.prec = 50
-                    gap_amount = abs(right.open - left.close)
-                    gap_limit = self.config.gap_alert_pct * left.close
-                if (
-                    gap_amount > gap_limit
-                    and (symbol, right.session_date) not in self.corporate_actions
-                    and right.session_date > self._acknowledged_through.get(symbol, date.min)
-                ):
-                    if symbol not in self._suspect:
-                        self._record_symbol_status(
-                            symbol, "SUSPECT", None, "unexplained overnight gap"
-                        )
-                    self._suspect.add(symbol)
+            self._status.evaluate(symbol, completed)
             return completed
         except Exception as exc:
             self.state.halt_for_error(exc)
@@ -564,7 +626,13 @@ class AlpacaMarketData:
             request = StockBarsRequest(
                 symbol_or_symbols=[symbol],
                 start=datetime.combine(start, datetime_time.min, tzinfo=NEW_YORK),
-                end=datetime.combine(end + timedelta(days=1), datetime_time.min, tzinfo=NEW_YORK),
+                end=min(
+                    datetime.combine(end + timedelta(days=1), datetime_time.min, tzinfo=NEW_YORK),
+                    ensure_utc(self.reader.clock.now()) - timedelta(minutes=16),
+                    self.calendar.session_close(
+                        _eligible_session(self.calendar, self.reader.clock.now(), 30)
+                    ),
+                ),
                 timeframe=TimeFrame.Day,
                 feed=DataFeed.SIP,
                 adjustment=Adjustment.ALL,
@@ -635,7 +703,10 @@ class AlpacaMarketData:
                 raise DataIntegrityError("DAT-02: future quote/trade")
             # An explicit 60-day window supplies 20 complete sessions even around holidays.
             bars = self.daily_bars(symbol, now.date() - timedelta(days=60), now.date())
-            cutoff = ensure_utc(now) - timedelta(minutes=15)
+            eligible = _eligible_session(self.calendar, now, 30)
+            cutoff = min(
+                ensure_utc(now) - timedelta(minutes=16), self.calendar.session_close(eligible)
+            )
             previous: datetime | None = None
             previous_day: date | None = None
             for bar in bars:
@@ -700,3 +771,422 @@ def _checked_settings(config: Settings) -> Settings:
     ):
         payload.pop("telegram_allowed_user_ids")
     return Settings.model_validate(payload)
+
+
+def _eligible_session(calendar: MarketCalendar, now: datetime, delay_minutes: int) -> date:
+    instant = ensure_utc(now)
+    session = calendar.last_completed_session(instant)
+    if instant < calendar.session_close(session) + timedelta(minutes=delay_minutes):
+        session = calendar.previous_sessions(session, 1)[0]
+    return session
+
+
+def _bars_digest(bars: tuple[Bar, ...]) -> tuple[str, list[dict[str, Any]]]:
+    payload = [bar.model_dump(mode="json") for bar in bars]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode()).hexdigest(), payload
+
+
+class SymbolBars(FrozenModel):
+    """DAT-05: exact cached sessions and their reproducible completed-data hash."""
+
+    symbol: str
+    bars: tuple[Bar, ...]
+    data_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: MarketStatus = MarketStatus.OK
+
+    @model_validator(mode="after")
+    def bound_bars(self) -> SymbolBars:
+        validate_symbol(self.symbol)
+        if not self.bars or self.data_sha256 != _bars_digest(self.bars)[0]:
+            raise ValueError("DAT-05: bars require a matching immutable payload hash")
+        return self
+
+
+class BatchBars(FrozenModel):
+    """DAT-05: immutable multi-symbol data; benchmarks share the same SDK batch."""
+
+    as_of: UTCDateTime
+    through: date
+    entries: tuple[SymbolBars, ...]
+
+    @model_validator(mode="after")
+    def unique_symbols(self) -> BatchBars:
+        names = tuple(entry.symbol for entry in self.entries)
+        if not names or len(names) != len(set(names)):
+            raise ValueError("DAT-05: batch symbols must be unique and nonempty")
+        if any(entry.bars[-1].session_date != self.through for entry in self.entries):
+            raise ValueError("DAT-05: all symbols require the same completed tail")
+        return self
+
+    def for_symbol(self, symbol: str) -> tuple[Bar, ...]:
+        validate_symbol(symbol)
+        for entry in self.entries:
+            if entry.symbol == symbol:
+                return entry.bars
+        raise DataIntegrityError("DAT-05: requested symbol is absent from batch")
+
+    def status_for(self, symbol: str) -> MarketStatus:
+        validate_symbol(symbol)
+        for entry in self.entries:
+            if entry.symbol == symbol:
+                return entry.status
+        raise DataIntegrityError("DAT-05: requested status is absent from batch")
+
+
+class AsyncAlpacaMarketData:
+    """DAT-05..08: ledger-backed incremental multi-symbol completed daily bars."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        reader: AsyncAlpacaReader,
+        calendar: MarketCalendar,
+        ledger: Ledger,
+        client: Any = None,
+        *,
+        daily_scan_delay_minutes: int = 30,
+        sip_lag_seconds: int = 960,
+    ) -> None:
+        from alpaca.data.historical import StockHistoricalDataClient
+
+        from backend.data.broker_state import configure_alpaca_transport
+
+        if (
+            type(daily_scan_delay_minutes) is not int
+            or not 30 <= daily_scan_delay_minutes <= 1440
+            or type(sip_lag_seconds) is not int
+            or not 960 <= sip_lag_seconds <= 3600
+        ):
+            raise DataIntegrityError("DAT-07: daily delay or SIP lag weakens required bounds")
+        self.settings = _checked_settings(settings)
+        self.reader, self.calendar, self.ledger = reader, calendar, ledger
+        reader.bind_policy(self.settings, ledger)
+        self._status = _DailySymbolStatus(
+            self.settings, calendar, reader.clock, reader.state, ledger
+        )
+        self.delay, self.sip_lag_seconds = daily_scan_delay_minutes, sip_lag_seconds
+        try:
+            self.client: Any = (
+                client
+                if client is not None
+                else StockHistoricalDataClient(
+                    api_key=self.settings.broker_api_key.get_secret_value(),
+                    secret_key=self.settings.broker_secret_key.get_secret_value(),
+                    raw_data=True,
+                )
+            )
+            configure_alpaca_transport(
+                self.client,
+                self.settings.request_timeout_seconds,
+                before_request=reader.before_request,
+            )
+        except Exception as error:
+            self.reader.state.halt_for_error(error)
+            raise ProviderError("DAT-08: async market transport could not be configured") from None
+
+    def _cache(self, symbols: tuple[str, ...], now: datetime) -> dict[str, dict[date, Bar]]:
+        self.reader.ensure_active()
+        self.ledger.verify_chain()
+        result: dict[str, dict[date, Bar]] = {symbol: {} for symbol in symbols}
+        with transaction(self.ledger.engine) as session:
+            records = session.scalars(
+                select(DataSnapshot)
+                .where(
+                    DataSnapshot.symbol.in_(symbols),
+                    DataSnapshot.timeframe == "1Day",
+                    DataSnapshot.feed == "SIP",
+                    DataSnapshot.adjustment == "ALL",
+                )
+                .order_by(DataSnapshot.seq)
+            )
+            for record in records:
+                self.reader.ensure_active()
+                if record.fetched_at > now:
+                    raise DataIntegrityError("DAT-05: cached snapshot is future data")
+                bars = tuple(self._cached_bar(value) for value in record.bars)
+                if (
+                    not bars
+                    or record.bar_count != len(bars)
+                    or record.sha256 != _bars_digest(bars)[0]
+                    or record.range_start != bars[0].timestamp
+                    or record.range_end != bars[-1].timestamp
+                ):
+                    raise DataIntegrityError("DAT-05: cached payload differs from its provenance")
+                previous: Bar | None = None
+                for bar in bars:
+                    bar.validate_integrity()
+                    if bar.timestamp > record.fetched_at:
+                        raise DataIntegrityError("DAT-05: cached bar is later than its fetch")
+                    if previous is not None and (
+                        bar.timestamp <= previous.timestamp
+                        or bar.session_date <= previous.session_date
+                    ):
+                        raise DataIntegrityError("DAT-05: cached raw daily sessions are unordered")
+                    previous = bar
+                    if (
+                        self.calendar.session_close(bar.session_date)
+                        + timedelta(minutes=self.delay)
+                        > record.fetched_at
+                    ):
+                        # Raw legacy snapshots can include an in-progress bar. Its
+                        # exact digest is checked, but it is never completed evidence.
+                        continue
+                    existing = result[record.symbol].get(bar.session_date)
+                    if existing is not None and existing != bar:
+                        raise DataIntegrityError("DAT-05: conflicting immutable cached session")
+                    result[record.symbol][bar.session_date] = bar
+        self.reader.ensure_active()
+        return result
+
+    @staticmethod
+    def _cached_bar(value: object) -> Bar:
+        """DAT-05/R-04: deserialize exact stored JSON through the typed bar boundary."""
+        if not isinstance(value, Mapping) or set(value) != set(Bar.model_fields):
+            raise DataIntegrityError("DAT-05: cached bar has an invalid field inventory")
+        try:
+            return Bar(
+                timestamp=datetime.fromisoformat(value["timestamp"]),
+                open=_provider_money(value["open"]),
+                high=_provider_money(value["high"]),
+                low=_provider_money(value["low"]),
+                close=_provider_money(value["close"]),
+                volume=value["volume"],
+            )
+        except Exception:
+            raise DataIntegrityError("DAT-05: cached exact bar is malformed") from None
+
+    def _store(
+        self,
+        snapshots: tuple[tuple[str, tuple[Bar, ...]], ...],
+        entries: tuple[SymbolBars, ...],
+        now: datetime,
+        known_actions: frozenset[tuple[str, date]],
+    ) -> tuple[SymbolBars, ...]:
+        """DAT-02/05/08: DB/cache and durable gaps share the bounded worker path."""
+        self.reader.ensure_active()
+        self._status._reload_symbol_status()
+        checked: list[SymbolBars] = []
+        for entry in entries:
+            self.reader.ensure_active()
+            status = self._status.evaluate(entry.symbol, entry.bars, known_actions=known_actions)
+            checked.append(SymbolBars.model_validate(entry.model_copy(update={"status": status})))
+        if snapshots:
+            with transaction(self.ledger.engine) as session:
+                for symbol, bars in snapshots:
+                    self.reader.ensure_active()
+                    digest, raw = _bars_digest(bars)
+                    self.ledger.append_in_session(
+                        session,
+                        DataSnapshot,
+                        symbol=symbol,
+                        timeframe="1Day",
+                        range_start=bars[0].timestamp,
+                        range_end=bars[-1].timestamp,
+                        feed="SIP",
+                        adjustment="ALL",
+                        fetched_at=now,
+                        bar_count=len(bars),
+                        sha256=digest,
+                        bars=raw,
+                    )
+                self.reader.ensure_active()
+        self.reader.ensure_active()
+        return tuple(checked)
+
+    async def completed_daily_bars(
+        self,
+        symbols: tuple[str, ...],
+        start: date,
+        *,
+        benchmarks: tuple[str, ...] = ("SPY",),
+        corporate_actions: CorporateActionsResult | None = None,
+    ) -> BatchBars:
+        from alpaca.data.enums import Adjustment, DataFeed
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+
+        try:
+            self.reader.bind_policy(self.settings, self.ledger)
+            if not isinstance(symbols, tuple) or not isinstance(benchmarks, tuple):
+                raise DataIntegrityError("DAT-05: symbols and benchmarks must be immutable")
+            names = tuple(dict.fromkeys((*symbols, *benchmarks)))
+            if not symbols or len(names) > 200:
+                raise DataIntegrityError("DAT-05: batch requires 1 through 200 symbols")
+            for symbol in names:
+                validate_symbol(symbol)
+            now = ensure_utc(self.reader.clock.now())
+            tail = _eligible_session(self.calendar, now, self.delay)
+            _validate_daily_window(start, tail)
+            first = start
+            while not self.calendar.is_session(first):
+                first += timedelta(days=1)
+            known_actions: frozenset[tuple[str, date]] = frozenset()
+            if corporate_actions is not None:
+                from backend.data.corporate_actions import CorporateActionsResult
+
+                actions = CorporateActionsResult.model_validate(corporate_actions)
+                if actions.fetched_at > now:
+                    raise DataIntegrityError("DAT-10: corporate actions are future evidence")
+                known_actions = actions.known_actions
+            cache = await self.reader.run(partial(self._cache, names, now), budget_request=False)
+            snapshots: list[tuple[str, tuple[Bar, ...]]] = []
+            groups: dict[date, list[str]] = {}
+            for symbol in names:
+                present = sorted(day for day in cache[symbol] if first <= day <= tail)
+                cursor = first
+                for day in present:
+                    if day != cursor:
+                        raise DataIntegrityError("DAT-05: cached session coverage has a gap")
+                    cursor = self.calendar.add_sessions(day, 1)
+                if cursor <= tail:
+                    groups.setdefault(cursor, []).append(symbol)
+            for missing_start, group in sorted(groups.items()):
+                # VERIFY: pinned alpaca-py 0.44.0 get_stock_bars paginates
+                # GET /v2/stocks/bars; every page enters the transport budget hook.
+                # https://docs.alpaca.markets/us/reference/stockbars
+                request = StockBarsRequest(
+                    symbol_or_symbols=group,
+                    start=datetime.combine(missing_start, datetime_time.min, tzinfo=NEW_YORK),
+                    end=min(
+                        self.calendar.session_close(tail),
+                        now - timedelta(seconds=self.sip_lag_seconds),
+                    ),
+                    timeframe=TimeFrame.Day,
+                    feed=DataFeed.SIP,
+                    adjustment=Adjustment.ALL,
+                )
+                response = await self.reader.run(
+                    partial(self.client.get_stock_bars, request),
+                    budget_request=False,
+                )
+                if not isinstance(response, Mapping) or set(response) != set(group):
+                    raise DataIntegrityError("DAT-05: batch response symbols differ from request")
+                for symbol in group:
+                    payload = response[symbol]
+                    if not isinstance(payload, list) or not payload:
+                        raise StaleDataError("DAT-05: incremental symbol sessions are unavailable")
+                    bars = tuple(AlpacaMarketData._parse_bar(value) for value in payload)
+                    expected = missing_start
+                    for bar in bars:
+                        if (
+                            bar.session_date != expected
+                            or bar.timestamp > now
+                            or bar.session_date > tail
+                        ):
+                            raise DataIntegrityError(
+                                "DAT-05: incremental bars are unordered, missing or future"
+                            )
+                        expected = self.calendar.add_sessions(expected, 1)
+                    if bars[-1].session_date != tail:
+                        raise StaleDataError("DAT-05: incremental completed tail is missing")
+                    snapshots.append((symbol, bars))
+                    cache[symbol].update((bar.session_date, bar) for bar in bars)
+            entries = tuple(
+                SymbolBars(
+                    symbol=symbol,
+                    bars=tuple(
+                        cache[symbol][day] for day in sorted(cache[symbol]) if first <= day <= tail
+                    ),
+                    data_sha256=_bars_digest(
+                        tuple(
+                            cache[symbol][day]
+                            for day in sorted(cache[symbol])
+                            if first <= day <= tail
+                        )
+                    )[0],
+                )
+                for symbol in names
+            )
+            validated = await self.reader.run(
+                partial(self._store, tuple(snapshots), entries, now, known_actions),
+                budget_request=False,
+            )
+            return BatchBars(as_of=now, through=tail, entries=validated)
+        except Exception as error:
+            await self.reader.halt(error)
+            if isinstance(error, SafetyError):
+                raise error from None
+            raise DataIntegrityError(
+                "DAT-05: batch data cannot establish completed evidence"
+            ) from None
+
+    def _latest_market(self, symbol: str, batch: BatchBars, now: datetime) -> MarketContext:
+        """DAT-01/02/05: quote/trade and ADV use the same validated completed batch."""
+        from alpaca.data.enums import DataFeed
+        from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
+
+        self.reader.ensure_active()
+        bars = batch.for_symbol(symbol)
+        if len(bars) < 20:
+            raise DataIntegrityError("DAT-02: completed batch lacks ADV20 history")
+        complete = bars[-20:]
+        for left, right in zip(complete, complete[1:], strict=False):
+            if self.calendar.add_sessions(left.session_date, 1) != right.session_date:
+                raise DataIntegrityError("DAT-02: batch ADV exchange session is missing")
+        # VERIFY: pinned alpaca-py 0.44.0 raw_data=True mappings are exercised
+        # by installed-SDK tests; these are GET /v2/stocks/{quotes,trades}/latest.
+        # https://alpaca.markets/sdks/python/api_reference/data/stock/historical.html
+        quote = self.client.get_stock_latest_quote(
+            StockLatestQuoteRequest(symbol_or_symbols=[symbol], feed=DataFeed.IEX)
+        )
+        trade = self.client.get_stock_latest_trade(
+            StockLatestTradeRequest(symbol_or_symbols=[symbol], feed=DataFeed.IEX)
+        )
+        if (
+            not isinstance(quote, Mapping)
+            or not isinstance(trade, Mapping)
+            or set(quote) != {symbol}
+            or set(trade) != {symbol}
+            or not isinstance(quote[symbol], Mapping)
+            or not isinstance(trade[symbol], Mapping)
+        ):
+            raise DataIntegrityError("DAT-02: quote/trade symbol differs from request")
+        q, t = quote[symbol], trade[symbol]
+        bid, ask = _provider_money(q["bp"]), _provider_money(q["ap"])
+        if ask < bid:
+            raise DataIntegrityError("DAT-02: invalid bid/ask")
+        quote_time = datetime.fromisoformat(str(q["t"]).replace("Z", "+00:00"))
+        timestamp = datetime.fromisoformat(str(t["t"]).replace("Z", "+00:00"))
+        if ensure_utc(quote_time) > now or ensure_utc(timestamp) > now:
+            raise DataIntegrityError("DAT-02: future quote/trade")
+        with localcontext() as context:
+            context.prec = max(50, max(len(str(bar.volume)) for bar in complete) + 30)
+            adv = (
+                sum((bar.close * bar.volume for bar in complete), Decimal(0)) / Decimal(20)
+            ).quantize(Decimal("0.000001"), rounding=ROUND_FLOOR)
+        self._status._reload_symbol_status()
+        status = batch.status_for(symbol)
+        if symbol in self._status._suspect:
+            status = MarketStatus.SUSPECT
+        result = MarketContext(
+            last_price=_provider_money(t["p"]),
+            last_price_ts=min(timestamp, quote_time),
+            adv20_usd=adv,
+            status=status,
+        )
+        validate_quote(result, now, self.settings, self.calendar)
+        self.reader.ensure_active()
+        return result
+
+    async def latest_market(self, symbol: str, batch: BatchBars) -> MarketContext:
+        """DAT-08: public IEX reads share the bucket and bounded worker admission."""
+        try:
+            self.reader.bind_policy(self.settings, self.ledger)
+            validate_symbol(symbol)
+            batch = BatchBars.model_validate(batch)
+            now = ensure_utc(self.reader.clock.now())
+            if (
+                batch.as_of > now
+                or batch.through != _eligible_session(self.calendar, now, self.delay)
+                or any(bar.timestamp > batch.as_of for entry in batch.entries for bar in entry.bars)
+            ):
+                raise DataIntegrityError("DAT-01/02: quote requires the current completed batch")
+            return await self.reader.run(partial(self._latest_market, symbol, batch, now))
+        except Exception as error:
+            await self.reader.halt(error)
+            if isinstance(error, SafetyError):
+                raise error from None
+            raise DataIntegrityError(
+                "DAT-02: async quote/trade cannot establish evidence"
+            ) from None

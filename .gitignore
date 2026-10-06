@@ -34,9 +34,12 @@ coverage-stage-c.json
 coverage-stage-d*.json
 coverage*.json
 gitleaks*.json
-data/
-backups/
-logs/
+/data/
+/backups/
+/logs/
+/vws-core/data/
+/vws-core/backups/
+/vws-core/logs/
 *.vwsbak
 compile-*.log
 secrets-report.json

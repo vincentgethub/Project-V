@@ -1,13 +1,15 @@
 # Technical status
 
 Audit date: 2026-10-04 America/Chicago. The initial audit results below describe the pre-fix working
-tree. The audit-fixes gate below certifies the current implementation. Amendments 01–04 supersede conflicts in the master and
+tree. Audit-fixes and Stage S results below are historical; the Stage D gate
+records the current implementation. Amendments 01–04 supersede conflicts in the master and
 earlier addenda. Execution order: audit/fixes → S → D → E → F → G → H → J → I → K.
 Optional ideas require plain-words approval and live only in PROGRESS Suggestions.
 
-Current work date: **2026-10-05 America/Chicago**. Stage S is in progress.
-The Step 0 audit-fixes results are certified history; the combined Stage S gate,
-fresh hash-lock installation and final current-source inventory are pending.
+Current work date: **2026-10-05 America/Chicago**. Stage S is complete in local
+commit `bc3e6f0`. Its offline gates and fresh hash-lock installation passed;
+actual owner services remain UNVERIFIED. Expanded Stage D passed its offline
+gates and is complete; deterministic Stage E research is next.
 
 ## Stage inventory
 
@@ -16,8 +18,8 @@ fresh hash-lock installation and final current-source inventory are pending.
 | A | core config/money/clock/logging/database/ledger/state/guard; XNYS calendar; Stage_A.md | Original stage certified; configuration/guard corrections certified |
 | B | frozen contracts, registry, CRO, risk boundary; Stage_B.md | Original certified; session daily-loss correction certified |
 | C | compliance, wash matching, tax models, compliance boundary; Stage_C.md | Original certified; shared tax-core move reserved for J |
-| D | data_layer/broker_state/liquidity/read boundary; indicators/scanner; Sandbox helper; six test modules | Original source tests pass; no final D delivery; DAT-05..12 missing |
-| S | security/net/ops/Telegram admission/content/dependency services and host CLI | Focused fake gates passed; final combined gate pending; later pipeline wiring tracked below |
+| D | market/broker/liquidity boundaries, async batch/cache, news/actions, earnings and manual CSV providers | DAT-05..12 offline gate passed; actual paper integration UNVERIFIED |
+| S | security/net/ops/Telegram admission/content/dependency services and host CLI | Offline gates passed; connected verification and later pipeline wiring tracked below |
 | E–K | Configuration/storage foundations and Stage S security services | Research swarm/bot handlers/evaluation/service startup/funding/P&L/tax/auto/extras not implemented |
 
 Initial pre-fix inventory: 64 authored Python files, 39 production/script and 25 test-package files.
@@ -177,10 +179,53 @@ Line references in contamination inventory above refer to the pre-fix snapshot.
 
 ## Amendment traceability and remaining work
 
-DAT-05 batching/cache/memoization; DAT-06 async shared token bucket/Retry-After;
-DAT-07 SIP clamp; DAT-08 async SDK worker/semaphore; DAT-09 news/stable IDs;
-DAT-10 corporate-actions provider; DAT-11 earnings precedence/estimate;
-DAT-12 manual CSV/account-type check: all new work pending expanded D.
+Paths below are relative to backend/. Combined Stage D gates passed.
+
+| ID | Implementation | Acceptance evidence |
+| --- | --- | --- |
+| DAT-05 | data/data_layer.py AsyncAlpacaMarketData/BatchBars; agents/indicators.py IndicatorMemo | test_batch_data.py; test_indicator_cache.py; warm 50-symbol request count |
+| DAT-06 | data/async_reader.py AsyncTokenBucket/physical-request admission | test_async_reader.py fake-clock burst/429/Retry-After; test_batch_data.py actual page count |
+| DAT-07 | data/data_layer.py SIP clamp/completed session; core/config.py ScheduleConfig | test_data_layer.py; test_batch_data.py SIP end, close+30 minutes, NY/DST labels |
+| DAT-08 | data/async_reader.py bounded shielded workers; data/boundary.py async account/funding; data/data_layer.py async IEX quote/trade | test_async_reader.py timeout/cancellation/concurrency; test_stage_d_boundaries.py durable worker HALT/no late marks; test_batch_data.py shared IEX budget/no extra ADV fetch |
+| DAT-09 | data/news.py providers/NewsStore; core/content.py citation helpers; database.py NewsHeadlineRecord | test_news.py provider-ID/hash dedupe and restart; test_stage_d_boundaries.py provenance/schema/metadata controls; all-table mutation tests |
+| DAT-10 | data/corporate_actions.py verified process/effective-date evidence | test_corporate_actions.py unavailable/malformed/future/action-date controls; gap status integration |
+| DAT-11 | domain/models.py EarningsInfo; data/earnings.py precedence; risk/risk_cro.py earnings_rule | test_earnings.py precedence/as-of/windows; test_earnings_risk.py confirmed BLOCK/estimated WARN/unknown WARN/proof revalidation |
+| DAT-12 | data/manual_broker.py ManualCSVBrokerState; data/broker_state.py account-type crosscheck | test_manual_broker.py CSV/session age/explicit restrictions/order evidence; test_stage_d_boundaries.py mismatched account type durable HALT |
+
+Stage D adds NewsHeadlineRecord to the registered immutable ledger inventory
+(19 tables), schema version 3. Fresh databases receive version 3; ordinary
+startup refuses version 2 rather than silently adding a table. Stage H supplies
+the explicit verified-backup-first additive migration. SEC-73 emergency panic
+uses database.prepare_panic_schema on the exact compatible prior inventory,
+retaining version 2 and persisting HALTED without a chain-certification claim.
+test_security_cli.py covers prior-schema panic, normal refusal and incompatible
+table/column/version controls; test_ledger.py applies raw/ORM/REPLACE mutation
+controls to the newly registered table too. No owner database was modified.
+
+### Final Stage D gate - 2026-10-05
+
+`python -m pytest -q --cov --cov-branch --cov-report=term-missing --cov-fail-under=100`:
+**2,901 passed, one skipped, two warnings**, 404.77 seconds. Risk/state/contracts
+reached **100% of 1,253 statements and 402 branches**. Current collection is
+2,902 cases; the skipped case is explicit paper integration without credentials.
+The warnings are the pinned SDK deprecation and deliberate socket-blocking
+positive control. The first whole attempt had one ambient-Decimal-context
+indicator validation failure; it was fixed, the 87-case scanner/indicator gate
+passed, and the entire suite was rerun green. Focused counts are not summed
+into a fabricated whole-suite count.
+
+Ruff lint/format (112 authored files), strict typing (112 sources), source guard,
+production Bandit (zero findings), pip check, unchanged 121-pin dev-lock audit,
+authored secret scan (zero findings), and all five Git-root hooks passed.
+Warm 50-symbol plus benchmark scan: one physical bar GET for the new session;
+repeat scan: zero. SDK pagination/quotes/news/actions share the physical budget.
+Final full-history scan is recorded after the local stage commit.
+
+Actual paper/news/action services, paid NewsAPI terms, owner keyring/permissions,
+PostgreSQL/Docker/mutation and remote CI remain UNVERIFIED with reproduction
+commands below and in VERIFY.md/RUNBOOK.md. No order or money-movement calls
+exist; mode remains MANUAL with paper defaults. There are no extra features
+or suggestions. Stage E adds only the amended deterministic research scope.
 
 FA-01..09: deterministic SEC fundamentals pending E. EV-01..03: outcomes/replay/
 report pending G. OPS-01..08: doctor/start/watchdog/backup/migrations/CI/deploy/logs
@@ -204,7 +249,9 @@ current offline development. Host/account MFA settings can only be ATTESTED,
 never described as remotely verified.
 
 UNVERIFIED: real paper `/v2/account` recording; current fixture is synthetic.
-Command after keys: `python -m pytest -m integration` (integration tests pending D).
+Command after keys: `python -m pytest -m integration --paper-integration-env-file PRIVATE_PAPER_CONFIG`.
+The file is read only when explicitly selected. Default tests do not read real
+dotenv files or the owner's native keyring. The connected test never places an order.
 UNVERIFIED: mutation `python -m mutmut run`, PostgreSQL service tests and
 `docker compose build`; local Windows prerequisites are absent, CI jobs pending.
 No broker, bank, LLM, Telegram send or order action occurred in the audit.

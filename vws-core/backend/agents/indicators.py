@@ -11,7 +11,11 @@ RVOL compares each volume with the preceding period volumes, excluding itself.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import threading
 from collections.abc import Callable
+from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from functools import wraps
 from typing import ParamSpec, Self, TypeVar
@@ -23,9 +27,9 @@ from pydantic import model_validator
 from backend.core.errors import DataIntegrityError
 from backend.core.money import CENT, decimal_money, validate_cent_price
 from backend.data.data_layer import Bar
-from backend.domain.models import FrozenModel, Money
+from backend.domain.models import FrozenModel, Money, validate_symbol
 
-Series = tuple[Decimal | None, ...]
+Series = tuple[Money | None, ...]
 Array = NDArray[np.float64]
 MICRO = Decimal("0.000001")
 Arguments = ParamSpec("Arguments")
@@ -236,3 +240,85 @@ def anchored_vwap(bars: tuple[Bar, ...], anchor_index: int) -> Series:
         if volume > 0:
             result[anchor_index + offset] = weighted[offset] / volume
     return _export(result, CENT)
+
+
+class IndicatorSeries(FrozenModel):
+    """DAT-05: immutable complete series reused by scanner and playbooks."""
+
+    ema20: Series
+    ema50: Series
+    ema200: Series
+    rsi14: Series
+    atr14: Series
+    macd: MACDSeries
+    rvol20: Series
+    anchored_vwap: Series
+
+    @model_validator(mode="after")
+    def consistent_series(self) -> Self:
+        count = len(self.ema20)
+        components = (
+            self.ema20,
+            self.ema50,
+            self.ema200,
+            self.rsi14,
+            self.atr14,
+            self.rvol20,
+            self.anchored_vwap,
+            self.macd.line,
+        )
+        if not count or any(len(values) != count for values in components):
+            raise ValueError("DAT-05: cached indicator series lengths must agree")
+        with localcontext() as context:
+            context.prec = 40
+            for values in (self.ema20, self.ema50, self.ema200, self.atr14, self.anchored_vwap):
+                for value in values:
+                    if value is not None and (value < 0 or value != value.quantize(CENT)):
+                        raise ValueError("DAT-05: cached price-valued indicators require cents")
+        if any(value is not None and not 0 <= value <= 100 for value in self.rsi14):
+            raise ValueError("DAT-05: cached RSI is outside its defined range")
+        if any(value is not None and value < 0 for value in self.rvol20):
+            raise ValueError("DAT-05: cached RVOL cannot be negative")
+        return self
+
+
+class IndicatorMemo:
+    """DAT-05: compute each symbol/session once; changed same-session data fails."""
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[str, date], tuple[str, int, IndicatorSeries]] = {}
+        self._lock = threading.RLock()
+
+    @_fail_closed
+    def calculate(self, symbol: str, bars: tuple[Bar, ...], anchor_index: int) -> IndicatorSeries:
+        validate_symbol(symbol)
+        checked = _bars(bars)
+        if type(anchor_index) is not int or not 0 <= anchor_index < len(checked):
+            raise DataIntegrityError("DAT-05: memoized AVWAP requires a valid anchor")
+        encoded = json.dumps(
+            [bar.model_dump(mode="json") for bar in checked],
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        digest = hashlib.sha256(encoded.encode()).hexdigest()
+        key = (symbol, checked[-1].session_date)
+        with self._lock:
+            prior = self._entries.get(key)
+            if prior is not None:
+                if prior[0] != digest or prior[1] != anchor_index:
+                    raise DataIntegrityError("DAT-05: same-session indicator input changed")
+                return IndicatorSeries.model_validate(prior[2])
+            prices = tuple(bar.close for bar in checked)
+            result = IndicatorSeries(
+                ema20=ema(prices, 20),
+                ema50=ema(prices, 50),
+                ema200=ema(prices, 200),
+                rsi14=rsi(prices),
+                atr14=atr(checked),
+                macd=macd(prices),
+                rvol20=rvol(tuple(bar.volume for bar in checked)),
+                anchored_vwap=anchored_vwap(checked, anchor_index),
+            )
+            self._entries[key] = (digest, anchor_index, result)
+            return result

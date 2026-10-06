@@ -42,6 +42,20 @@ def sanitize_text(value: str, *, limit: int = 280) -> str:
     return " ".join(text.split())[:limit].rstrip()
 
 
+def headline_digest(value: str) -> str:
+    """DAT-09: one normalized public-headline identity across all providers."""
+    normalized = " ".join(unicodedata.normalize("NFKC", sanitize_text(value)).casefold().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def headline_stable_id(provider: str, provider_id: str | None, digest: str) -> str:
+    """DAT-09: bind a stable citation to its provider ID or headline digest."""
+    identity = provider + (
+        "\0id\0" + provider_id if provider_id is not None else "\0headline\0" + digest
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
 def injection_suspect(value: str, allowed_hosts: frozenset[str]) -> bool:
     """SEC-62: public facts never grant authority to embedded instructions."""
     if not isinstance(value, str) or not isinstance(allowed_hosts, frozenset):

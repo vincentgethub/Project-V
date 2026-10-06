@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from decimal import ROUND_CEILING, Decimal, localcontext
@@ -30,6 +32,7 @@ from backend.core.database import (
     LedgerRecord,
     LLMCall,
     MoneyType,
+    NewsHeadlineRecord,
     Order,
     OrderEvent,
     PortfolioState,
@@ -415,6 +418,8 @@ class Ledger:
                 "prompt_hash",
                 "sha256",
                 "ticket_sha256",
+                "stable_id",
+                "headline_sha256",
             }:
                 if not isinstance(value, str) or len(value) != 64:
                     raise DataIntegrityError(
@@ -426,8 +431,51 @@ class Ledger:
             raise DataIntegrityError("Ledger creation timestamp is in the future")
         if isinstance(record, LLMCall):
             self._validate_llm_call(record)
+        if isinstance(record, NewsHeadlineRecord):
+            self._validate_news_headline(record)
         if isinstance(record, ConfigSnapshot):
             self._reject_secret_fields(record.settings)
+
+    @staticmethod
+    def _validate_news_headline(record: NewsHeadlineRecord) -> None:
+        """DAT-09/SEC-60: revalidate public evidence on append and chain verification."""
+        from backend.core.content import headline_digest, headline_stable_id, sanitize_text
+
+        if record.provider not in {"ALPACA", "RSS", "NEWSAPI", "FAKE"}:
+            raise DataIntegrityError("DAT-09: news provider is unknown")
+        provider_id = record.provider_id
+        if provider_id is not None and (
+            not isinstance(provider_id, str)
+            or not 1 <= len(provider_id) <= 280
+            or provider_id != provider_id.strip()
+            or any(unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in provider_id)
+        ):
+            raise DataIntegrityError("DAT-09: provider headline ID is invalid")
+        if (
+            not isinstance(record.headline, str)
+            or not record.headline
+            or record.headline != sanitize_text(record.headline)
+            or record.headline_sha256 != headline_digest(record.headline)
+            or record.stable_id
+            != headline_stable_id(record.provider, provider_id, record.headline_sha256)
+        ):
+            raise DataIntegrityError("DAT-09: headline citation or sanitized content is invalid")
+        details = record.details
+        if (
+            set(details) != {"symbols", "summary_allowed"}
+            or type(details["summary_allowed"]) is not bool
+            or not isinstance(details["symbols"], list)
+            or len(details["symbols"]) > 50
+            or any(
+                not isinstance(symbol, str)
+                or re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}", symbol) is None
+                for symbol in details["symbols"]
+            )
+            or len(set(details["symbols"])) != len(details["symbols"])
+        ):
+            raise DataIntegrityError("DAT-09: headline public metadata is invalid")
+        if record.published_at > record.created_at:
+            raise DataIntegrityError("DAT-09: headline publication is in the future")
 
     @staticmethod
     def _validate_llm_call(record: LLMCall) -> None:

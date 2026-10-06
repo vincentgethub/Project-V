@@ -14,6 +14,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from backend.core.clock import FrozenClock
+from backend.core.content import headline_digest, headline_stable_id
 from backend.core.database import (
     LEDGER_MODELS,
     Alert,
@@ -25,6 +26,7 @@ from backend.core.database import (
     Fill,
     LedgerRecord,
     LLMCall,
+    NewsHeadlineRecord,
     Order,
     OrderEvent,
     PortfolioState,
@@ -111,6 +113,17 @@ def _submitted(ledger: Ledger, clock: FrozenClock) -> Order:
 
 
 def _all_records(ledger: Ledger, clock: FrozenClock) -> dict[type[LedgerRecord], LedgerRecord]:
+    digest = headline_digest("Fixture public company results")
+    ledger.append(
+        NewsHeadlineRecord,
+        stable_id=headline_stable_id("FAKE", "fixture-1", digest),
+        provider="FAKE",
+        provider_id="fixture-1",
+        headline="Fixture public company results",
+        headline_sha256=digest,
+        published_at=clock.now() - timedelta(minutes=1),
+        details={"symbols": ["AAPL"], "summary_allowed": True},
+    )
     order = _submitted(ledger, clock)
     fill = ledger.record_fill(
         order.id,

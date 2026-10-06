@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
     Uuid,
     create_engine,
     event,
@@ -36,7 +37,7 @@ from backend.core.clock import ensure_utc
 from backend.core.errors import DatabaseError, LedgerIntegrityError, SafetyError
 from backend.core.money import money_to_scaled, scaled_to_money, validate_cent_price
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class MoneyType(TypeDecorator[Decimal]):
@@ -127,6 +128,28 @@ class DataSnapshot(LedgerRecord):
     bar_count: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     bars: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+
+
+class NewsHeadlineRecord(LedgerRecord):
+    """DAT-09/SEC-60: stable, bounded public citations with durable deduplication."""
+
+    __tablename__ = "news_headlines"
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('ALPACA', 'RSS', 'NEWSAPI', 'FAKE')", name="ck_news_provider"
+        ),
+        CheckConstraint("published_at <= created_at", name="ck_news_published_at"),
+        CheckConstraint("length(headline) BETWEEN 1 AND 280", name="ck_news_headline"),
+        UniqueConstraint("provider", "provider_id", name="uq_news_provider_id"),
+    )
+
+    stable_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    provider: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider_id: Mapped[str | None] = mapped_column(String(280), nullable=True)
+    headline: Mapped[str] = mapped_column(String(280), nullable=False)
+    headline_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    published_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
 class Signal(LedgerRecord):
@@ -593,6 +616,7 @@ class AppendControl(Base):
 
 LEDGER_MODELS: tuple[type[LedgerRecord], ...] = (
     DataSnapshot,
+    NewsHeadlineRecord,
     Signal,
     Order,
     OrderEvent,
@@ -685,6 +709,39 @@ def transaction(engine: Engine) -> Iterator[Session]:
         raise
     except Exception as exc:
         raise DatabaseError("Database transaction failed") from exc
+
+
+def prepare_panic_schema(engine: Engine) -> None:
+    """SEC-73/OPS-05: keep local HALT reachable on the exact pre-news schema.
+
+    Only emergency host composition calls this. It never upgrades an existing
+    schema and never certifies its chains. Ordinary startup still requires the
+    current version and an explicit backed-up migration for an older database.
+    """
+    try:
+        inspector = inspect(engine)
+        existing = set(inspector.get_table_names())
+        if "schema_meta" in existing:
+            with engine.connect() as connection:
+                version = connection.scalar(select(SchemaMeta.version).where(SchemaMeta.id == 1))
+            if version == 2:
+                expected = {
+                    name
+                    for name in Base.metadata.tables
+                    if name != NewsHeadlineRecord.__tablename__
+                }
+                if existing != expected:
+                    raise DatabaseError("Emergency ledger table inventory is incompatible")
+                for name in expected:
+                    persisted = {column["name"] for column in inspector.get_columns(name)}
+                    if persisted != {column.name for column in Base.metadata.tables[name].columns}:
+                        raise DatabaseError("Emergency ledger control schema is incompatible")
+                return
+        create_schema(engine)
+    except SafetyError:
+        raise
+    except Exception:
+        raise DatabaseError("Emergency ledger schema could not be verified") from None
 
 
 def create_schema(engine: Engine) -> None:
