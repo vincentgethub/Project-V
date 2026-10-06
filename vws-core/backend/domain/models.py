@@ -538,7 +538,7 @@ class SentimentSignal(FrozenModel):
     score: Annotated[Decimal, BeforeValidator(_sentiment_score)]
     classification: SentimentClassification
     evidence_headline_ids: tuple[Identifier, ...] = Field(max_length=100)
-    summary: str = Field(min_length=1, max_length=2000)
+    summary: str = Field(min_length=1, max_length=280)
 
     @model_validator(mode="after")
     def validate_cited_claim(self) -> Self:

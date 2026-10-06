@@ -2,14 +2,86 @@
 
 Audit date: 2026-10-04 America/Chicago. The initial audit results below describe the pre-fix working
 tree. Audit-fixes and Stage S results below are historical; the Stage D gate
-records the current implementation. Amendments 01–04 supersede conflicts in the master and
-earlier addenda. Execution order: audit/fixes → S → D → E → F → G → H → J → I → K.
+records the certified implementation. Amendments 01–06 supersede conflicts in the master and
+earlier addenda. Execution order: audit/fixes → S → D → E → F → G/G+ → H → J → I → K → V → W.
 Optional ideas require plain-words approval and live only in PROGRESS Suggestions.
 
-Current work date: **2026-10-05 America/Chicago**. Stage S is complete in local
+## Stage E traceability - current October 6 work
+
+| Requirement | Implementation | Actual local evidence / limit |
+| --- | --- | --- |
+| FA-01..09 | agents/fundamentals.py; data/sec_edgar.py | test_fundamentals.py: 83 cases, 302 statements/118 branches, 100%; 5 recorded real issuer payloads with independent FY/TTM expected values |
+| FA-02/DAT-11 | SEC point-in-time tags, bounded cached provider | test_sec_edgar.py request/rate/cache/hash/fault checks; real fixtures recorded with transient authorized contact; no account credential required |
+| GD-03 playbooks/DAT-05 | setup_hunter.py, indicators.py, shared anchors.py/scanner.py | test_setup_hunter.py hard/score/level/quantity goldens; test_indicators.py hand arithmetic; shared memo rejects changed bars/anchors |
+| GD-01/GD-02/SEC-60..62 | LLMClient, prompts.py, four versioned Markdown prompts, PublicResearchInput/Narrative | test_llm_client.py: 49 cases; invalid/duplicate/nonfinite JSON, bounded strings, citations, public-only data, injected instructions, cache/singleflight, three-attempt transient cap |
+| GD-01 atomic budget | agents/llm_budget.py immutable reservation/settlement security events and per-attempt llm_calls | 20 simultaneous fake calls cannot overspend; actual/estimated settlement, single-use receipt, overrun disable, NY midnight and cancellation evidence |
+| SEC-30/31 optional SDK | net/http.py SDKLLMClient exact configured POST path, verified TLS, 2MiB body, full deadline, no redirects/ambient credentials | test_llm_client.py exercises actual pinned SDK through MockTransport; paid network/model/prices UNVERIFIED |
+| GD-03 providers | providers.py/news_reader.py/flow_tracker.py | test_research_agents.py: 13 cases; unavailable flow/IV/earnings remain explicit; no paid context assumed; only new eligible headline batches summarized |
+| GD-08/E disabled acceptance | agents/offline_run.py, scripts/dry_run.py, recorded synthetic NVDA fixture; notifications/card_formatter.py | test_dry_run.py: 8 cases; socket blocked; real indicators/scoring/two CRO checks/compliance; zero LLM calls; ambient AUTO_LIVE/DB URL ignored; RAM-only ledger verified; manual preview only |
+| GD-05 card foundation | validated CardContext; exact price/qty/risk/weight/reward calculations; HTML escaping and CT display | 58 statements/6 branches, 100%; changed qty/price or partial evidence rejected; oversize card fails without truncation; private connected callbacks pending F |
+| TX-08 / owner profile | docs/spec/TAX_PROFILE.md, domain/tax_profile.py, Settings, tax/tax_tracker.py | test_tax_profile.py/test_tax_tracker.py: exact owner defaults/explicit override; totals-only while federal rates unknown; tracker estimate and shared wash-awareness foundation passed |
+| Owner external-sale awareness | WashSaleMatcher.marked_external_lots; TaxTracker.review_sale | Inclusive +/-30-day hand goldens; other-account and supplied identity-group checks; IRA/Roth/Merrill/401(k) prompts; unknown/corrupt lots fail closed; no inferred 401(k) treatment; durable J import/UI pending |
+| Amendment05 PR-02 | core/dependencies.py bans optimizer packages in direct/transitive lock records | test_dependencies.py planted optuna/hyperopt/scikit-optimize/deap/nevergrad records rejected; G+/V features remain pending |
+| Amendment06 no self-modification | security/write_guard.py; source_guard.py; ops/anchors.controlled_path | test_write_guard.py planted source/config writes, forged trusted basename, source writes from trusted config writer, central artifact path refusal; full no-order positives retained |
+| Build metadata exception | exact standalone scripts/compile_locks.py outputs requirements.lock and requirements-dev.lock | Fixture compiler can touch only those two paths; runtime import of compiler is rejected; no runtime source-write exception |
+| PG-01..05/latest Amendment04 | vws/progress.py full current page; tests/test_progress.py | Seven owner sections/Suggestions/60-line ceiling; all source changes require progress update; private handler admission/masking/rate pending F |
+
+The initially failed full run had one obsolete expected zero LLM budget. The
+amended default is 1.00 while LLM_ENABLED remains false; that test was corrected.
+The next full run passed 3,147 tests with one credential-dependent skip and two
+warnings (418.40s), 1,555 statements/520 branches at 100%. Later card/tax additions
+passed the final expanded cumulative gate below; counts are not added
+across overlapping runs. Focused new tax/wash tests passed 89 cases with 100%
+coverage; card/dry-run passed 8 cases with 100% notification coverage.
+
+Current source lint passes; 155 files format clean, 140 sources type strictly,
+production Bandit has zero findings. B105 suppressions label enum value PASS;
+B106 explicitly supplies an empty unused SDK webhook secret to disable ambient
+inheritance. The allowlisted entropy constant is the public SHA-256 of `{}` for
+missing companyfacts, never a credential. Source secret scan reports zero.
+The 121-pin dev lock audit reports no known vulnerabilities; pip check is clean.
+Gitleaks scanned all seven prior commits/25.33MB with zero leaks. Its initial
+remote-link warning exposed a Markdown-wrapped Git URL; the local URL was fixed
+to the identical plain HTTPS target. No push, broker/Plaid call, paid LLM request
+or Telegram send occurred in this stage's fake gates.
+
+Amendments05/06 are preserved verbatim and linked by AGENTS. Offline card/preview
+dependencies were built now to meet E's explicit disabled-client acceptance;
+connected swarm, scheduler, callback lifecycle and deployment remain Stage F.
+The owner tax request was wired now to shared defaults and pure tracker services;
+H consumes those defaults in setup and J supplies durable sale/import/report UI.
+
+Final expanded cumulative gate: **3,172 PASS, 1 SKIP, 2 warnings, 435.29s**.
+Risk/state/compliance contracts/fundamentals/notifications/tax: **100%**, 1,674
+statements and 534 branches. After that run began, final calendar expiry code
+and ten new expiry cases were added. Its separate final hunter/config/dry-run
+gate passed **339 tests** (9.26s); overlapping counts are never summed. The
+expiry rule now uses the Nth exchange close strictly after creation, including
+at-close, holiday, DST and early-close fixtures. Final Ruff formats 157 files;
+final authored-source typing passed 142 files. All five actual Git-root hooks
+passed after the client-rename formatting fix; final production Bandit is clean.
+Final optional-LLM/no-order/writeguard/dependency/research/dry-run gate: **443
+PASS**, 17.91s; no weakened source positive controls.
+
+Current work date: **2026-10-06 America/Chicago**. Stage S is complete in local
 commit `bc3e6f0`. Its offline gates and fresh hash-lock installation passed;
 actual owner services remain UNVERIFIED. Expanded Stage D passed its offline
-gates and is complete; deterministic Stage E research is next.
+gates and is complete; deterministic Stage E's offline gates passed. Stage F
+connected composition is next.
+Owner attachment commit `485ec7a` contains unfinished E evidence, not a certified
+stage. The latest Amendment 04 replaces the previous saved text verbatim;
+Amendment 05 is newly saved verbatim. AGENTS links both. Their specified reminder
+lines are appended to Amendment 02 without rewriting its earlier bytes.
+Amendment 06 is saved verbatim with its reminder appended and AGENTS link.
+Its runtime self-modification ban applies immediately; lessons never auto-apply.
+RT-01 clock/calendar reads may be folded into H doctor (read-only and already
+needed for early-close safety); the Stage H report must state that justification.
+EVT display-only schedule work may be folded into F, with report justification.
+Owner TAX_PROFILE is saved. Settings/TaxProfile and tax/tax_tracker.py use
+single/Texas state0/NIIT0; the H wizard and J durable tax/import UI are pending.
+TX-08 has no federal ST/LT defaults; those stay unset (totals only) until supplied.
+External IRA/Roth, Merrill taxable and 401(k)
+lots are manually entered/imported only; shared wash checks, no logins or funding.
 
 ## Stage inventory
 
@@ -20,7 +92,11 @@ gates and is complete; deterministic Stage E research is next.
 | C | compliance, wash matching, tax models, compliance boundary; Stage_C.md | Original certified; shared tax-core move reserved for J |
 | D | market/broker/liquidity boundaries, async batch/cache, news/actions, earnings and manual CSV providers | DAT-05..12 offline gate passed; actual paper integration UNVERIFIED |
 | S | security/net/ops/Telegram admission/content/dependency services and host CLI | Offline gates passed; connected verification and later pipeline wiring tracked below |
-| E–K | Configuration/storage foundations and Stage S security services | Research swarm/bot handlers/evaluation/service startup/funding/P&L/tax/auto/extras not implemented |
+| E | Deterministic playbooks/fundamentals; public providers; optional bounded LLM; offline card/preview | Offline cumulative gate PASS; recorded SEC fixtures and final expiry checks passed |
+| F–K | Configuration/storage foundations and Stage S security services | Connected swarm/bot handlers/evaluation/service startup/funding/P&L/durable tax/auto/extras remain pending |
+| G+ | Amendment 05 CM-01..07, DQ-01/03/04, PF-01..03, ER-01..05 | Scheduled in open Stage G; all pending, none certified |
+| V | Amendment 05 QV, PR, RS, SZ, EX, EG, GV, XA, DQ-02 and remaining PF gates | Scheduled after K; all pending; READY verdict becomes a live-unlock prerequisite |
+| W | Amendment 06 LJ, LP, RT, EVT, AC, private lesson/event/journal commands and AX-40 RT health | Scheduled after V; all pending; no source/config self-modification and at least5 healthy RT sessions before live unlock |
 
 Initial pre-fix inventory: 64 authored Python files, 39 production/script and 25 test-package files.
 588 test function declarations; parametrized execution count is 1,866.

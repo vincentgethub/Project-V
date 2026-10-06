@@ -45,7 +45,7 @@ jobs:
       - name: Execution source guard
         run: python -m backend.core.source_guard .
       - name: Production source security checks
-        run: python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/net backend/ops backend/security backend/telegram scripts vws -c pyproject.toml
+        run: python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/net backend/ops backend/security backend/telegram backend/notifications backend/tax scripts vws -c pyproject.toml
       - name: Audit runtime and development dependency locks
         run: |
           python -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off --timeout 15
@@ -58,5 +58,5 @@ jobs:
         run: |
           git diff-tree --root --no-commit-id --name-only -r HEAD > /tmp/vws-changed-files.txt
           python -c "from pathlib import Path; from vws.progress import read_progress, require_progress_update; read_progress(); require_progress_update(tuple(Path('/tmp/vws-changed-files.txt').read_text().splitlines()))"
-      - name: Offline tests and complete risk/state branch coverage
-        run: python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov-branch --cov-fail-under=100 --cov-report=term-missing
+      - name: Offline tests and complete risk/state/fundamentals/card/tax branch coverage
+        run: python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov-branch --cov-fail-under=100 --cov-report=term-missing

@@ -23,6 +23,7 @@ from backend.core.money import money_to_scaled, scaled_to_money
 from backend.domain.compliance_models import (
     ExternalAccount,
     Form8949Row,
+    TaxLot,
     TaxStatus,
     TradeRecord,
     WashAdjustment,
@@ -50,6 +51,41 @@ class WashSaleMatcher:
             raise
         except Exception as exc:
             raise DataIntegrityError("Cannot verify wash-sale registry") from exc
+
+    def marked_external_lots(
+        self, sale: TradeRecord, lots: tuple[TaxLot, ...]
+    ) -> tuple[TaxLot, ...]:
+        """Owner-marked current lots prompt review; never infer tax treatment.
+
+        This uses the same identity groups and inclusive exchange-date window
+        as adjustments. It does not claim an estimated loss or a basis change.
+        """
+        try:
+            checked = TradeRecord.model_validate(sale)
+            if checked.side != Side.SELL or not isinstance(lots, tuple):
+                raise DataIntegrityError(
+                    "TX: sale awareness requires SELL and immutable marked lots"
+                )
+            checked_lots = tuple(TaxLot.model_validate(lot) for lot in lots)
+            for lot in checked_lots:
+                self.registry.get(lot.symbol)
+            if len({lot.lot_id for lot in checked_lots}) != len(checked_lots):
+                raise DataIntegrityError("TX: duplicate external marked lot")
+            group = self.registry.identical_group(checked.symbol)
+            return tuple(
+                lot
+                for lot in checked_lots
+                if checked.realized_loss > 0
+                and lot.account_id != checked.account_id
+                and lot.symbol in group
+                and abs((trade_day(lot.acquired_at) - trade_day(checked.ts)).days) <= 30
+            )
+        except DataIntegrityError:
+            raise
+        except Exception:
+            raise DataIntegrityError(
+                "TX: external marked lot awareness cannot be validated"
+            ) from None
 
     def adjustments(
         self,

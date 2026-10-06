@@ -169,7 +169,18 @@ def test_SEC_42_delivery_failure_preserves_anchor_evidence(
     assert len(_events(engine, "LEDGER_ANCHOR")) == 1
 
 
-@pytest.mark.parametrize("name", ["missing/anchor", "bad\nname"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "missing/anchor",
+        "bad\nname",
+        "source.py",
+        ".env",
+        "fees.yaml",
+        "variants.yaml",
+        "config.yaml",
+    ],
+)
 def test_SEC_42_destination_validation_is_typed(tmp_path: Path, name: str) -> None:
     with pytest.raises(DataIntegrityError):
         controlled_path(tmp_path / name)

@@ -6,14 +6,27 @@ The owner's latest instructions and these specifications govern this repository:
 - [Amendment 02](vws-core/docs/spec/AMENDMENT_02.md)
 - [Amendment 03](vws-core/docs/spec/AMENDMENT_03.md)
 - [Amendment 04](vws-core/docs/spec/AMENDMENT_04.md)
+- [Amendment 05](vws-core/docs/spec/AMENDMENT_05.md)
+- [Amendment 06](vws-core/docs/spec/AMENDMENT_06.md)
+- [Owner tax profile](vws-core/docs/spec/TAX_PROFILE.md)
 
 Later amendments override conflicts in earlier specifications/addenda. The
 earlier LLM fundamental framework is superseded by Amendment 01 section 4.2.
+Amendment 04 was replaced verbatim by the owner's October 6 attachment; its
+revised wizard order, skip behavior and full private progress page now apply.
 Build only specified features. Put optional ideas at the bottom of PROGRESS.md
 under Suggestions: purpose, benefit, risk, effort. Wait for the owner's plain-
 words approval before implementing them. Never suggest weakening safety.
 
-Work order: Step 0 audit/fixes, Stage S, finish D, E, F, G, H, J, I, K.
+Work order: Step 0 audit/fixes, Stage S, finish D, E, F, G with G+, H, J, I, K, V, W.
+Amendment 05 puts cost/data-quality/performance/edge reporting in open Stage G;
+walk-forward validation, overlays, exit variants and readiness verdict follow K.
+Its later READY verdict prerequisite also applies to any live unlock. No
+optimization or generated parameter combinations; overlays only reduce size.
+Amendment 06 adds Stage W after V. The running process never writes its own
+source, settings, fees, variants or risk rules. Lessons are proposals for owner
+review and registered validation only. Required healthy realtime feeds for at
+least five sessions are an additional live-unlock prerequisite.
 After each green stage, post at most 25 lines, make a local Git commit, continue
 automatically. Never push unless asked. Stop only for the amendment's explicit
 conditions: unresolved gate after a genuine fix attempt, required credential or

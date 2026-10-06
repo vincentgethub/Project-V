@@ -18,6 +18,7 @@ from backend.core.database import LEDGER_MODELS, SecurityEvent, transaction
 from backend.core.errors import DataIntegrityError, LedgerIntegrityError
 from backend.core.ledger import Ledger
 from backend.domain.models import FrozenModel, UTCDateTime
+from backend.security.write_guard import protected_output_path
 
 
 class LedgerAnchor(FrozenModel):
@@ -35,6 +36,8 @@ def controlled_path(path: Path) -> Path:
     """SEC-12/SEC-42: reject links and indirect parent paths before local writes."""
     try:
         absolute = path.absolute()
+        if protected_output_path(absolute.as_posix()):
+            raise ValueError("runtime artifacts cannot overwrite source or settings")
         if absolute.is_symlink() or absolute.parent.resolve(strict=True) != absolute.parent:
             raise ValueError("indirect local path")
         if not absolute.name or any(ord(character) < 32 for character in absolute.name):

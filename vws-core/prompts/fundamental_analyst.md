@@ -1,5 +1,5 @@
 ---
-version: "2.0.0"
+version: "2.1.0"
 ---
 
 # Role
@@ -25,9 +25,10 @@ Return only one JSON object, without extra keys, prose or Markdown fences:
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary"],
+  "required": ["summary", "evidence_ids"],
   "properties": {
-    "summary": {"type": "string", "minLength": 1, "maxLength": 280}
+    "summary": {"type": "string", "minLength": 1, "maxLength": 280},
+    "evidence_ids": {"type": "array", "minItems": 1, "maxItems": 50, "uniqueItems": true, "items": {"type": "string", "maxLength": 100}}
   }
 }
 ```
@@ -39,7 +40,8 @@ Return only one JSON object, without extra keys, prose or Markdown fences:
    failure list, threshold, playbook score, entry, stop, target or quantity.
 2. Summarize the report's main recorded caveat in one plain sentence. Preserve
    unavailable, incomplete and not-applicable distinctions. They are never a pass.
-3. If you state a filing-based claim, cite its supplied filing identifier. Never
+3. If you state a filing-based claim, cite its supplied public_filing_ids identifier
+   in evidence_ids. A companyfacts SHA-256 is also a public source identifier. Never
    invent an identifier. If evidence is insufficient, return {} to abstain;
    application validation discards it rather than guessing a replacement.
 4. No recommendations, expected profits, guarantees or instructions to trade.

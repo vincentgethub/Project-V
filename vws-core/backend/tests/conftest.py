@@ -86,6 +86,9 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "ANCHOR_",
         "HEALTHCHECK_",
         "SEC_",
+        "TAX_",
+        "OPENAI_",
+        "DISPLAY_",
     )
     for name in tuple(os.environ):
         if name.upper().startswith(prefixes):

@@ -16,9 +16,10 @@ from backend.core.config import (
     load_yaml_config,
 )
 from backend.core.errors import ConfigurationError
+from backend.domain.instruments import InstrumentRegistry
 
 REPOSITORY_CONFIG = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
-ALLOWED_SYMBOLS = frozenset({"AAPL", "MSFT", "NVDA", "SPY", "QQQ", "XLK"})
+ALLOWED_SYMBOLS = InstrumentRegistry.from_csv(REPOSITORY_CONFIG.parent).symbols
 
 
 @pytest.fixture(autouse=True)
@@ -48,14 +49,15 @@ def test_GD_02_shipped_yaml_uses_exact_frozen_weights_and_levels() -> None:
     config = load_yaml_config(
         REPOSITORY_CONFIG, allowed_symbols=ALLOWED_SYMBOLS, settings=Settings()
     )
-    assert config.watchlist == ("AAPL", "MSFT", "NVDA", "SPY", "QQQ", "XLK")
+    assert len(config.watchlist) == 32
+    assert set(config.watchlist).issubset(ALLOWED_SYMBOLS)
     assert config.schedule.scan_interval_minutes == 15
     assert config.alerts.alert_cooldown_sessions == 1
     assert set(config.playbooks) == {"TREND_50EMA", "BASE_BREAKOUT", "ANCHORED_VWAP_RECLAIM"}
     for playbook in config.playbooks.values():
         assert sum(playbook.criteria_weights.values(), Decimal("0")) == Decimal("1")
-        assert playbook.stop_atr_mult == Decimal("2")
-        assert playbook.target_r == Decimal("2")
+        assert config.sizing.stop_atr_mult == Decimal("2")
+        assert config.sizing.target_r == Decimal("2")
     with pytest.raises(ValidationError):
         config.watchlist = ("NVDA",)
     with pytest.raises(ValidationError):
@@ -184,9 +186,9 @@ def test_GD_02_invalid_weight_totals_types_and_names_are_rejected(
 def test_GD_02_playbook_level_exact_boundaries_pass(
     valid_payload: dict[str, Any], field: str, boundary: str
 ) -> None:
-    valid_payload["playbooks"]["TREND_50EMA"][field] = boundary
+    valid_payload["sizing"][field] = boundary
     config = YamlConfig.model_validate(valid_payload)
-    assert config.playbooks["TREND_50EMA"].__dict__[field] == Decimal(boundary)
+    assert config.sizing.__dict__[field] == Decimal(boundary)
 
 
 @pytest.mark.parametrize(
@@ -204,7 +206,7 @@ def test_GD_02_playbook_level_exact_boundaries_pass(
 def test_GD_02_playbook_invalid_levels_fail_closed(
     valid_payload: dict[str, Any], field: str, bad: Any
 ) -> None:
-    valid_payload["playbooks"]["TREND_50EMA"][field] = bad
+    valid_payload["sizing"][field] = bad
     with pytest.raises(ValidationError):
         YamlConfig.model_validate(valid_payload)
 
@@ -318,7 +320,7 @@ def test_R_03_GD_02_combined_hash_tracks_yaml_and_ignores_credentials(
         telegram_bot_token=SecretStr("test-only-yaml-bot-token"),
     )
     assert credentials.with_yaml_hash(first) == original_hash
-    valid_payload["playbooks"]["BASE_BREAKOUT"]["target_r"] = "3"
+    valid_payload["sizing"]["target_r"] = "3"
     second = YamlConfig.model_validate(valid_payload)
     assert second.config_hash != first.config_hash
     assert Settings().with_yaml_hash(second) != original_hash

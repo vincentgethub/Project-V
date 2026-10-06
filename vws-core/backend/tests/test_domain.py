@@ -374,10 +374,10 @@ def test_CRO_11_blackout_requires_aware_increasing_interval_and_known_symbol() -
 
 def test_R_02_csv_sample_loads_exact_schema_and_leveraged_names_are_restricted() -> None:
     registry = InstrumentRegistry.from_csv(Path(__file__).resolve().parents[2] / "config")
-    assert len(registry.symbols) == 10
+    assert len(registry.symbols) == 35
     assert registry.get("TQQQ").is_leveraged and not registry.get("TQQQ").tradable
     assert registry.get("SH").is_inverse and not registry.get("SH").tradable
-    assert sum(registry.sector_weights("SPY").values(), Decimal("0")) == Decimal("1")
+    assert dict(registry.sector_weights("SPY")) == {"UNKNOWN": Decimal(1)}
     assert registry.blackout_windows == ()
 
 

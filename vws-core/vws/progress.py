@@ -1,4 +1,4 @@
-"""PG-01..05: bounded owner progress text and a private-chat display subset."""
+"""PG-01..05: bounded owner progress text for terminal and private chat."""
 
 from __future__ import annotations
 
@@ -41,14 +41,12 @@ def read_progress(path: Path | None = None) -> str:
 
 
 def private_progress_text(path: Path | None = None) -> str:
-    """PG-05: sections 1, 4 and 7; later bot must enforce allowlist/rate limits."""
-    text = read_progress(path)
-    parts: list[str] = []
-    for title in (SECTIONS[0], SECTIONS[3], SECTIONS[6]):
-        marker = f"## {title}\n"
-        body = text.split(marker, 1)[1].split("\n## ", 1)[0].strip()
-        parts.append(f"{title}\n{body}")
-    return "\n\n".join(parts)
+    """Latest PG-05: full page; bot enforces allowlist/rate limits/masking.
+
+    This static owner document contains no account state or secrets. Dynamic
+    state must be rendered by the later bot through its masked presentation.
+    """
+    return read_progress(path)
 
 
 def require_progress_update(changed_files: tuple[str, ...]) -> None:

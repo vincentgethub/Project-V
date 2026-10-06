@@ -46,3 +46,24 @@ def test_SEC_20_unhashed_or_unsafe_lock_fails(tmp_path: Path, record: str) -> No
     lock.write_text(record, encoding="utf-8")
     with pytest.raises(ConfigurationError):
         require_hash_lock(lock)
+
+
+@pytest.mark.parametrize(
+    "name", ["optuna", "hyperopt", "scikit-optimize", "scikit_optimize", "deap", "nevergrad"]
+)
+def test_SEC_21_optimizer_ban_cannot_be_justified_or_hidden_in_lock(
+    tmp_path: Path, name: str
+) -> None:
+    canonical = name.replace("_", "-")
+    project = tmp_path / "pyproject.toml"
+    project.write_text(
+        f'[project]\ndependencies=["{name}==1"]\n[build-system]\nrequires=[]\n', encoding="utf-8"
+    )
+    policy = tmp_path / "policy.md"
+    policy.write_text(f"- `{canonical}`: claimed evaluation purpose.\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="optimizer"):
+        require_dependency_justifications(project, policy)
+    lock = tmp_path / "requirements.lock"
+    lock.write_text(f"{name}==1 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError):
+        require_hash_lock(lock)

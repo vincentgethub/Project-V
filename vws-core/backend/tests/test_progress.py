@@ -20,12 +20,17 @@ def test_PG_01_PG_05_actual_page_is_plain_and_cli_prints_it(
     assert "Suggestions" in text
 
 
-def test_PG_05_private_display_contains_only_specified_sections() -> None:
+def test_PG_05_private_display_contains_complete_latest_amendment_page() -> None:
     text = private_progress_text()
-    for heading in ("Where things stand", "Waiting on you", "Safety status"):
+    assert text == read_progress()
+    for heading in (
+        "Where things stand",
+        "Waiting on you",
+        "Safety status",
+        "Not checked yet",
+        "Suggestions",
+    ):
         assert heading in text
-    for heading in ("What works now", "What's being built next", "Not checked yet", "Suggestions"):
-        assert heading not in text
 
 
 @pytest.mark.parametrize(

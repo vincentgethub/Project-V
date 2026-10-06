@@ -1,18 +1,1 @@
 symbol,gics_sector,weight
-SPY,Information Technology,0.30
-SPY,Financials,0.15
-SPY,Health Care,0.12
-SPY,Consumer Discretionary,0.10
-SPY,Communication Services,0.09
-SPY,Industrials,0.08
-SPY,Consumer Staples,0.05
-SPY,Energy,0.04
-SPY,Utilities,0.03
-SPY,Real Estate,0.02
-SPY,Materials,0.02
-QQQ,Information Technology,0.50
-QQQ,Communication Services,0.15
-QQQ,Consumer Discretionary,0.15
-QQQ,Health Care,0.08
-QQQ,Consumer Staples,0.07
-QQQ,Industrials,0.05

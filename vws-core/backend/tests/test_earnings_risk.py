@@ -188,4 +188,5 @@ def test_DAT_11_contact_and_source_settings_keep_explicit_safe_defaults() -> Non
         broker_account_type="CASH", sec_user_agent="Project V Fixture contact@example.com"
     )
     assert settings.broker_state_source == "ALPACA" and settings.alpaca_data_plan == "BASIC"
-    assert settings.llm_daily_budget_usd == Decimal(0)
+    assert not settings.llm_enabled
+    assert settings.llm_daily_budget_usd == Decimal("1.00")

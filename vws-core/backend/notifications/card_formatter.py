@@ -1,0 +1,142 @@
+"""GD-05/FA-08: deterministic escaped cards and manual instructions."""
+
+from datetime import datetime
+from decimal import localcontext
+from html import escape
+from zoneinfo import ZoneInfo
+
+from pydantic import Field
+
+from backend.agents.fundamentals import FrameworkStatus, FundamentalReport
+from backend.agents.news_reader import NewsAssessment
+from backend.core.clock import ensure_utc
+from backend.core.config import Settings
+from backend.core.errors import DataIntegrityError
+from backend.domain.models import (
+    Decision,
+    FlowSignal,
+    FrozenModel,
+    PortfolioSnapshot,
+    ProviderStatus,
+    SetupCandidate,
+    TradeProposal,
+    Verdict,
+    snapshot_hash,
+)
+from backend.risk.compliance import ComplianceAssessment
+
+
+def display_time(instant: datetime, settings: Settings) -> str:
+    checked = Settings.validated_copy(settings)
+    local = ensure_utc(instant).astimezone(ZoneInfo(checked.display_tz))
+    suffix = "CT" if checked.display_tz == "America/Chicago" else local.tzname()
+    return f"{local:%a %b %d, %I:%M %p} {suffix}"
+
+
+class CardContext(FrozenModel):
+    candidate: SetupCandidate
+    proposal: TradeProposal
+    snapshot: PortfolioSnapshot
+    verdict: Verdict
+    compliance: ComplianceAssessment
+    fundamentals: FundamentalReport
+    news: NewsAssessment
+    flow: FlowSignal
+    market_context: str = Field(min_length=1, max_length=280)
+
+
+def checked_context(context: CardContext, settings: Settings) -> CardContext:
+    """No forged mismatched evidence can label a card as risk approved."""
+    item = CardContext.model_validate(context)
+    p, c, v = item.proposal, item.candidate, item.verdict
+    if (
+        p.symbol != c.symbol
+        or p.symbol != item.fundamentals.symbol
+        or p.symbol != item.news.symbol
+        or p.account_id != item.snapshot.account_id
+        or (p.qty, p.limit_price, p.stop_price, p.target_price)
+        != (c.qty, c.entry_price, c.stop_price, c.target_price)
+        or v.proposal_id != p.proposal_id
+        or v.snapshot_hash != snapshot_hash(item.snapshot)
+        or v.config_hash != settings.config_hash
+        or v.decision != Decision.APPROVED
+        or tuple(row.rule_id for row in v.results) != tuple(f"CRO-{i:02d}" for i in range(1, 14))
+        or any(not row.passed or row.severity.value != "BLOCK" for row in v.results[:12])
+        or item.compliance.proposal_id != p.proposal_id
+        or item.compliance.config_hash != settings.config_hash
+        or item.compliance.snapshot_hash != v.snapshot_hash
+        or tuple(row.rule_id for row in item.compliance.results)
+        != tuple(f"CMP-{i:02d}" for i in range(1, 8))
+        or any(not row.passed and row.severity.value == "BLOCK" for row in item.compliance.results)
+    ):
+        raise DataIntegrityError("GD-05: card lacks consistent passing risk/compliance evidence")
+    return item
+
+
+def format_card(context: CardContext, settings: Settings) -> str:
+    policy = Settings.validated_copy(settings)
+    item = checked_context(context, policy)
+    p, c = item.proposal, item.candidate
+    with localcontext() as ctx:
+        ctx.prec = 80
+        notional = p.qty * p.limit_price
+        risk = p.qty * (p.limit_price - c.stop_price + p.limit_price * policy.stop_slippage_buffer)
+        weight = notional / item.snapshot.equity * 100
+        risk_pct = risk / item.snapshot.equity * 100
+        reward_risk = (c.target_price - p.limit_price) / (
+            p.limit_price - c.stop_price + p.limit_price * policy.stop_slippage_buffer
+        )
+    f = item.fundamentals
+    fundamental_text = (
+        "n/a"
+        if f.framework_status == FrameworkStatus.NOT_APPLICABLE
+        else f"{f.passed_count}/5 {f.framework_status.value}"
+        + (" · " + "; ".join(f.failure_reasons) if f.failure_reasons else "")
+    )
+    news = item.news
+    news_text = (
+        "unavailable"
+        if news.news.status != ProviderStatus.OK
+        else f"{len(news.news.headlines)} headlines (sentiment {news.sentiment_status.lower()})"
+    )
+    lines = [
+        f"{escape(p.symbol)} · Buy setup · {escape(c.playbook.value)} (score {c.score:f}/10)",
+        f"Buy limit ${p.limit_price:.2f} · Stop ${c.stop_price:.2f} · Target ${c.target_price:.2f}",
+        f"Size {p.qty} sh = ${notional:.2f} ({weight:.2f}% of account)",
+        f"If stopped: about -${risk:.2f} ({risk_pct:.2f}%) · Reward:risk {reward_risk:.2f}",
+        f"News: {news_text} · Fundamentals {escape(fundamental_text)}",
+        *[f"[{row.stable_id[:12]}] {escape(row.headline)}" for row in news.news.headlines[:3]],
+        f"Market: {escape(item.market_context)} · Flow: "
+        + (
+            "n/a (unavailable)"
+            if item.flow.status != ProviderStatus.OK
+            else escape(item.flow.summary or "")
+        ),
+        *[
+            f"WARN {escape(row.rule_id)}: {escape(row.message)}"
+            for row in (*item.verdict.results, *item.compliance.results)
+            if not row.passed
+        ],
+        f"All blocking risk/compliance checks passed · Valid until {display_time(p.expires_at, policy)}",
+        "Manual review required; no broker order has been sent.",
+    ]
+    rendered = "\n".join(lines)
+    if len(rendered.encode("utf-16-le")) // 2 > 4096:
+        raise DataIntegrityError("GD-05: card exceeds Telegram's message boundary")
+    return rendered
+
+
+def manual_instructions(proposal: TradeProposal, settings: Settings) -> str:
+    """Read-only preview; the authenticated F gate creates an actual ticket."""
+    p = TradeProposal.model_validate(proposal)
+    if p.side.value != "BUY" or p.stop_price is None or p.target_price is None:
+        raise DataIntegrityError("GD-05: this entry preview needs long protection")
+    return "\n".join(
+        (
+            f"Manual instructions preview (valid until {display_time(p.expires_at, settings)})",
+            f"1) BUY {p.qty} {escape(p.symbol)}, LIMIT ${p.limit_price:.2f}, DAY",
+            f"2) After it fills: SELL STOP {p.qty} {escape(p.symbol)} at ${p.stop_price:.2f}, GTC",
+            f"3) Optional: SELL LIMIT {p.qty} {escape(p.symbol)} at ${p.target_price:.2f}, GTC (use OCO if supported)",
+            "Requires fresh checks and human approval. No order sent.",
+        )
+    )

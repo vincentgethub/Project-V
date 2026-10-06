@@ -8,6 +8,14 @@ from pathlib import Path
 
 from backend.core.errors import ConfigurationError
 
+PROHIBITED_OPTIMIZERS = frozenset({"optuna", "hyperopt", "scikit-optimize", "deap", "nevergrad"})
+
+
+def _refuse_optimizers(names: frozenset[str]) -> None:
+    """Amendment 05: neither justification nor transitive installation permits optimization."""
+    if names & PROHIBITED_OPTIMIZERS:
+        raise ConfigurationError("SEC-21: optimizer dependencies are prohibited")
+
 
 def dependency_names(project: Path) -> frozenset[str]:
     """SEC-21: include runtime, development and build dependencies."""
@@ -33,7 +41,9 @@ def require_dependency_justifications(project: Path, policy: Path) -> None:
     try:
         text = policy.read_text(encoding="utf-8")
         listed = frozenset(re.findall(r"(?m)^- `([a-z0-9-]+)`: .+", text))
-        if dependency_names(project) != listed:
+        names = dependency_names(project)
+        _refuse_optimizers(names)
+        if names != listed:
             raise ConfigurationError("SEC-21: direct dependency policy and metadata differ")
     except ConfigurationError:
         raise
@@ -67,6 +77,8 @@ def require_hash_lock(path: Path) -> frozenset[str]:
             if match is None or not hashes or "://" in record:
                 raise ValueError("every lock record requires an exact pin and SHA256")
             names.add(re.sub(r"[-_.]+", "-", match.group(1)).lower())
-        return frozenset(names)
+        result = frozenset(names)
+        _refuse_optimizers(result)
+        return result
     except Exception:
         raise ConfigurationError("SEC-20: dependency lock is not fully hash pinned") from None

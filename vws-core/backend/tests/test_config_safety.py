@@ -242,7 +242,8 @@ def test_GD_01_offline_defaults_disable_llm_and_intraday_calls() -> None:
     settings = Settings()
     assert settings.llm_model_name is None
     assert settings.llm_base_url is None
-    assert settings.llm_daily_budget_usd == Decimal("0")
+    assert settings.llm_daily_budget_usd == Decimal("1.00")
+    assert not settings.llm_enabled
     assert settings.llm_input_cost_per_million_usd is None
     assert settings.llm_output_cost_per_million_usd is None
     assert not settings.enable_intraday_playbooks
@@ -270,6 +271,7 @@ def test_GD_01_connected_research_requires_explicit_provider_model_and_key(missi
 
 def test_GD_01_zero_budget_and_unknown_costs_block_calls() -> None:
     values: dict[str, Any] = {
+        "llm_daily_budget_usd": Decimal("0"),
         "llm_base_url": "https://example.invalid/v1",
         "llm_model_name": "test-model-from-configuration",
         "llm_api_key": SecretStr("test-only-budget-key"),

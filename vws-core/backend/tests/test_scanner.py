@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.agents import indicators, scanner
+from backend.agents.anchors import AnchorKind
 from backend.core.errors import DataIntegrityError, StaleDataError
 from backend.data.data_layer import Bar
 from backend.data.market_calendar import MarketCalendar
@@ -68,8 +69,8 @@ def test_gd03_scanner_deterministic_anomalous_rvol_positive_momentum(
     assert hit.rsi == Decimal("100.000000")
     assert hit.last_price == Decimal("124.90")
     assert result.indicators is not None
-    assert result.indicators.anchor_kind == scanner.AnchorKind.SWING_LOW
-    assert result.indicators.anchor_session == bars[190].session_date
+    assert result.indicators.anchor_kind == AnchorKind.LOWEST_LOW
+    assert result.indicators.anchor_session == bars[140].session_date
     assert result.indicators.ema200 == Decimal("109.98")
     for value in (
         result.indicators.ema20,
@@ -167,53 +168,53 @@ def test_gd03_momentum_must_be_positive_after_cent_quantization(
     assert result.indicators.macd_histogram == 0
 
 
-def test_gd03_scanner_earnings_gap_anchor_is_attested_and_exact_fraction_boundary(
+def test_amended_anchor_lowest_last60_and_newer_gap(
     bars: tuple[Bar, ...], calendar: MarketCalendar
 ) -> None:
-    index = 150
-    price = (bars[index - 1].close * Decimal("1.05")).quantize(Decimal("0.01"))
-    # Prior close=114.90 and 5% produces120.645; ROUND_HALF_EVEN120.64 is below5%.
-    # Use120.65, first cent strictly above the exact fractional threshold.
-    price += Decimal("0.01")
-    gap = bars[index].model_copy(update={"open": price, "high": price + 1})
-    changed = (*bars[:index], gap, *bars[index + 1 :])
-    result = _scan(changed, calendar, earnings_gap=gap.session_date)
-    assert result.indicators is not None
-    assert result.indicators.anchor_kind == scanner.AnchorKind.EARNINGS_GAP
-    assert result.indicators.anchor_session == gap.session_date
-    # Scanner gap arithmetic does not inherit a caller's Decimal precision.
-    with localcontext() as context:
-        context.prec = 2
-        assert _scan(changed, calendar, earnings_gap=gap.session_date) == result
+    index = 195
     prior = bars[index - 1].model_copy(
         update={
-            "close": Decimal(100),
             "open": Decimal(100),
+            "close": Decimal(100),
             "high": Decimal(101),
             "low": Decimal(99),
         }
     )
-    exact = gap.model_copy(update={"open": Decimal(105), "high": Decimal(116), "low": Decimal(104)})
-    changed = (*bars[: index - 1], prior, exact, *bars[index + 1 :])
-    assert _scan(changed, calendar, earnings_gap=exact.session_date).indicators is not None
-    for value in (bars[0].session_date, date(2027, 1, 4), datetime(2026, 9, 28, tzinfo=UTC)):
-        with pytest.raises(DataIntegrityError):
-            _scan(bars, calendar, earnings_gap=value)
-    with pytest.raises(DataIntegrityError, match="lacks the configured gap"):
-        _scan(bars, calendar, earnings_gap=bars[150].session_date)
+    gap = bars[index].model_copy(
+        update={"open": Decimal(104), "high": Decimal(121), "low": Decimal(100), "volume": 200}
+    )
+    changed = (*bars[: index - 1], prior, gap, *bars[index + 1 :])
+    result = _scan(changed, calendar)
+    assert result.indicators is not None
+    assert result.indicators.anchor_kind == AnchorKind.GAP
+    assert result.indicators.anchor_session == gap.session_date
+    with localcontext() as context:
+        context.prec = 2
+        assert _scan(changed, calendar) == result
+    for value, volume in ((Decimal("103.99"), 200), (Decimal(104), 199)):
+        altered = (
+            *changed[:index],
+            gap.model_copy(update={"open": value, "volume": volume}),
+            *changed[index + 1 :],
+        )
+        facts = _scan(altered, calendar).indicators
+        assert facts is not None and facts.anchor_kind == AnchorKind.LOWEST_LOW
 
 
-def test_gd03_anchor_needs_confirmed_swing_and_never_uses_future_right_bars(
+def test_amended_anchor_does_not_need_future_confirmation(
     bars: tuple[Bar, ...], calendar: MarketCalendar
 ) -> None:
     ascending = tuple(bar.model_copy(update={"low": bar.close - 1}) for bar in bars)
-    assert _scan(ascending, calendar).status == ProviderStatus.UNAVAILABLE
-    assert "anchor" in _scan(ascending, calendar).reason
-    # Last observation cannot be a confirmed two-right-bars swing low.
+    result = _scan(ascending, calendar)
+    assert result.status == ProviderStatus.OK and result.indicators is not None
+    assert result.indicators.anchor_session == bars[140].session_date
     changed = (*ascending[:-1], ascending[-1].model_copy(update={"low": Decimal(1)}))
-    assert _scan(changed, calendar).status == ProviderStatus.UNAVAILABLE
+    result = _scan(changed, calendar)
+    assert (
+        result.indicators is not None
+        and result.indicators.anchor_session == changed[-1].session_date
+    )
     assert _scan(bars[-199:], calendar).status == ProviderStatus.UNAVAILABLE
-    assert "warmup" in _scan(bars[-199:], calendar).reason
 
 
 def test_dat02_suspect_and_undefined_volume_have_no_hits_or_facts(
@@ -228,7 +229,7 @@ def test_dat02_suspect_and_undefined_volume_have_no_hits_or_facts(
 
 
 @pytest.mark.parametrize(
-    "now", [datetime(2026, 9, 29, 20, tzinfo=UTC), datetime(2026, 9, 29, 20, 14, 59, tzinfo=UTC)]
+    "now", [datetime(2026, 9, 29, 20, tzinfo=UTC), datetime(2026, 9, 29, 20, 29, 59, tzinfo=UTC)]
 )
 def test_dat01_daily_sip_grace_allows_prior_completed_tail(
     bars: tuple[Bar, ...], calendar: MarketCalendar, now: datetime
@@ -240,7 +241,7 @@ def test_dat01_daily_sip_grace_exact_end_requires_latest_session(
     bars: tuple[Bar, ...], calendar: MarketCalendar
 ) -> None:
     with pytest.raises(StaleDataError):
-        _scan(bars, calendar, now=datetime(2026, 9, 29, 20, 15, tzinfo=UTC))
+        _scan(bars, calendar, now=datetime(2026, 9, 29, 20, 30, tzinfo=UTC))
     with pytest.raises(StaleDataError):
         _scan(bars[:-1], calendar)
 
@@ -313,7 +314,7 @@ def test_r02_gd03_invalid_market_status_clock_symbol_config_fail_closed(
             data_snapshot_hash="a" * 64,
             market_status=MarketStatus.OK,
         )
-    config = scanner.ScannerConfig().model_copy(update={"swing_right": True})
+    config = scanner.ScannerConfig().model_copy(update={"daily_grace_seconds": True})
     with pytest.raises(DataIntegrityError):
         _scan(bars, calendar, config=config)
 

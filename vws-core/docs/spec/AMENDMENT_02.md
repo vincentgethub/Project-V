@@ -233,3 +233,9 @@ Audit first · MANUAL is the default, and Telegram can only downgrade · order c
 · Security: https egress to allowlisted hosts only, TLS always verified · live secrets in the keyring, rotated ≤ 90 days, never logged · hash-pinned deps, SHA-pinned Actions, least-privilege CI · encrypted backups, anchored ledger · private-chat-only, rate-limited Telegram · the LLM gets no tools and no account data · panic halts first, then you revoke keys.
 
 · PROGRESS.md is rewritten in plain English every stage · `vws setup` is the only way he should need to configure the app, stores secrets in the keyring, and can never turn on auto mode · no new features beyond the spec.
+
+· PROGRESS.md is rewritten in plain English every stage · `vws setup` is the only way he should need to configure the app, stores secrets in the keyring, and can never turn on auto mode · ideas go in Suggestions and are never built without approval · no new features beyond the spec.
+
+· Validation: a small pre-registered variant set only, never optimization · out-of-sample with costs, deflated for trials, the holdout touched once · overlays only shrink size and the CRO stays final · the verdict informs, never unlocks · no profit claims.
+
+· Learning: journal and proposals only — never self-modify code, config or thresholds · real-time feeds may only shrink or pause exposure, fail closed, and never relax the CRO · every lesson is a QV variant before any flip · no profit claims.

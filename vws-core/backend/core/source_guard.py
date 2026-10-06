@@ -37,6 +37,7 @@ from backend.core.execution_policy import (
     RESTRICTED_REFLECTION,
     TRANSFER_CREATION_WORDS,
 )
+from backend.security.write_guard import runtime_write_nodes
 
 _ENDPOINT = re.compile(
     r"^(?:https?://[^/]+)?/(?:[^/?#]+/)*"
@@ -621,7 +622,13 @@ def _security_messages(
     return tuple(dict.fromkeys(messages))
 
 
-def scan_file(path: Path, *, factory_path: Path | None = None) -> tuple[Violation, ...]:
+def scan_file(
+    path: Path,
+    *,
+    factory_path: Path | None = None,
+    config_writer_path: Path | None = None,
+    build_metadata_paths: frozenset[str] = frozenset(),
+) -> tuple[Violation, ...]:
     """GD-07/R-02: parse one file, returning violations for unreadable/invalid source."""
     try:
         if path.is_symlink():
@@ -649,6 +656,44 @@ def scan_file(path: Path, *, factory_path: Path | None = None) -> tuple[Violatio
                 test_file=test_file,
             )
         )
+        config_writer = (
+            config_writer_path is not None and path.resolve() == config_writer_path.resolve()
+        )
+        self_write_test = (
+            test_file and path.parent.name == "tests" and path.parent.parent.name == "backend"
+        )
+        if not self_write_test:
+            findings.update(
+                _location(
+                    path, node, "runtime source/config modification is prohibited", "SELF-WRITE"
+                )
+                for node in runtime_write_nodes(
+                    tree,
+                    path,
+                    allow_config_writes=config_writer,
+                    build_metadata_paths=build_metadata_paths,
+                )
+            )
+            for node in nodes:
+                imports = (
+                    tuple(alias.name for alias in node.names)
+                    if isinstance(node, ast.Import)
+                    else tuple((node.module or "") + "." + alias.name for alias in node.names)
+                    if isinstance(node, ast.ImportFrom)
+                    else ()
+                )
+                if any(
+                    name == "scripts.compile_locks" or name.startswith("scripts.compile_locks.")
+                    for name in imports
+                ):
+                    findings.add(
+                        _location(
+                            path,
+                            node,
+                            "hash-lock authoring compiler cannot be imported by runtime code",
+                            "SELF-WRITE",
+                        )
+                    )
         # Conservative file-wide evidence also catches mutation requests built
         # through separate assignments and transport.send(request). A file that
         # reads order history may not also contain a mutating method declaration.
@@ -710,7 +755,24 @@ def scan_project(root: Path) -> tuple[Violation, ...]:
                 elif (
                     path.suffix == ".py" and path.relative_to(source_root) != _EXEMPT_RELATIVE_PATH
                 ):
-                    findings.extend(scan_file(path, factory_path=source_root / _HTTP_FACTORY_PATH))
+                    relative = path.relative_to(source_root)
+                    authorized_writer = relative in {
+                        Path("vws/setup.py"),
+                        Path("backend/ops/apply_config.py"),
+                    }
+                    findings.extend(
+                        scan_file(
+                            path,
+                            factory_path=source_root / _HTTP_FACTORY_PATH,
+                            config_writer_path=path if authorized_writer else None,
+                            build_metadata_paths=frozenset(
+                                (source_root / name).resolve().as_posix()
+                                for name in ("requirements.lock", "requirements-dev.lock")
+                            )
+                            if relative == Path("scripts/compile_locks.py")
+                            else frozenset(),
+                        )
+                    )
                 elif path.suffix in _CONFIG_SUFFIXES or path.name.startswith(".env"):
                     for number, line in enumerate(
                         path.read_text(encoding="utf-8-sig").splitlines(), 1

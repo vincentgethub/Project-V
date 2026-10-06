@@ -3,9 +3,35 @@ watchlist:
   - AAPL
   - MSFT
   - NVDA
+  - JNJ
+  - JPM
+  - AMZN
+  - GOOGL
+  - META
+  - AVGO
+  - ORCL
+  - COST
+  - WMT
+  - PG
+  - XOM
+  - CVX
+  - UNH
+  - ABBV
+  - HD
+  - CAT
+  - KO
   - SPY
-  - QQQ
   - XLK
+  - XLC
+  - XLY
+  - XLP
+  - XLE
+  - XLF
+  - XLI
+  - XLB
+  - XLRE
+  - XLU
+  - XLV
 schedule:
   scan_interval_minutes: 15
   offhours_interval_minutes: 60
@@ -20,25 +46,45 @@ egress:
 news:
   # RSS is secondary. Only explicit HTTPS feeds receive network grants.
   rss_urls: []
+fundamentals:
+  enabled: true
+  mode: annotate
+  gross_margin_min: 0.40
+  operating_margin_min: 0.15
+  roic_min: 0.10
+  fcf_min: 0
+  interest_coverage_min: 3.0
+  exempt_sectors: [Financials, Real Estate]
+  max_filing_age_days: 200
+  cache_hours: 24
+sizing:
+  target_risk_per_trade: 0.005
+  max_stop_pct: 0.12
+  stop_atr_mult: 2.0
+  target_r: 2.0
+  swing_lookback: 10
 playbooks:
   TREND_50EMA:
     criteria_weights:
-      trend: 0.40
-      reclaim: 0.35
-      relative_volume: 0.25
-    stop_atr_mult: 2.0
-    target_r: 2.0
+      trend: 0.20
+      slope: 0.20
+      pullback: 0.20
+      range_position: 0.15
+      relative_volume: 0.10
+      rsi: 0.15
   BASE_BREAKOUT:
     criteria_weights:
-      breakout: 0.45
-      relative_volume: 0.35
+      breakout: 0.20
+      relative_volume: 0.20
+      base_range: 0.20
       trend: 0.20
-    stop_atr_mult: 2.0
-    target_r: 2.0
+      rsi: 0.10
+      range_position: 0.10
   ANCHORED_VWAP_RECLAIM:
     criteria_weights:
-      reclaim: 0.45
-      momentum: 0.30
-      relative_volume: 0.25
-    stop_atr_mult: 2.0
-    target_r: 2.0
+      reclaim: 0.20
+      relative_volume: 0.20
+      slope: 0.20
+      atr_risk: 0.20
+      rsi: 0.10
+      range_position: 0.10

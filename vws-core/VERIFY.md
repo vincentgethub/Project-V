@@ -366,9 +366,43 @@ sandbox; privileged database administrators remain outside its trust boundary.
 | AsyncIOScheduler 3.x | https://apscheduler.readthedocs.io/en/3.x/modules/schedulers/asyncio.html | stable 3.11.3 pin; scheduler deferred to F |
 | mypy programmatic gate | https://mypy.readthedocs.io/en/stable/extending_mypy.html#integrating-mypy-into-another-python-application | installed API and root-hook verification |
 
-Provider response-format support differs. The future client requests JSON in the
+Provider response-format support differs. The implemented client requests JSON in the
 prompt and validates it with Pydantic; no response_format assumption is baked in.
 No provider-specific model or token price is supplied by default.
+
+## Stage E evidence - October 6, 2026
+
+`LLMClient` uses the pinned OpenAI 3.24.0 SDK with explicit URL/model/key and
+zero SDK retries. The SDK's verified legacy httpx.AsyncClient bridge is exercised
+through MockTransport in test_llm_client.py. HTTPX2 is the SDK default; the
+custom legacy bridge, bounded body/deadline, exact endpoint and redirect refusal
+are tested locally. [Official Python reference](https://developers.openai.com/api/reference/python)
+documents the configured SDK controls. No paid provider request occurred;
+actual model availability, rates and account permission remain UNVERIFIED.
+
+The five recorded companyfacts fixtures (MSFT, COST, JPM, AAPL, SNAP) have raw
+SHA-256/fetch provenance in backend/tests/fixtures/sec/manifest.json. Their
+independent expected arithmetic exercises FY/TTM, sector exemption, noncalendar
+fiscal years and negative earnings. The SEC provider's request contract is
+separate from broker/paper integration. Owner contact was used transiently and
+was not saved in source, fixture headers or documentation.
+
+The GD-08 offline command now runs actual indicators and hunter, two CRO checks,
+fundamentals, news/flow/earnings/IV, compliance, a RAM-only ledger and escaped card
+plus manual preview. NVDA inputs are explicitly synthetic recorded fixtures.
+This verifies no paid SDK construction or real-ledger write with sentiment off;
+connected swarm deadlines, private Telegram callbacks and actual approved ticket
+creation remain F work. Unknown fundamentals/earnings/flow/SPY are visible.
+
+```text
+python scripts/dry_run.py --dry-run NVDA --offline
+python -m pytest -q backend/tests/test_fundamentals.py backend/tests/test_sec_edgar.py backend/tests/test_llm_client.py backend/tests/test_dry_run.py
+python -m pytest -m integration --paper-integration-env-file PATH_TO_PRIVATE_PAPER_ENV
+```
+
+Paper integration is UNVERIFIED without an explicitly supplied private file.
+Local mutation, PostgreSQL, Docker and remote CI remain UNVERIFIED; exact
+reproduction and prerequisite limitations are retained in docs/STATUS.md.
 
 ## Complete VERIFY tag inventory
 

@@ -4,8 +4,33 @@ MSFT,STOCK,Information Technology,CLOUD,false,false,true
 NVDA,STOCK,Information Technology,AI_SEMIS,false,false,true
 JNJ,STOCK,Health Care,,false,false,true
 JPM,STOCK,Financials,,false,false,true
+AMZN,STOCK,Consumer Discretionary,,false,false,true
+GOOGL,STOCK,Communication Services,,false,false,true
+META,STOCK,Communication Services,,false,false,true
+AVGO,STOCK,Information Technology,AI_SEMIS,false,false,true
+ORCL,STOCK,Information Technology,CLOUD,false,false,true
+COST,STOCK,Consumer Staples,,false,false,true
+WMT,STOCK,Consumer Staples,,false,false,true
+PG,STOCK,Consumer Staples,,false,false,true
+XOM,STOCK,Energy,,false,false,true
+CVX,STOCK,Energy,,false,false,true
+UNH,STOCK,Health Care,,false,false,true
+ABBV,STOCK,Health Care,,false,false,true
+HD,STOCK,Consumer Discretionary,,false,false,true
+CAT,STOCK,Industrials,,false,false,true
+KO,STOCK,Consumer Staples,,false,false,true
 SPY,BROAD_ETF,UNKNOWN,,false,false,true
 QQQ,BROAD_ETF,UNKNOWN,MEGA_CAP_TECH,false,false,true
 XLK,SECTOR_ETF,Information Technology,,false,false,true
+XLC,SECTOR_ETF,Communication Services,,false,false,true
+XLY,SECTOR_ETF,Consumer Discretionary,,false,false,true
+XLP,SECTOR_ETF,Consumer Staples,,false,false,true
+XLE,SECTOR_ETF,Energy,,false,false,true
+XLF,SECTOR_ETF,Financials,,false,false,true
+XLI,SECTOR_ETF,Industrials,,false,false,true
+XLB,SECTOR_ETF,Materials,,false,false,true
+XLRE,SECTOR_ETF,Real Estate,,false,false,true
+XLU,SECTOR_ETF,Utilities,,false,false,true
+XLV,SECTOR_ETF,Health Care,,false,false,true
 TQQQ,BROAD_ETF,UNKNOWN,MEGA_CAP_TECH,true,false,false
 SH,BROAD_ETF,UNKNOWN,,false,true,false

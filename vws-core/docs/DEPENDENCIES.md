@@ -5,6 +5,9 @@ runtime, development and build dependency must appear here. Transitive packages
 are recorded by the compiled hash locks. Additions need a stated purpose and the
 security audit gates. Never add telemetry or an order-capable integration outside
 the specified broker executor.
+Amendment 05 prohibits optuna, hyperopt, scikit-optimize, deap and nevergrad in
+both direct dependencies and compiled transitive locks, even with justification.
+Only the specified fixed, registered variants are allowed; no generated search.
 
 - `pydantic`: frozen validated domain contracts and exact output schemas.
 - `pydantic-settings`: explicit environment configuration with masked secrets.

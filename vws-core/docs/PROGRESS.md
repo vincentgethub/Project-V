@@ -1,54 +1,56 @@
 # Project V progress
-Last updated: October 5, 2026 - data stage checked
+Last updated: October 6, 2026 - research stage checked
 
 ## Where things stand
-The safety rules, security protections and expanded data services passed their
-offline checks. Alerts and automatic trading are unfinished.
+The safety, security, data and research stages passed their offline checks.
+The full run passed 3,172 tests; a later focused run checked session expiry.
+Readiness and playbook grades have not been measured. Connected alerts,
+the setup wizard, reports and auto trading are unfinished.
 
 ## What works now
 From the vws-core folder in PowerShell:
-- Run the offline checks: `.venv\Scripts\python.exe -m pytest -q`
-- Read this page in the terminal: `.venv\Scripts\python.exe -m vws progress`
-- Test encrypted backups and emergency halts: `.venv\Scripts\python.exe -m pytest -q backend/tests/test_backups.py backend/tests/test_ops_security.py`
-- Test news and earnings reads: `.venv\Scripts\python.exe -m pytest -q backend/tests/test_news.py backend/tests/test_earnings.py`
+- Run offline checks: `.venv\Scripts\python.exe -m pytest -q`
+- Read this page: `.venv\Scripts\python.exe -m vws progress`
+- Preview a synthetic setup: `.venv\Scripts\python.exe scripts/dry_run.py --dry-run NVDA --offline`
+Company checks use exact filing numbers. Optional AI summaries start off.
+The offline preview checks risk and shows manual instructions; it sends nothing.
+Tax estimates wait for your federal rates. External-lot sale checks are tested.
 
 ## What's being built next
-Build company checks and scored daily trade setups.
-Optional AI summaries will describe public evidence; code makes every decision.
+Connect the research loop to private alerts, fresh approval checks and tickets.
+Then build outcome reports, the guided setup, and the remaining safety stages.
 
 ## Waiting on you
-No answer is needed for the current offline work. Later setup will need:
-- Paper broker keys and CASH or MARGIN account type, to check real account data.
-- A Telegram bot and private chat, to deliver alerts only to you.
-- Plaid dashboard credentials and a checking account, for read-only cash checks.
-- Confirm broker, recovery email, GitHub and Plaid two-step security;
-  Telegram password/devices, phone lock, carrier PIN and password manager.
-- Confirm broker email notices and unused crypto disabled. Save the backup key
-  in your password manager when setup shows it once; losing it prevents restores.
-- Optional: other tax accounts, rates and filing state; skipping rates shows totals.
-The company-filing contact has been provided; its details stay out of these docs.
-Defaults: paper account, fundamentals annotated, AI summaries off, default watchlist.
-Setup will guide these choices; do not paste secrets into chat.
+Nothing right now for offline work. Later setup will need:
+- Paper broker keys and CASH or MARGIN account type for connection checks.
+- A Telegram bot and confirmed private chat for alerts only to you.
+- Plaid credentials and a checking account for read-only cash checks.
+- Account protections: two-step security, broker email notices, phone lock,
+  carrier PIN, password manager and unused crypto disabled.
+- A backup key saved in your password manager when setup shows it.
+- Federal ST/LT tax rates. Single, Texas state zero and NIIT zero are saved.
+  Enter/import IRA/Roth, Merrill taxable and 401(k) lots; no account logins.
+The filing contact was supplied and stays out of these docs. Do not paste secrets.
 
 ## Not checked yet
-Real broker, bank and Telegram connections need your saved credentials.
-The paper integration check was skipped because paper keys were not supplied.
-AI service checks matter only if you choose to turn summaries on.
-Your computer's secret storage, account protections and real backup need checking.
-Broker key scopes and approved-IP restrictions have not been confirmed.
-Checks that deliberately change code, another database and deployment packaging
-have not run on this computer. Remote checks have not run.
-Setup, connected alerts, reports and automatic trading are unfinished.
-An older database needs the backed-up upgrade supplied in the setup stage.
+Real broker, bank and Telegram connections need saved credentials.
+The paper connection test was skipped because paper keys were not supplied.
+AI service checks apply only if you turn summaries on.
+Your secret storage, key restrictions, account protections and real backup
+remain unchecked. Code-changing checks, another database, deployment packaging
+and remote checks have not run here. An older database needs a backed-up upgrade.
+Tax imports, sale-screen prompts and final tax reports come in the later stage.
 
 ## Try this next
-Run `.venv\Scripts\python.exe -m vws progress` from the vws-core folder.
+Run the synthetic setup preview command above. It cannot place a trade.
 
 ## Safety status
-Current behavior: MANUAL research only, paper by default. No order calls exist.
-Real-money order path reachable: No.
-Last emergency drill: not built or run. Backup restore tests passed October 5,
-2026 with test data; your real database backup has not been checked.
+Default mode: MANUAL, paper account. No order calls exist; live remains locked.
+No trading session is running here; your saved halt state has not been checked.
+Live unlock still needs paper history/report, the safety stage, an emergency
+drill, explicit host approval, small limits, account protections, the readiness
+verdict and five healthy feed sessions. Last drill: not built or run.
+Test backup restores passed October 5; your real backup has not been checked.
 
 ## Suggestions
 None proposed. Extra features require your plain-words approval before building.

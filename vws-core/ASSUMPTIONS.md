@@ -302,3 +302,34 @@ delivery and in VERIFY.md.
     version-2 inventory without upgrading it or certifying its ledger chains.
     Incompatible emergency control schemas are refused. Stage H adds migration
     tooling; no owner's database was migrated during development.
+70. Amendment 01 replaces the LLM fundamental addendum. Exact public SEC facts
+    determine all five metrics and statuses; optional narrative cannot change
+    them. No ModelAgnosticClient compatibility alias survives. Missing or stale
+    evidence stays incomplete. Default annotate mode displays failure reasons;
+    require mode drops failures before paid calls. Sector exemptions are n/a.
+71. Debt tags are not blindly summed. Short-term borrowing can overlap current
+    maturities or include commercial paper; unresolved overlap stays unavailable.
+    Every extra fallback has recorded issuer or synthetic boundary evidence.
+72. Each physical optional LLM attempt reserves exact estimated cost atomically.
+    Actual usage settles it; missing usage retains the estimate. Outstanding
+    crashed reservations remain charged. Retry and invalid-output budgets share
+    three physical attempts maximum; invalid JSON gets one retry. NY midnight
+    resets the day, never an in-flight reservation's original day.
+73. The default watchlist contains 20 provisional large-cap stock candidates and
+    12 benchmark/sector ETFs. Stock metadata is operator policy pending setup
+    review. SPY/QQQ guessed weights were removed; UNKNOWN look-through blocks
+    entries. Rounded issuer percentages totaling 100.01% are not normalized.
+74. GD-08 uses a recorded synthetic NVDA fixture and in-memory SQLite only.
+    Synchronous RAM news ingestion avoids crossing thread-local memory databases.
+    The printed manual instructions are a preview, with no fake human approval
+    or actual ticket. Connected orchestration and ticket authentication follow F.
+75. Owner defaults are single, Texas state rate zero and NIIT zero. TX-08 supplies
+    no federal ST/LT rates; totals-only remains active until both are supplied.
+    Estimates retain exact Decimal precision. Sale review uses the shared wash
+    engine's identity groups/date windows for marked external lots; 401(k)
+    treatment is not inferred. It never blocks held exits or logs into accounts.
+76. Amendments 05/06 add G+, V and W. No optimizer dependency is permitted, and
+    runtime source/config writes are blocked. Only the actual setup/apply paths
+    can write config; even those cannot write code/prompts. The standalone lock
+    compiler has exactly two build-output exceptions and cannot be runtime-imported.
+    READY and five healthy required feed sessions become extra live prerequisites.

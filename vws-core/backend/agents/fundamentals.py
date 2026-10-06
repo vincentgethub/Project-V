@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, localcontext
 from enum import StrEnum
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, Self, cast
 from zoneinfo import ZoneInfo
 
 from pydantic import BeforeValidator, Field, model_validator
@@ -77,14 +77,14 @@ TAGS: dict[str, tuple[str, ...]] = {
 
 
 class MetricStatus(StrEnum):
-    PASS = "PASS"
+    PASS = "PASS"  # nosec B105
     FAIL = "FAIL"
     INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
     NOT_MEANINGFUL = "NOT_MEANINGFUL"
 
 
 class FrameworkStatus(StrEnum):
-    PASS = "PASS"
+    PASS = "PASS"  # nosec B105
     FAIL = "FAIL"
     INCOMPLETE = "INCOMPLETE"
     NOT_APPLICABLE = "NOT_APPLICABLE"
@@ -156,7 +156,7 @@ def failure_reasons(metrics: tuple[MetricResult, ...]) -> tuple[str, ...]:
                 )
             elif index < 3:
                 result.append(
-                    f"{names[index]} {(metric.value * 100).quantize(Decimal('0.1'))}% (needs >{(metric.threshold * 100).normalize()}%)"
+                    f"{names[index]} {(metric.value * 100).quantize(Decimal('0.1'))}% (needs >{metric.threshold * 100:.0f}%)"
                 )
             elif index == 3:
                 result.append(f"Free cash flow ${metric.value:,.2f} (needs >$0)")
@@ -308,21 +308,37 @@ def _balance(
 
 def _debt(facts: dict[str, tuple[Fact, ...]], end: date) -> tuple[Decimal | None, tuple[str, ...]]:
     total, tags = _balance(facts, "debt_total", end)
+    noncurrent, noncurrent_tags = _balance(facts, "debt_noncurrent", end)
+    current, current_tags = _balance(facts, "debt_current", end)
     if total is None:
-        noncurrent, a = _balance(facts, "debt_noncurrent", end)
-        current, b = _balance(facts, "debt_current", end)
-        tags = (*a, *b)
+        tags = (*noncurrent_tags, *current_tags)
         if noncurrent is None or current is None:
             return None, tags
         total = noncurrent + current
     short, a = _balance(facts, "short_debt", end)
     paper, b = _balance(facts, "paper", end)
-    # A reported aggregate short-term balance can already include commercial
-    # paper. Its sum is used conservatively once; never add two overlapping
-    # totals. A separate commercial-paper balance is added only without that
-    # aggregate. LongTermDebt similarly supersedes its current/noncurrent parts.
-    addition = short if short is not None else paper if paper is not None else Decimal(0)
-    return total + addition, (*tags, *(a if short is not None else b))
+    used = (*tags, *a, *b)
+    if any(value is not None and value < 0 for value in (total, noncurrent, current, short, paper)):
+        return None, used
+    # ShortTermBorrowings is an aggregate which may include current maturities
+    # of long-term debt. Only a period-matched decomposition can remove that
+    # overlap. The recorded SNAP fixture has total == noncurrent + short.
+    if short is not None and short > 0:
+        if noncurrent is not None and total == noncurrent + short:
+            addition = Decimal(0)
+            used = (*used, *noncurrent_tags)
+        elif current is not None and short >= current:
+            addition = short - current
+            used = (*used, *current_tags)
+        else:
+            return None, used  # cannot establish which portion is separate
+        if paper is not None and paper > short:
+            return None, used  # aggregate/component relationship is unproved
+    else:
+        # Commercial paper reported without a positive short-term aggregate is
+        # the separate short-term component, as in the recorded AAPL fixture.
+        addition = paper if paper is not None else Decimal(0)
+    return total + addition, tuple(dict.fromkeys(used))
 
 
 def _capital(
@@ -379,7 +395,7 @@ def compute_fundamentals(
                     status=resolved,
                     source_tags=tuple(dict.fromkeys(tags)),
                     period_end=latest,
-                    note=note,
+                    note=note or "period-matched USD filing evidence",
                 )
             )
 
@@ -426,8 +442,8 @@ def compute_fundamentals(
                         metric(index, None, (), note)
                 else:
                     annual = max(annuals, key=lambda fact: (fact.end, fact.filed))
-                    assert annual.start is not None
-                    periods = ((annual.start, annual.end),)
+                    annual_start = cast(date, annual.start)  # non-None annuals filter above
+                    periods: tuple[tuple[date, date], ...] = ((annual_start, annual.end),)
                     newer = [
                         fact
                         for key in ("revenue", "operating", "cfo")
@@ -445,7 +461,7 @@ def compute_fundamentals(
                                 -(fact.start - annual.end).days if fact.start is not None else 0,
                             ),
                         )
-                        assert current.start is not None
+                        current_start = cast(date, current.start)  # non-None newer filter above
                         prior_year = [
                             fact
                             for key in ("revenue", "operating", "cfo")
@@ -454,18 +470,18 @@ def compute_fundamentals(
                             if fact.start is not None
                             and abs((current.end - fact.end).days - 365) <= 10
                             and abs(
-                                (current.end - current.start).days - (fact.end - fact.start).days
+                                (current.end - current_start).days - (fact.end - fact.start).days
                             )
                             <= 10
                         ]
                         basis = "TTM"
                         if prior_year:
                             prior = max(prior_year, key=lambda fact: (fact.end, fact.filed))
-                            assert prior.start is not None
+                            prior_start = cast(date, prior.start)  # filtered above
                             periods = (
                                 *periods,
-                                (current.start, current.end),
-                                (prior.start, prior.end),
+                                (current_start, current.end),
+                                (prior_start, prior.end),
                             )
                         else:
                             periods = ()
@@ -535,7 +551,9 @@ def compute_fundamentals(
                     pretax, pretax_tags = values["pretax"]
                     tax_rate = (
                         Decimal("0.21")
-                        if pretax is None or pretax <= 0 or tax is None
+                        if pretax is None or pretax <= 0
+                        else None
+                        if tax is None
                         else max(Decimal(0), min(Decimal("0.35"), tax / pretax))
                     )
                     roic_tags = (*op_tags, *capital_tags, *previous_tags, *tax_tags, *pretax_tags)
@@ -554,13 +572,13 @@ def compute_fundamentals(
                         metric(
                             2,
                             None
-                            if op is None or average is None
+                            if op is None or average is None or tax_rate is None
                             else op * (1 - tax_rate) / average,
                             roic_tags,
-                            "missing operating income or invested capital"
-                            if op is None or average is None
+                            "missing operating income, invested capital or tax expense"
+                            if op is None or average is None or tax_rate is None
                             else "tax rate fallback 0.21"
-                            if pretax is None or pretax <= 0 or tax is None
+                            if pretax is None or pretax <= 0
                             else "",
                         )
                     cfo, cfo_tags = values["cfo"]
@@ -616,7 +634,7 @@ def compute_fundamentals(
             failure_reasons=failure_reasons(result) if applicable else (),
             data_sha256=evidence.data_sha256
             if evidence is not None
-            else "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            else "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",  # pragma: allowlist secret
         )
     except DataIntegrityError:
         raise

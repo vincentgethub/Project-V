@@ -11,14 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal, localcontext
-from enum import StrEnum
 from typing import Self, cast
 
 from pydantic import Field, model_validator
 
 from backend.agents import indicators
+from backend.agents.anchors import AnchorKind, select_anchor
 from backend.core.clock import ensure_utc
 from backend.core.errors import DataIntegrityError, SafetyError, StaleDataError
 from backend.data.data_layer import Bar
@@ -37,22 +37,12 @@ from backend.domain.models import (
 )
 
 
-class AnchorKind(StrEnum):
-    """GD-03: an anchor requires attested earnings or a confirmed structural low."""
-
-    EARNINGS_GAP = "EARNINGS_GAP"
-    SWING_LOW = "SWING_LOW"
-
-
 class ScannerConfig(FrozenModel):
     """GD-03: explicit deterministic research thresholds, independent of CRO limits."""
 
     anomalous_rvol: Money = Field(default=Decimal("1.5"), ge=Decimal("1.5"), le=Decimal(100))
     momentum_rsi: Money = Field(default=Decimal(60), ge=Decimal(50), le=Decimal(100))
-    swing_left: int = Field(default=2, strict=True, ge=1, le=10)
-    swing_right: int = Field(default=2, strict=True, ge=1, le=10)
-    earnings_gap_fraction: Money = Field(default=Decimal("0.05"), gt=Decimal(0), le=Decimal(1))
-    daily_grace_seconds: int = Field(default=900, strict=True, ge=0, le=3600)
+    daily_grace_seconds: int = Field(default=1800, strict=True, ge=1800, le=3600)
 
 
 class IndicatorSnapshot(FrozenModel):
@@ -139,32 +129,6 @@ def _checked_bars(
     return checked
 
 
-def _anchor(
-    bars: tuple[Bar, ...], earnings_gap: date | None, config: ScannerConfig
-) -> tuple[int, AnchorKind] | None:
-    """DAT-03/GD-03: use no future bars to confirm the most recent swing low."""
-    if earnings_gap is not None:
-        if type(earnings_gap) is not date:
-            raise DataIntegrityError("GD-03: earnings-gap anchor must be an explicit session date")
-        matching = [index for index, bar in enumerate(bars) if bar.session_date == earnings_gap]
-        if not matching or matching[0] == 0:
-            raise DataIntegrityError("GD-03: earnings-gap anchor lacks a prior completed close")
-        index = matching[0]
-        with localcontext() as context:
-            context.prec = 80
-            if abs(bars[index].open / bars[index - 1].close - 1) < config.earnings_gap_fraction:
-                raise DataIntegrityError("GD-03: attested earnings anchor lacks the configured gap")
-        return index, AnchorKind.EARNINGS_GAP
-    for index in range(len(bars) - config.swing_right - 1, config.swing_left - 1, -1):
-        neighbours = (
-            *bars[index - config.swing_left : index],
-            *bars[index + 1 : index + config.swing_right + 1],
-        )
-        if all(bars[index].low < bar.low for bar in neighbours):
-            return index, AnchorKind.SWING_LOW
-    return None
-
-
 def scan(
     symbol: str,
     bars: tuple[Bar, ...],
@@ -173,7 +137,6 @@ def scan(
     calendar: MarketCalendar,
     data_snapshot_hash: str,
     market_status: MarketStatus,
-    earnings_gap: date | None = None,
     config: ScannerConfig | None = None,
     memo: indicators.IndicatorMemo | None = None,
 ) -> ScannerResult:
@@ -182,8 +145,8 @@ def scan(
     Need 200 sessions for every required EMA, defined RSI/RVOL, and an anchor.
     RVOL>=1.5 and RSI>=60 are inclusive; MACD histogram and close-minus-EMA20
     must be strictly positive after boundary cent quantization. The earnings
-    date is a caller-attested latest earnings gap, not inferred from price.
-    Missing warmup/anchor/ratios returns UNAVAILABLE and zero hits. Invalid,
+    anchor follows Amendment 01 section4.3 (last60 low or a newer qualifying gap).
+    Missing warmup/ratios returns UNAVAILABLE and zero hits. Invalid,
     stale, suspect or future data never produces a hit. An optional explicitly
     injected memo reuses indicator series; no provider, ledger or clock is read.
     """
@@ -220,9 +183,7 @@ def scan(
             return unavailable("DAT-02: symbol is SUSPECT pending operator acknowledgement")
         if len(checked) < 200:
             return unavailable("GD-03: 200 completed sessions are required for indicator warmup")
-        anchor = _anchor(checked, earnings_gap, settings)
-        if anchor is None:
-            return unavailable("GD-03: no attested earnings gap or confirmed swing-low anchor")
+        anchor = select_anchor(checked)
         if memo is not None and not isinstance(memo, indicators.IndicatorMemo):
             raise DataIntegrityError("DAT-05: indicator memo must be explicitly validated")
         series = (memo if memo is not None else indicators.IndicatorMemo()).calculate(

@@ -137,6 +137,91 @@ def make_client(
     )
 
 
+class SDKLLMClient(httpx.AsyncClient):
+    """Verified openai3.24 legacy-httpx bridge; one bound POST endpoint only.
+
+    SDK retries are disabled by the caller. Redirects are refused, the full
+    decoded body is bounded and read inside the configured <=30s deadline.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: int,
+        policy: EgressPolicy,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 30:
+            raise ConfigurationError("LLM timeout must be 1 through 30 seconds")
+        self.policy = policy
+        self.endpoint = base_url.rstrip("/") + "/chat/completions"
+        self.deadline_seconds = timeout_seconds
+        policy.check_url(self.endpoint, purpose="llm")
+        super().__init__(
+            verify=True,
+            trust_env=False,
+            follow_redirects=False,
+            timeout=httpx.Timeout(float(timeout_seconds)),
+            transport=transport,
+        )
+
+    async def send(
+        self,
+        request: httpx.Request,
+        *,
+        stream: bool = False,
+        auth: Any = httpx.USE_CLIENT_DEFAULT,
+        follow_redirects: Any = httpx.USE_CLIENT_DEFAULT,
+    ) -> httpx.Response:
+        self.policy.check_url(str(request.url), purpose="llm")
+        if str(request.url) != self.endpoint or request.method != "POST":
+            self.policy.deny(purpose="llm", reason="LLM request differs from bound endpoint")
+        response: httpx.Response | None = None
+        deadline = asyncio.get_running_loop().time() + self.deadline_seconds
+        try:
+            async with asyncio.timeout(self.deadline_seconds):
+                response = await super().send(
+                    request, stream=True, auth=auth, follow_redirects=False
+                )
+                if 300 <= response.status_code <= 399:
+                    self.policy.deny(purpose="llm", reason="LLM SDK redirects are prohibited")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > 2_097_152:
+                        raise ProviderError("LLM response exceeds bounded body size")
+                    body.extend(chunk)
+                return httpx.Response(
+                    response.status_code,
+                    headers=response.headers,
+                    content=bytes(body),
+                    request=request,
+                )
+        except TimeoutError:
+            raise httpx.ReadTimeout(
+                "LLM whole-request deadline exceeded", request=request
+            ) from None
+        finally:
+            if response is not None:
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        await response.aclose()
+                except TimeoutError:
+                    raise httpx.ReadTimeout(
+                        "LLM response cleanup deadline exceeded", request=request
+                    ) from None
+
+
+def make_llm_sdk_client(
+    base_url: str,
+    timeout_seconds: int,
+    *,
+    policy: EgressPolicy,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> SDKLLMClient:
+    """All SDK HTTP construction stays in this sole, audited factory module."""
+    return SDKLLMClient(base_url, timeout_seconds, _require_policy(policy), transport)
+
+
 class ExactJSONResponse(Response):
     """R-04: preserve financial JSON decimals before alpaca-py sees them."""
 

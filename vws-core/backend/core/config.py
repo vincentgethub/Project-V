@@ -10,6 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar, Literal, Self
 from urllib.parse import parse_qsl, unquote, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import (
@@ -30,6 +31,14 @@ from yaml.nodes import MappingNode, ScalarNode
 from backend.core.errors import ConfigurationError, DataIntegrityError
 from backend.core.logging import register_secrets
 from backend.core.money import decimal_money, validate_cent_price
+from backend.domain.tax_profile import (
+    DEFAULT_FILING_STATUS,
+    DEFAULT_NIIT_RATE,
+    DEFAULT_STATE,
+    DEFAULT_STATE_RATE,
+    FilingStatus,
+    TaxProfile,
+)
 
 PAPER_BROKER_ENDPOINT = "https://paper-api.alpaca.markets"
 LIVE_BROKER_ENDPOINT = "https://api.alpaca.markets"
@@ -116,6 +125,28 @@ class Settings(BaseSettings):
         """
         super().__init__(**values)
 
+    @classmethod
+    def validated_copy(cls, value: "Settings") -> "Settings":
+        """R-02/R-07: validate a complete snapshot without rerunning env sources.
+
+        Pydantic's self_instance validation is the same boundary used by
+        BaseModel.__init__. It avoids BaseSettings reading later environment
+        values while preserving the intentionally unset offline allowlist.
+        """
+        if not isinstance(value, cls):
+            raise ConfigurationError("settings snapshot requires typed Settings")
+        values = value.model_dump(mode="python")
+        if (
+            not value.telegram_allowed_user_ids
+            and "telegram_allowed_user_ids" not in value.model_fields_set
+        ):
+            values.pop("telegram_allowed_user_ids")
+        if value.tax_state != DEFAULT_STATE and "tax_state_rate" not in value.model_fields_set:
+            raise ConfigurationError("a changed state requires an explicit TAX_STATE_RATE")
+        checked = cls.__new__(cls)
+        cls.__pydantic_validator__.validate_python(values, self_instance=checked)
+        return checked
+
     # Source constants cannot be raised by an environment variable.
     DECIMAL_BOUNDS: ClassVar[Mapping[str, tuple[Decimal, Decimal]]] = MappingProxyType(
         {
@@ -135,7 +166,7 @@ class Settings(BaseSettings):
             "checking_buffer_usd": (Decimal("1500"), Decimal("1000000000")),
             "min_margin_equity": (Decimal("2000"), Decimal("1000000000")),
             "min_setup_score": (Decimal("6.0"), Decimal("10.0")),
-            "llm_daily_budget_usd": (Decimal("0"), Decimal("1000")),
+            "llm_daily_budget_usd": (Decimal("0"), Decimal("20")),
         }
     )
     INTEGER_BOUNDS: ClassVar[Mapping[str, tuple[int, int]]] = MappingProxyType(
@@ -148,7 +179,7 @@ class Settings(BaseSettings):
             "earnings_blackout_sessions": (0, 10),
             "max_alerts_per_day": (0, 20),
             "proposal_ttl_sessions": (1, 3),
-            "llm_timeout_seconds": (1, 60),
+            "llm_timeout_seconds": (1, 30),
             "llm_max_tokens": (1, 8192),
             "secret_max_age_days": (30, 365),
             "log_retention_days": (7, 365),
@@ -226,16 +257,26 @@ class Settings(BaseSettings):
     min_setup_score: Decimal = Decimal("7.0")
     max_alerts_per_day: int = 5
     proposal_ttl_sessions: int = 1
+    display_tz: str = "America/Chicago"
     enable_intraday_playbooks: bool = False
     # None is an offline-only sentinel; connected research requires explicit values.
+    llm_enabled: bool = Field(default=False, strict=True)
     llm_base_url: str | None = None
     llm_model_name: str | None = None
     llm_api_key: SecretStr = Field(default=SecretStr(""), repr=False)
     llm_timeout_seconds: int = 30
     llm_max_tokens: int = 1500
-    llm_daily_budget_usd: Decimal = Decimal("0")
-    llm_input_cost_per_million_usd: Decimal | None = None
-    llm_output_cost_per_million_usd: Decimal | None = None
+    llm_daily_budget_usd: Decimal = Decimal("1.00")
+    llm_input_cost_per_million_usd: Decimal | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_PRICE_INPUT_PER_MTOK", "llm_input_cost_per_million_usd"),
+    )
+    llm_output_cost_per_million_usd: Decimal | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "LLM_PRICE_OUTPUT_PER_MTOK", "llm_output_cost_per_million_usd"
+        ),
+    )
     telegram_bot_token: SecretStr = Field(default=SecretStr(""), repr=False)
     telegram_allowed_user_ids: tuple[int, ...] = ()
     telegram_callback_secret: SecretStr = Field(default=SecretStr(""), repr=False)
@@ -247,6 +288,31 @@ class Settings(BaseSettings):
     tg_rate_per_min: int = 20
     tg_heavy_rate_per_min: int = 5
     healthcheck_ping_url: SecretStr = Field(default=SecretStr(""), repr=False)
+    tax_filing_status: FilingStatus = DEFAULT_FILING_STATUS
+    tax_state: str = Field(default=DEFAULT_STATE, min_length=1, max_length=64)
+    tax_fed_st_rate: Decimal | None = None
+    tax_fed_lt_rate: Decimal | None = None
+    tax_state_rate: Decimal | None = DEFAULT_STATE_RATE
+    tax_niit_rate: Decimal | None = DEFAULT_NIIT_RATE
+
+    @field_validator(
+        "tax_fed_st_rate", "tax_fed_lt_rate", "tax_state_rate", "tax_niit_rate", mode="before"
+    )
+    @classmethod
+    def validate_tax_rate(cls, value: object) -> Decimal | None:
+        return TaxProfile.exact_rate(value)
+
+    @property
+    def tax_profile(self) -> TaxProfile:
+        """TX-08: one profile boundary for setup and future Stage J reports."""
+        return TaxProfile(
+            filing_status=self.tax_filing_status,
+            state=self.tax_state,
+            federal_st_rate=self.tax_fed_st_rate,
+            federal_lt_rate=self.tax_fed_lt_rate,
+            state_rate=self.tax_state_rate,
+            niit_rate=self.tax_niit_rate,
+        )
 
     @field_validator("sec_user_agent")
     @classmethod
@@ -263,6 +329,15 @@ class Settings(BaseSettings):
         ):
             raise ValueError("SEC_USER_AGENT requires an application/name and contact email")
         return value
+
+    @field_validator("llm_enabled", mode="before")
+    @classmethod
+    def validate_llm_enabled(cls, value: object) -> bool:
+        if type(value) is bool:
+            return value
+        if isinstance(value, str) and value.casefold() in {"true", "false"}:
+            return value.casefold() == "true"
+        raise ValueError("LLM_ENABLED requires true or false")
 
     @model_validator(mode="before")
     @classmethod
@@ -282,6 +357,15 @@ class Settings(BaseSettings):
             if isinstance(value, str) and value in {"MANUAL", "AUTO_PAPER", "AUTO_LIVE"}
             else "MANUAL"
         )
+
+    @field_validator("display_tz")
+    @classmethod
+    def validate_display_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("DISPLAY_TZ requires an installed IANA timezone") from None
+        return value
 
     @field_validator("healthcheck_ping_url")
     @classmethod
@@ -338,6 +422,10 @@ class Settings(BaseSettings):
         result = _exact_decimal(value)
         if not Decimal("0") <= result <= Decimal("1000"):
             raise ValueError("LLM cost rate must be between 0 and 1000 USD per million tokens")
+        try:
+            decimal_money(result)
+        except DataIntegrityError as exc:
+            raise ValueError("LLM cost rate requires supported exact micro-unit precision") from exc
         return result
 
     @field_validator("llm_base_url")
@@ -370,7 +458,7 @@ class Settings(BaseSettings):
     def validate_llm_model_name(cls, value: str | None) -> str | None:
         """GD-01: an explicit, nonempty model is mandatory for connected use."""
         if value is not None and (
-            not value or value != value.strip() or len(value) > 200 or not value.isprintable()
+            not value or value != value.strip() or len(value) > 128 or not value.isprintable()
         ):
             raise ValueError("LLM_MODEL_NAME must be a nonempty trimmed model name")
         return value
@@ -494,6 +582,14 @@ class Settings(BaseSettings):
         """R-06: enforce live consent, keys, and drawdown-tier ordering."""
         if self.dd_reduce_only >= self.dd_halt:
             raise ValueError("DD_REDUCE_ONLY must be below DD_HALT")
+        if self.tax_state != DEFAULT_STATE and "tax_state_rate" not in self.model_fields_set:
+            raise ValueError("a changed state requires an explicit TAX_STATE_RATE")
+        _ = self.tax_profile
+        if self.llm_enabled:
+            try:
+                self.assert_llm_call_budget_ready()
+            except ConfigurationError as exc:
+                raise ValueError(str(exc)) from exc
         if (
             "telegram_allowed_user_ids" in self.model_fields_set
             and not self.telegram_allowed_user_ids
@@ -847,11 +943,9 @@ class SizingConfig(_FrozenYamlModel):
 
 
 class PlaybookConfig(_FrozenYamlModel):
-    """GD-02/R-04: exact weights and reproducible ATR/target parameters."""
+    """GD-02/R-04: exact weights; level parameters have one home in sizing."""
 
     criteria_weights: Mapping[str, Decimal]
-    stop_atr_mult: Decimal = Decimal("2.0")
-    target_r: Decimal = Decimal("2.0")
 
     @field_validator("criteria_weights", mode="before")
     @classmethod
@@ -884,16 +978,6 @@ class PlaybookConfig(_FrozenYamlModel):
     def freeze_weights(cls, value: Mapping[str, Decimal]) -> Mapping[str, Decimal]:
         """R-03: freeze weights after Pydantic has copied the mapping."""
         return MappingProxyType(dict(value))
-
-    @field_validator("stop_atr_mult", "target_r", mode="before")
-    @classmethod
-    def validate_levels(cls, value: object, info: ValidationInfo) -> Decimal:
-        """GD-02/R-04: reject invalid levels instead of repairing parameters."""
-        result = _exact_decimal(value)
-        lower = Decimal("0.5") if info.field_name == "stop_atr_mult" else Decimal("1.5")
-        if not lower <= result <= Decimal("10"):
-            raise ValueError(f"{info.field_name} must be between {lower} and 10")
-        return result
 
     @field_serializer("criteria_weights")
     def serialize_weights(self, value: Mapping[str, Decimal]) -> dict[str, str]:
@@ -947,6 +1031,34 @@ class YamlConfig(_FrozenYamlModel):
         expected = {"TREND_50EMA", "BASE_BREAKOUT", "ANCHORED_VWAP_RECLAIM"}
         if set(value) != expected:
             raise ValueError("playbooks must define exactly the three supported daily strategies")
+        criteria = {
+            "TREND_50EMA": {
+                "trend",
+                "slope",
+                "pullback",
+                "range_position",
+                "relative_volume",
+                "rsi",
+            },
+            "BASE_BREAKOUT": {
+                "breakout",
+                "relative_volume",
+                "base_range",
+                "trend",
+                "rsi",
+                "range_position",
+            },
+            "ANCHORED_VWAP_RECLAIM": {
+                "reclaim",
+                "relative_volume",
+                "slope",
+                "atr_risk",
+                "rsi",
+                "range_position",
+            },
+        }
+        if any(set(config.criteria_weights) != criteria[name] for name, config in value.items()):
+            raise ValueError("each daily playbook must use its six specified criteria")
         return MappingProxyType(dict(value))
 
     @field_serializer("playbooks")
