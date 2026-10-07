@@ -36,7 +36,7 @@ testpaths = ["backend/tests"]
 addopts = "--disable-socket --strict-markers"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
-markers = ["integration: explicit paper-key integration checks (not run by default)"]
+markers = ["integration: explicit paper-key integration checks (not run by default)", "perf: fixed synthetic tape and prescribed runtime budgets"]
 
 [tool.ruff]
 target-version = "py311"

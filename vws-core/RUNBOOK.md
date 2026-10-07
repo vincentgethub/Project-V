@@ -162,11 +162,61 @@ items 1-7 attested within 365 days; private permissions; restore success within
 webhook and safe getMe group flags; a non-admin/non-root user; and active egress
 guard. These unlock checks are future Stage I composition, not certified now.
 
-Monthly `ops drill` and weekly security reporting are pending their stages. The
-report must show counts/new numeric IDs, secret ages and last drill, anchor
-verify, pip-audit and restore test; missing evidence stays UNVERIFIED. FYI auto
+Monthly `ops drill` remains pending K. The weekly report now has event counts,
+new numeric IDs, secret ages and the last drill, anchor verify, pip-audit and
+restore test; missing evidence stays UNVERIFIED and the latest failure is kept. FYI auto
 messages later describe actions rather than request approval. Read `/pnl` with
 cash-flow-adjusted paper/live series kept separate; year end export, compare
 with authoritative 1099-B, then give both to your preparer. Reports are unfinished.
 Logs rotate daily with 30-day retention by default (7-365 allowed). Ledger, tax
 and security evidence stay permanently, local plus encrypted backups. No telemetry.
+
+## Reading the edge report and the verdict
+
+`/edge` and `/report` are private, allowlisted and rate-limited. Their connected
+startup arrives in H. They show the same saved proof, using the current amount
+masking setting. Each weekly publication keeps JSON/CSV and an `outcomes_*.json`
+proof with every recorded alert's fills, costs, R, daily price-bound MAE/MFE,
+holding time and exit reason. Files are content-addressed and never overwritten.
+The ledger binds their hashes to the account and paper/live cohort.
+
+Approved, rejected, expired, pending and failed fresh checks are separate views.
+CRO vetoes with positive shares have a shadow view. Fundamental subgroups overlap
+the overall rows, so do not add those rows together. Unfilled limits are not
+losses. Fewer than 30 resolved trades says "too few trades to judge". Missing
+portfolio evidence is n/a. The CSV and plain-language report disclose costs,
+source limitations, dividend handling and rough taxes. See docs/VALIDATION.md.
+
+WORKING needs the specified sample, positive lower uncertainty bound and profit
+factor. Replay also needs an out-of-sample, trial-adjusted validation result;
+G's in-sample replay cannot supply that. Neither a grade nor the later readiness
+verdict changes settings or unlocks live. The verdict, walk-forward/holdout,
+portfolio overlays and exit variants arrive in V after K. Five healthy realtime
+feed sessions from W are an additional prerequisite. No edge is established by
+synthetic fixtures. Hypothetical/past results; not indicative of future returns.
+
+Offline acceptance, without credentials, an owner database or network:
+
+```powershell
+.venv\Scripts\python.exe -m vws replay --start 2026-08-01 --end 2026-10-02 --symbols NVDA --offline-fixtures --workers 1
+```
+
+That command saves explicitly synthetic proof/report files and uses a separate
+synthetic indicator cache. For observed history, supply a sealed `manifest.json`
+with RAW/SPLIT/ALL data and a `filings_manifest.json` from the documented
+`backend.data.history.seal_history` / `backend.data.frozen_filings.seal_filings`
+host APIs. Both refuse overwrites. An empty filing manifest means unavailable,
+not fundamentally sound. Do not regenerate missing files inside replay.
+Example with explicit hypothetical cash/funding and a separately selected cache:
+
+```powershell
+.venv\Scripts\python.exe -m vws replay --start 2019-01-01 --end 2025-12-31 --symbols NVDA --history data/history/SEALED_SNAPSHOT --initial-equity 10000 --checking-balance 11500 --cache data/cache/ind/SEALED_SNAPSHOT
+```
+
+The amounts above are example assumptions, not your account balance. It reads
+existing environment settings and only a dotenv file explicitly supplied with
+the global `--env-file` option. It opens no owner database and makes no provider
+or broker calls. A changed source under an existing indicator key is refused;
+use the selected snapshot's separate cache. Keep backups before host migrations.
+Use a cumulative report window from the first tracked alert when assembling the
+weekly history source, so alerts still open after their first week are included.

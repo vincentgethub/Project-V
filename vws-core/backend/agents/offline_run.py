@@ -167,7 +167,7 @@ async def _offline_run(symbol: str, *, require_fundamentals: bool) -> OfflineRes
             range_start=bars[0].timestamp,
             range_end=bars[-1].timestamp,
             feed="FAKE",
-            adjustment="ALL",
+            adjustment="SPLIT",
             fetched_at=now,
             bar_count=len(bars),
             sha256=_bars_digest(bars)[0],

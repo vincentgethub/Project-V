@@ -61,7 +61,7 @@ def test_DAT_05_memo_revalidates_forged_cached_output_and_invalid_identity() -> 
     bars = _bars()
     memo = IndicatorMemo()
     result = memo.calculate("AAPL", bars, 0)
-    key = ("AAPL", bars[-1].session_date)
+    key = ("AAPL", "SPLIT", bars[-1].session_date)
     digest, anchor, _ = memo._entries[key]
     memo._entries[key] = (digest, anchor, result.model_copy(update={"rsi14": (Decimal(101),)}))
     with pytest.raises(DataIntegrityError):

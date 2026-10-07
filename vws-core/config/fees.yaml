@@ -1,0 +1,24 @@
+# CM-04: dated model assumptions; actual account-bound FEE activities supersede.
+# No running process changes this table. Refresh only through owner review.
+verified_on: 2026-10-07
+review_due: 2026-12-31
+commission_plan: retail_standard_unverified_account
+rows:
+  - effective_from: 2026-09-01
+    commission_per_share: 0
+    sec_sell_rate: 0.0000206
+    taf_sell_per_share: 0.000195
+    taf_sell_cap: 9.79
+    cat_per_share: 0.000003
+  - effective_from: 2026-10-01
+    commission_per_share: 0
+    sec_sell_rate: 0.0000206
+    taf_sell_per_share: 0
+    taf_sell_cap: 9.79
+    cat_per_share: 0.000003
+  - effective_from: 2027-01-01
+    commission_per_share: 0
+    sec_sell_rate: 0.0000206
+    taf_sell_per_share: 0.000195
+    taf_sell_cap: 9.79
+    cat_per_share: 0.000003

@@ -1,3 +1,45 @@
+# Stage G/G+ verification - 2026-10-07
+
+The final cumulative non-perf offline gate passed **3,709 tests, 44 skipped,
+one perf case deselected, two warnings, 835.06s**. Required safety coverage is
+**100%: 2,202 statements and 716 branches, zero missing/partial**. The excluded
+fixed 20-symbol/seven-year replay passed separately: **1 PASS, 4 deselected,
+115.23s overall, timed replay 88.411s, 443 decisions**, three workers plus parent.
+The four deselected cases are already in the cumulative gate; do not add them.
+Proof SHA: `d81cb662aa155344891c91e4911c2fbe7841f6137aecdc74cc7523f19cb8919c`.
+The first expanded run failed six fill cases because the matcher still required
+ALL-adjusted evidence. It now requires SPLIT; the final rerun also proves that
+ALL-only evidence fails closed. No failed run is counted as PASS.
+
+Static gates passed: Ruff 231 files; strict mypy 213 authored sources; full
+execution/source-write guard; production Bandit zero findings, 27,856 lines,
+eight explicit skips. All five actual Git-root hooks passed. Authored secret
+findings zero; nine-commit/25.96MB Git-history scan zero leaks; pip check and
+unchanged 123-pin development lock audit clean. Real services, owner keyring/
+host/backups, PostgreSQL, Docker/runtime, POSIX mutation and remote CI remain
+UNVERIFIED. Exact service/platform reproduction commands follow in the retained
+Stage F section. The FRED key and SEC contact are entered only through setup.
+
+From an activated venv in vws-core, reproduce the G gates:
+
+```text
+python -m ruff check .
+python -m ruff format --check .
+python -m backend.core.check_stage_d
+python -m backend.core.source_guard .
+python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/net backend/ops backend/security backend/telegram backend/notifications backend/tax backend/evaluation backend/indicators scripts vws -c pyproject.toml
+python -m pip check
+python -m pip_audit -r requirements-dev.lock --no-deps --disable-pip --progress-spinner off --timeout 15
+python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov-branch --cov-fail-under=100 --cov-report=term-missing -m "not perf"
+python -m pytest -q -s backend/tests/test_replay_cli.py -m perf
+python -m vws progress
+```
+
+Only test fixtures and in-memory/disposable ledgers were used; no owner DB,
+dotenv, native credential, chat or broker was opened. No order execution or
+money movement exists. Connected runtime remains H; DQ-02/remaining PF, registered
+validation and readiness remain V; realtime health remains W.
+
 # Stage F verification - 2026-10-07
 
 The full cumulative offline gate passed **3,366 tests, 44 skipped, 2 warnings**

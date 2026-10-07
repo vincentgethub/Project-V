@@ -47,6 +47,14 @@ connected host composition is Stage H work. The project is not
 finished, and no broker order execution path currently exists. Stage I alone
 may add the specified isolated order executor; money movement remains banned.
 
+Stage G/G+ supplies recorded hypothetical outcomes, original cost evidence,
+private weekly edge/security reports with individual proofs, sealed local
+replay, split-aware cache invalidation and deterministic parallel indicators.
+Its cumulative offline gate passed 3,709 cases with 44 unverified service checks
+skipped; required safety branch coverage is 100%. The separate fixed 20-symbol,
+seven-year replay passed in 88.411 seconds. Synthetic results never certify an
+edge or live readiness. Guided setup and connected runtime remain Stage H.
+
 Stage S passed its offline gates on October 5, 2026. The encryption, anchor, drift and
 panic service suite passed 137 offline tests with complete statement and branch
 coverage; native-keyring/permissions/redaction services have separate fake tests.
@@ -278,3 +286,21 @@ SEC, FINRA and Alpaca contracts and the conservative software assumptions.
 See ASSUMPTIONS.md and VERIFY.md. Historical full manifests and untruncated source
 are in deliveries/Stage_A.md, deliveries/Stage_B.md, and deliveries/Stage_C.md.
 The amended stages continue automatically after successful verification.
+
+## Fixed historical replay
+
+Stage G's offline CLI uses the same hunter gates, point-in-time fundamentals,
+CRO sizing and pure cost/fill model. It runs no account, network or order code.
+Try a labeled synthetic acceptance tape:
+
+```powershell
+.venv\Scripts\python.exe -m vws replay --start 2026-08-01 --end 2026-10-02 --symbols NVDA --offline-fixtures --workers 1
+```
+
+The JSON/CSV files are under `data/reports/`; synthetic caches have their own
+namespace. Report hashes are deterministic, including across worker counts.
+Real runs require explicitly supplied hypothetical starting/funding amounts and
+sealed price/filing manifests. See RUNBOOK.md and docs/VALIDATION.md for the
+commands, costs, source gaps, dividend estimates, rough taxes and survivorship.
+The result is in-sample: no out-of-sample edge or live readiness is claimed.
+Hypothetical/past results; not indicative of future returns.

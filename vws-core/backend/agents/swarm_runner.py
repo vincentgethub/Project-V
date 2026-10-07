@@ -9,6 +9,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
+from decimal import localcontext
 from typing import Literal, Protocol
 from uuid import UUID, uuid5
 
@@ -16,6 +17,7 @@ from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.agents.anchors import select_anchor
 from backend.agents.expiry import proposal_expiry
 from backend.agents.flow_tracker import FlowTracker
 from backend.agents.fundamentals import (
@@ -57,6 +59,7 @@ from backend.core.errors import (
 from backend.core.ledger import Ledger
 from backend.core.system_state import SystemState, SystemStateStore
 from backend.data.data_layer import AsyncAlpacaMarketData, Bar, _bars_digest
+from backend.data.historical_spread import SpreadMeasurement
 from backend.data.news import NewsProvider, NewsProviderName, NewsResult
 from backend.data.sec_edgar import SecPayload
 from backend.domain.compliance_models import ExternalAccount, TaxLot, TradeRecord
@@ -78,6 +81,8 @@ from backend.domain.models import (
     TradeProposal,
     Verdict,
 )
+from backend.evaluation.costs import CostContext
+from backend.evaluation.provenance import EvaluationProvenance
 from backend.notifications.card_formatter import CardContext, format_card
 from backend.risk.boundary import RiskBoundary
 from backend.risk.compliance import ComplianceAssessment
@@ -101,6 +106,7 @@ class ResearchRequest(FrozenModel):
     lots: tuple[TaxLot, ...] = Field(default=(), max_length=10000)
     history: tuple[TradeRecord, ...] = Field(default=(), max_length=100000)
     tax_accounts: tuple[ExternalAccount, ...] = Field(default=(), max_length=1000)
+    spread_measurement: SpreadMeasurement | None = None
 
 
 class SwarmResult(FrozenModel):
@@ -175,7 +181,7 @@ class SwarmRunner:
         if not offline and risk.marks is None:
             raise ConfigurationError("GD-03: connected research requires persisted financial marks")
 
-    def _verify_candidate(self, request: ResearchRequest, now: datetime) -> None:
+    def _verify_candidate(self, request: ResearchRequest, now: datetime) -> tuple[Bar, ...]:
         """Rebuild the entire immutable incremental bar cache, then re-score.
 
         The caller's source UUID caps the cache at that recorded revision. A
@@ -183,11 +189,16 @@ class SwarmRunner:
         """
         c = request.candidate
         with Session(self.ledger.engine) as session:
+            from backend.data.split_cache import current_epochs
+
+            floor = current_epochs(session, now).get(c.symbol, 0)
             source = session.get(DataSnapshot, request.data_snapshot_id)
             if source is None or source.symbol != c.symbol or source.fetched_at > c.as_of:
                 raise DataIntegrityError("GD-03: candidate lacks bound bar provenance")
+            if source.seq <= floor:
+                raise DataIntegrityError("DQ-01: candidate predates a split cache invalidation")
             if (source.feed, source.adjustment) != (
-                ("FAKE", "ALL") if self.offline else ("SIP", "ALL")
+                ("FAKE", "SPLIT") if self.offline else ("SIP", "SPLIT")
             ):
                 raise DataIntegrityError("DAT-07: candidate requires bound completed daily feed")
             records = tuple(
@@ -199,6 +210,7 @@ class SwarmRunner:
                         DataSnapshot.feed == source.feed,
                         DataSnapshot.adjustment == source.adjustment,
                         DataSnapshot.seq <= source.seq,
+                        DataSnapshot.seq > floor,
                     )
                     .order_by(DataSnapshot.seq)
                     .limit(10001)
@@ -244,6 +256,7 @@ class SwarmRunner:
         )
         if c not in rebuilt.candidates:
             raise DataIntegrityError("GD-03: candidate score/levels/size differ from recorded bars")
+        return tuple(by_session[d] for d in sorted(by_session))
 
     async def _bounded(self, call: Callable[[], Awaitable[object]]) -> object:
         async with asyncio.timeout(self.timeout_seconds):
@@ -309,7 +322,9 @@ class SwarmRunner:
                 checked_at=assessment.evaluated_at,
             )
 
-    def _proposal(self, request: ResearchRequest, now: datetime) -> TradeProposal:
+    def _proposal(
+        self, request: ResearchRequest, now: datetime, bars: tuple[Bar, ...]
+    ) -> TradeProposal:
         c = request.candidate
         identity = hashlib.sha256(
             json.dumps(
@@ -330,6 +345,38 @@ class SwarmRunner:
                 raise DataIntegrityError(
                     "GD-03: repeated candidate must be suppressed by the orchestrator"
                 )
+        series = self.hunter.memo.calculate(c.symbol, bars, select_anchor(bars)[0])
+        atr14 = series.atr14[-1]
+        if atr14 is None:
+            raise DataIntegrityError("EV-01: candidate cost evidence requires its verified ATR")
+        spread = request.spread_measurement
+        if spread is not None and (
+            spread.symbol != c.symbol
+            or spread.session != bars[-1].session_date
+            or spread.fetched_at > c.as_of
+        ):
+            raise DataIntegrityError("CM-01: proposal quote evidence differs from its decision")
+        with localcontext() as precision:
+            precision.prec = 80
+            dollars = sorted(bar.close * bar.volume for bar in bars[-20:])
+            median = (dollars[9] + dollars[10]) / 2
+        provenance = EvaluationProvenance(
+            cohort="PAPER" if self.settings.paper_trading else "LIVE",
+            expires_at=proposal_expiry(
+                now, self.settings.proposal_ttl_sessions, self.risk.cro.calendar
+            ),
+            yaml_hash=self.config.config_hash,
+            settings_hash=self.settings.config_hash,
+            evidence_session=bars[-1].session_date,
+            cost_context=CostContext(
+                median_dollar_volume_20=median,
+                atr14=atr14,
+                policy=self.config.cm,
+                measured_half_spread_bps=None if spread is None else spread.half_spread_bps,
+            ),
+            initial_equity=request.portfolio.equity,
+            spread_measurement=spread,
+        )
         signal = self.ledger.append(
             Signal,
             agent_name="SetupHunter",
@@ -339,6 +386,7 @@ class SwarmRunner:
             structured_thesis={
                 "setup": c.model_dump(mode="json"),
                 "confidence_kind": "uncalibrated score fraction",
+                "evaluation_provenance": provenance.model_dump(mode="json"),
             },
             invalidation="stop or fresh revalidation failure",
             data_snapshot_id=request.data_snapshot_id,
@@ -398,7 +446,7 @@ class SwarmRunner:
             seconds=self.timeout_seconds
         ):
             raise DataIntegrityError("GD-03: candidate is outside the current cycle/watchlist")
-        self._verify_candidate(request, now)
+        bars = self._verify_candidate(request, now)
         if not score_eligible(c.score, self.settings.min_setup_score):
             self.ledger.append(
                 SecurityEvent,
@@ -406,7 +454,7 @@ class SwarmRunner:
                 detail={"symbol": c.symbol, "playbook": c.playbook.value, "reason": "score"},
             )
             return SwarmResult(status="DROPPED", reasons=("score below minimum",))
-        p = self._proposal(request, now)
+        p = self._proposal(request, now, bars)
         first = self.risk.evaluate(p, request.portfolio, request.market, deployable=request.capital)
         self._audit_risk(first)
         if first.decision != Decision.APPROVED:

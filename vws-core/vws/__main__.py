@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
 from backend.core.errors import SafetyError
@@ -19,6 +20,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("progress")
     commands.add_parser("doctor")
+    replay_command = commands.add_parser("replay")
+    replay_command.add_argument("--start", type=date.fromisoformat, required=True)
+    replay_command.add_argument("--end", type=date.fromisoformat, required=True)
+    replay_command.add_argument("--symbols", nargs="+")
+    replay_command.add_argument("--offline-fixtures", action="store_true")
+    replay_command.add_argument("--history", type=Path, default=Path("data/history"))
+    replay_command.add_argument("--reports", type=Path, default=Path("data/reports"))
+    replay_command.add_argument("--cache", type=Path, default=Path("data/cache/ind"))
+    replay_command.add_argument("--initial-equity")
+    replay_command.add_argument("--checking-balance")
+    replay_command.add_argument("--workers", type=int)
     ops = commands.add_parser("ops").add_subparsers(dest="operation", required=True)
     attest = ops.add_parser("attest")
     attest.add_argument("item")
@@ -42,6 +54,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "progress":
             sys.stdout.write(read_progress())
+            return 0
+        if args.command == "replay":
+            from vws.replay_cli import execute
+
+            execute(
+                args.start,
+                args.end,
+                None if args.symbols is None else tuple(args.symbols),
+                project=Path(__file__).resolve().parents[1],
+                history_root=args.history,
+                report_root=args.reports,
+                cache_root=args.cache,
+                offline_fixtures=args.offline_fixtures,
+                env_file=args.env_file,
+                initial_equity=args.initial_equity,
+                checking_balance=args.checking_balance,
+                workers=args.workers,
+            )
             return 0
         # Progress never imports network/keyring service composition.
         from backend.security.secrets import KeyringSecretStore

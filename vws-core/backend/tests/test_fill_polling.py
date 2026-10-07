@@ -11,9 +11,17 @@ from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.core.database import Fill, OrderEvent, Signal
+from backend.core.database import (
+    DataSnapshot,
+    Fill,
+    OrderEvent,
+    Signal,
+    create_database,
+    create_schema,
+)
 from backend.core.errors import ConfigurationError, DataIntegrityError
-from backend.core.system_state import SystemState
+from backend.core.notifier import ConsoleNotifier
+from backend.core.system_state import SystemState, SystemStateStore
 from backend.data.async_reader import AsyncAlpacaReader
 from backend.data.fill_polling import AlpacaFillSource, ObservedFill, TicketFillMatcher
 from backend.net.egress import EgressPolicy, build_allowlist
@@ -47,6 +55,43 @@ def matcher(h: Harness) -> TicketFillMatcher:
     return TicketFillMatcher(
         h.settings, h.request.portfolio.account_id, h.state, h.swarm.risk.cro.registry
     )
+
+
+def test_DQ_01_manual_observation_does_not_use_all_adjusted_signal_provenance(
+    harness: Harness,
+) -> None:
+    engine = create_database("sqlite+pysqlite:///:memory:")
+    try:
+        create_schema(engine)
+        state = SystemStateStore(engine, harness.clock, ConsoleNotifier())
+        with Session(harness.state.engine) as session:
+            source = session.scalar(select(DataSnapshot))
+            assert source is not None
+        state.ledger.append(
+            DataSnapshot,
+            symbol=source.symbol,
+            timeframe=source.timeframe,
+            range_start=source.range_start,
+            range_end=source.range_end,
+            feed="SIP",
+            adjustment="ALL",
+            fetched_at=source.fetched_at,
+            bar_count=source.bar_count,
+            sha256=source.sha256,
+            bars=source.bars,
+        )
+        reader = TicketFillMatcher(
+            harness.settings,
+            harness.request.portfolio.account_id,
+            state,
+            harness.swarm.risk.cro.registry,
+        )
+        with pytest.raises(DataIntegrityError):
+            reader.record(observed(harness))
+        assert state.current() == SystemState.HALTED
+        state.ledger.verify_chain()
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.asyncio

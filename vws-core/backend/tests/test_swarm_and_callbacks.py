@@ -182,7 +182,7 @@ def make_research_harness(engine: Engine, request: pytest.FixtureRequest) -> Har
         symbol="NVDA",
         timeframe="1Day",
         feed="SIP",
-        adjustment="ALL",
+        adjustment="SPLIT",
         fetched_at=clock.now(),
         range_start=bars[0].timestamp,
         range_end=bars[-1].timestamp,

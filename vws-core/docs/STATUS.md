@@ -6,6 +6,66 @@ records the certified implementation. Amendments 01–06 supersede conflicts in 
 earlier addenda. Execution order: audit/fixes → S → D → E → F → G/G+ → H → J → I → K → V → W.
 Optional ideas require plain-words approval and live only in PROGRESS Suggestions.
 
+Owner status instruction, October 7: finish G before H/J/I/K/V/W; S is already
+certified offline. Collect the available FRED key only inside setup and store it
+only in the OS keyring; never request or persist it in source, tests, logs or Git.
+SEC_USER_AGENT is entered as name plus email in setup. Until configured, their
+connected checks remain UNVERIFIED and fail closed. After all stages, create
+docs/FINAL_REPORT.md with per-stage gates, the final cumulative offline/replay
+result, every unverified prerequisite, unmet spec IDs, known risks and exact
+setup/doctor/paper-start commands; then stop. No AUTO_LIVE or live trading.
+
+## Stage G/G+ traceability - October 7 (offline gate passed)
+
+| Requirement | Implementation | Current focused evidence / remaining work |
+| --- | --- | --- |
+| CM-01..06 | evaluation/costs.py; data/fee_schedule.py, historical_spread.py; core/config.py; config/fees.yaml | test_costs.py / test_historical_spread.py: exact dated ceilings, trade-through/participation, stop-first, next-open exits, multi-symbol delayed SIP quotes/physical budget, unavailable floor and actual-fee identity; FN-02 activity ingestion remains J |
+| DQ-01/03/04 | data/history.py, split_cache.py, data_layer.py; agents/peer_strength.py | test_adjustment_data.py / test_split_epochs.py / test_data_layer.py: RAW audit, SPLIT signals, ALL peers, adjustment-key isolation, durable split epochs/refetch/invalidation, sanity -> SUSPECT, immutable old levels and manifest-only bounded canonical reads |
+| DQ-01 replay distributions | evaluation/dividends.py; outcomes.py/equity.py/replay.py | test_replay_dividends.py: adjacent ALL/SPLIT factors cancel future factors; native prior close/current split shares; conservative estimated credits outside settled entry cash; ambiguous/reversing factors fail; tracker dividends remain excluded |
+| EV-01 | evaluation/outcomes.py, provenance.py, ledger_inputs.py, ledger_source.py, evidence.py | test_outcomes_history.py / test_ledger_evaluation.py / test_ledger_weekly_source.py: actual alert lifecycle/CRO shadow, recorded expiry/ATR/ADV/spread/equity, shared fills, raw shares, splits, R/MAE/MFE/time/reason; legacy/unbound evidence refused; per-alert proofs retained |
+| EV-02/ER-03..05 | evaluation/equity.py, weekly.py, publication.py; agents/briefing.py /edge | test_weekly_equity.py / test_weekly_publication.py: independent cash/mark/metric goldens, cohorts/statuses/filters/score bands, CSV formula protection, hashes, write-once files, private current-policy masking and cancellation/failure HALT |
+| ER-01/02; QV-05 baseline | evaluation/edge.py; indicators/statistics.py; ops/playbook_kill.py | test_edge.py / test_edge_statistics.py: actual CM goldens [+2,-1,+0.5,-1,+3]R, strict fixed grades, 10,000 circular resamples/90% CI/seed, no-loss PF n/a, replay-in-sample UNPROVEN; shared XK-05 function only, later K persistence |
+| EV-03/PF-03 | evaluation/replay.py, fundamental_timeline.py; indicators/replay.py; data/frozen_filings.py; vws/replay_cli.py | test_replay.py / test_replay_gates.py / test_frozen_filings.py / test_replay_cli.py: actual shared hunter gates/CRO sequential portfolio, settled entry cash/T+1, missing fundamentals skipped, filed-date/staleness timeline, halt cancels entries but held exit runs, fixed-parameter sealed CLI |
+| PF-01/02 | indicators/vectorized.py, reference.py, seeding.py, cache.py, causal_cache.py; agents/indicators.py | test_vectorized.py / test_npz_cache.py / test_causal_cache.py: golden/random relative <=1e-9 and identical quantized levels, once-per-symbol economic indicators, no-pickle/decoded ZIP bounds/readonly arrays/source+output hashes, memory+both disk caches invalidated |
+| SEC-13/42/72 weekly | evaluation/security_summary.py; ledger_source.py/publication.py/weekly.py | test_weekly_security.py: event counts/new numeric IDs/age boundaries/unknown dates, latest failed check retained, verified old prefix anchor repeated, masked IDs, CT display, no keyring or secret values |
+
+The final cumulative non-perf gate passed **3,709 tests, 44 skipped, one perf
+case deselected, two warnings, 835.06s**. Required statement/branch coverage is
+**100%: 2,202 statements, 716 branches, zero missing/partial** across
+risk/state/compliance contracts/fundamentals/notifications/tax. The skipped
+cases are one explicit-key paper integration and 43 disposable PostgreSQL
+cases, never PASS. Warnings are the pinned SDK deprecation and deliberate
+socket-blocking positive control.
+Separate actual 20-symbol, seven-year replay: **1 PASS, 4 deselected, 115.23s
+overall; timed replay 88.411s, 443 decisions**, under 180s, three compute workers
+plus the sequential parent. Proof SHA:
+`d81cb662aa155344891c91e4911c2fbe7841f6137aecdc74cc7523f19cb8919c`.
+This perf case was excluded from the cumulative gate; the other four deselected
+cases were included there. Focused gates overlap and are never added: report/
+source/CLI/data 153 PASS; fill matcher 21 PASS; latest progress page 11 PASS.
+The first expanded full run had six manual-fill failures (3,702 PASS, 44 SKIP,
+one perf deselected). It still required ALL after signals moved to SPLIT. The
+matcher now requires SPLIT and refuses ALL-only evidence; the final rerun passed.
+Ruff lint/format: **231 files**. Strict authored-source typing: **213 files**.
+Full AST positive/negative source guard PASS. Production Bandit: **zero findings,
+27,856 lines, eight explicit skips**. All five actual Git-root hooks passed.
+Authored secret findings: zero. Gitleaks: **nine prior commits, 25.96MB, zero
+leaks**. pip check PASS; unchanged 123-pin dev lock audit: no known vulnerabilities.
+
+Replay snapshots record the synthetic flag, source hashes, virtual seed/funding,
+survivorship and fixed disclaimers. Synthetic caches use a separate namespace.
+Real replay requires explicit seed/funding and sealed history plus filing
+manifests; an empty filing manifest means unavailable evidence, never PASS.
+The local replay introduces no provider, LLM, order or owner-database calls.
+H still supplies connected startup/history-source/notifier composition. J owns
+actual fee activities, V registered validation/overlays/readiness, W realtime
+health. Real service/OS keyring/host/owner backup checks, POSIX mutation,
+PostgreSQL, Docker build/runtime and remote CI remain UNVERIFIED. VERIFY.md has
+exact reproduction commands and CI runs supported platform gates when invoked;
+no push or remote CI run occurred. STAGE_G_SOURCE_NOTES.md records primary
+SDK/fee verification and assumptions. No owner DB, dotenv or credentials were
+opened. The next stage is H; DQ-02 and remaining PF gates remain scheduled V.
+
 ## Stage F traceability - October 7 (offline gate passed)
 
 | Requirement | Implementation | Test / verification limit |
@@ -110,7 +170,7 @@ passed after the client-rename formatting fix; final production Bandit is clean.
 Final optional-LLM/no-order/writeguard/dependency/research/dry-run gate: **443
 PASS**, 17.91s; no weakened source positive controls.
 
-Current work date: **2026-10-06 America/Chicago**. Stage S is complete in local
+Historical checkpoint before Stage F: **2026-10-06 America/Chicago**. Stage S is complete in local
 commit `bc3e6f0`. Its offline gates and fresh hash-lock installation passed;
 actual owner services remain UNVERIFIED. Expanded Stage D passed its offline
 gates and is complete; deterministic Stage E's offline gates passed. Stage F
@@ -140,8 +200,9 @@ lots are manually entered/imported only; shared wash checks, no logins or fundin
 | D | market/broker/liquidity boundaries, async batch/cache, news/actions, earnings and manual CSV providers | DAT-05..12 offline gate passed; actual paper integration UNVERIFIED |
 | S | security/net/ops/Telegram admission/content/dependency services and host CLI | Offline gates passed; connected verification and later pipeline wiring tracked below |
 | E | Deterministic playbooks/fundamentals; public providers; optional bounded LLM; offline card/preview | Offline cumulative gate PASS; recorded SEC fixtures and final expiry checks passed |
-| F–K | Configuration/storage foundations and Stage S security services | Connected swarm/bot handlers/evaluation/service startup/funding/P&L/durable tax/auto/extras remain pending |
-| G+ | Amendment 05 CM-01..07, DQ-01/03/04, PF-01..03, ER-01..05 | Scheduled in open Stage G; all pending, none certified |
+| F | Swarm, jobs, private alert lifecycle, read-only fill matcher, packaging and CI | Offline gate passed in d628a7c; actual owner connections and remote CI remain UNVERIFIED |
+| G/G+ | Costs, outcome tracker, frozen history, edge statistics and vector/cache foundations | Work in progress; remaining report/replay/data wiring/performance gates above; not certified |
+| H–K | Configuration/storage foundations and Stage S security services | Setup/service startup/funding/P&L/durable tax/auto/extras remain pending |
 | V | Amendment 05 QV, PR, RS, SZ, EX, EG, GV, XA, DQ-02 and remaining PF gates | Scheduled after K; all pending; READY verdict becomes a live-unlock prerequisite |
 | W | Amendment 06 LJ, LP, RT, EVT, AC, private lesson/event/journal commands and AX-40 RT health | Scheduled after V; all pending; no source/config self-modification and at least5 healthy RT sessions before live unlock |
 

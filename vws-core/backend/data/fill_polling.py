@@ -347,7 +347,7 @@ class TicketFillMatcher:
                         .where(
                             DataSnapshot.symbol == row.symbol,
                             DataSnapshot.feed == "SIP",
-                            DataSnapshot.adjustment == "ALL",
+                            DataSnapshot.adjustment == "SPLIT",
                             DataSnapshot.fetched_at <= self.state.clock.now(),
                         )
                         .order_by(DataSnapshot.seq.desc())

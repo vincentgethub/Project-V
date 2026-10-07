@@ -1,9 +1,34 @@
-# Stage F safety review
+# Stage G/G+ safety review
 
-This review covers the implemented offline boundary. Real connections, Linux
-mutation testing, PostgreSQL and container execution remain UNVERIFIED. There
-is no broker order execution code before Stage I. The fixes below are applied;
-they are exercised by the named tests, rather than treated as future promises.
+This review covers the implemented offline boundary. The final cumulative gate
+passed 3,709 cases; the separate fixed replay perf case also passed. Real connections, Linux mutation
+testing, PostgreSQL and container execution remain UNVERIFIED. There is no
+broker order execution code before Stage I. Retained Stage F controls follow
+the applied Stage G protections.
+
+| Failure route | Applied protection | Evidence |
+| --- | --- | --- |
+| Old data gets relabeled as another adjustment | RAW/SPLIT/ALL cache keys; SPLIT signals and observed fills, RAW audit, ALL peers | test_adjustment_data.py; test_fill_polling.py including ALL-only refusal |
+| Malformed bars silently produce a setup | Full OHLC/session/sequence checks, SUSPECT evidence and durable HALT | test_data_layer.py; test_adjustment_data.py |
+| Known splits change old ledger levels | Durable split epochs invalidate derived caches and require fresh data; immutable ledger | test_split_epochs.py; test_causal_cache.py |
+| Later actions leak into earlier signals | Causal RAW history and known splits; adjacent ALL/SPLIT distribution factors cancel future factors | test_causal_cache.py; test_replay_dividends.py |
+| Estimated distributions fund entries | Estimates accrue outside settled entry cash; require proportional evidence and held whole shares; tracker excludes them | test_replay_dividends.py; test_weekly_equity.py |
+| Touches, unlimited fills or favorable bar order invent returns | Cent trade-through, one-percent participation, first partial only, stop first, gap and next-open exits | test_costs.py; test_outcomes_history.py |
+| Future cost evidence rewrites a proposal | Persist and use original ATR, median dollar volume, expiry and measured spread | test_ledger_weekly_source.py; test_ledger_evaluation.py |
+| Missing evidence counts as a pass | Typed unavailability, dated fees, conservative floors; missing fundamentals skip candidates | test_historical_spread.py; test_costs.py; test_frozen_filings.py |
+| Reports invent delivered alerts or vetoes | Verified ledger plus actual alert lifecycle/CRO veto binding; refuse legacy unbound proposals | test_ledger_evaluation.py; test_ledger_weekly_source.py |
+| Aggregate results lose individual proof | Immutable per-alert outcomes; validate sets, counts, yearly sums, hashes, account and mode | test_weekly_publication.py; test_ledger_weekly_source.py |
+| Paper/live/replay results mix | Separate cohort identity in outcomes, cards, taxes, publications and commands | test_edge.py; test_weekly_publication.py; test_weekly_equity.py |
+| Small or in-sample results become proven edges | Strict sample/CI/PF thresholds; no-loss PF unavailable; in-sample replay UNPROVEN; validation remains V | test_edge.py; test_edge_statistics.py |
+| Settlement or halts are ignored | Exact sequential cash and T+1; cancel halted entries; valid held stop/exit paths continue | test_replay_gates.py; test_weekly_equity.py |
+| Workers or caches change decisions | Shared hunter/CRO, sorted merge, one-versus-four hash parity, vector/reference goldens | test_replay.py; test_vectorized.py; test_npz_cache.py |
+| Cache decoding executes code or exceeds limits | No pickle, bounded NPZ inventory/decoded bytes, readonly arrays, verified hashes | test_npz_cache.py; test_causal_cache.py |
+| Replay touches owner DB or trading | Explicit sealed files or labeled fixtures, protected paths; no provider, LLM, ledger or executor composition | test_replay_cli.py; test_replay_gates.py; test_no_order_exec.py |
+| Absent security checks look successful | Latest PASS/FAIL/UNVERIFIED, UNKNOWN ages and verified anchor; no guessed dates | test_weekly_security.py |
+| Saved text bypasses current masking | Revalidate stored proof and render with current private-command policy | test_weekly_publication.py; test_weekly_security.py |
+| Canceled publication commits a result | Cancellation checks before files and ledger event, failure HALT, write-once proof | test_weekly_publication.py |
+
+## Retained Stage F controls
 
 | Failure route | Applied protection | Evidence |
 | --- | --- | --- |
@@ -31,7 +56,8 @@ they are exercised by the named tests, rather than treated as future promises.
 | Scheduled jobs overlap or a failure disappears | Single-instance locks and six bounded jobs; append PASS/FAIL/SKIPPED JobRun evidence | test_scheduler.py; test_desk_jobs.py |
 | A future code change opens an order or funding route | Full AST negative and positive controls over all authored Python; no executor exists | test_no_order_exec.py and core/source_guard.py |
 
-Connected orchestration still needs Stage H's host startup, notifier wiring,
-encrypted scheduled maintenance and watchdog. Weekly outcome/report production
-is Stage G. Current constructors require those dependencies; fake test bodies
-are labelled as such and do not certify deployment readiness.
+Connected orchestration still needs Stage H's host startup, live history-source
+composition, notifier wiring, encrypted scheduled maintenance and watchdog.
+The Stage G ledger source and publisher exist; fake test providers do not certify
+real connections. Actual account/tax activities remain J, emergency drills K,
+registered validation V and realtime feed health W.

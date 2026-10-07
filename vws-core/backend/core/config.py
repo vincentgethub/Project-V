@@ -90,6 +90,14 @@ def _exact_decimal(value: object) -> Decimal:
     return result
 
 
+def _bounded_exact_decimal(value: object) -> Decimal:
+    """CM/DQ: finite evidence numbers have bounded coefficients and exponents."""
+    result = _exact_decimal(value)
+    if len(result.as_tuple().digits) > 128 or abs(result.adjusted()) > 128:
+        raise ValueError("exact evidence number exceeds supported precision or exponent")
+    return result
+
+
 def _json_exact(value: object) -> object:
     """R-04: parse environment JSON numbers directly into Decimal."""
     if isinstance(value, str):
@@ -944,6 +952,58 @@ class SizingConfig(_FrozenYamlModel):
         return number
 
 
+class SpreadFloorsConfig(_FrozenYamlModel):
+    """CM-01: liquidity floors may be raised, never silently weakened."""
+
+    high: Decimal = Decimal(2)
+    mid: Decimal = Decimal(5)
+    low: Decimal = Decimal(15)
+
+    @field_validator("high", "mid", "low", mode="before")
+    @classmethod
+    def exact_floors(cls, value: object, info: ValidationInfo) -> Decimal:
+        number = _exact_decimal(value)
+        minimum = {"high": Decimal(2), "mid": Decimal(5), "low": Decimal(15)}
+        if not minimum[info.field_name or ""] <= number <= 1000:
+            raise ValueError("CM-01: spread floors cannot be reduced or exceed 1000 bps")
+        decimal_money(number)
+        return number
+
+    @model_validator(mode="after")
+    def ordered(self) -> Self:
+        if not self.high <= self.mid <= self.low:
+            raise ValueError("CM-01: liquidity floors must be ordered")
+        return self
+
+
+class CostModelConfig(_FrozenYamlModel):
+    """CM-01..03: fixed conservative simulation parameters, never an optimizer."""
+
+    spread_floor_bps: SpreadFloorsConfig = Field(default_factory=SpreadFloorsConfig)
+    stop_slip_atr_frac: Decimal = Decimal("0.05")
+    max_participation: Decimal = Decimal("0.01")
+
+    @field_validator("stop_slip_atr_frac", "max_participation", mode="before")
+    @classmethod
+    def exact_bounds(cls, value: object, info: ValidationInfo) -> Decimal:
+        number = _exact_decimal(value)
+        lower, upper = (
+            (Decimal("0.05"), Decimal(1))
+            if info.field_name == "stop_slip_atr_frac"
+            else (Decimal("0.000001"), Decimal("0.01"))
+        )
+        if not lower <= number <= upper:
+            raise ValueError("CM-02/03: cost/participation parameter weakens the baseline")
+        decimal_money(number)
+        return number
+
+
+class EvaluationConfig(_FrozenYamlModel):
+    """EV-01: the fixed baseline holding period; registered variants follow V."""
+
+    max_hold_sessions: int = Field(default=20, strict=True, ge=1, le=30)
+
+
 class PlaybookConfig(_FrozenYamlModel):
     """GD-02/R-04: exact weights; level parameters have one home in sizing."""
 
@@ -997,6 +1057,8 @@ class YamlConfig(_FrozenYamlModel):
     news: NewsConfig = Field(default_factory=NewsConfig)
     fundamentals: FundamentalsConfig = Field(default_factory=FundamentalsConfig)
     sizing: SizingConfig = Field(default_factory=SizingConfig)
+    cm: CostModelConfig = Field(default_factory=CostModelConfig)
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     playbooks: Mapping[str, PlaybookConfig]
 
     @model_validator(mode="before")
@@ -1143,13 +1205,8 @@ def _yaml_decimal(loader: _ExactSafeLoader, node: ScalarNode) -> Decimal:
 _ExactSafeLoader.add_constructor("tag:yaml.org,2002:float", _yaml_decimal)
 
 
-def load_yaml_config(
-    path: str | Path,
-    *,
-    allowed_symbols: Collection[str],
-    settings: Settings | None = None,
-) -> YamlConfig:
-    """GD-02/R-02: safely load frozen YAML and enforce instrument/env identity."""
+def load_exact_yaml(path: str | Path) -> object:
+    """R-04/R-12: shared bounded, duplicate-free, exact-decimal YAML read."""
     try:
         raw = Path(path).read_text(encoding="utf-8")
         if len(raw.encode("utf-8")) > 1_048_576:
@@ -1180,8 +1237,20 @@ def load_yaml_config(
             ):
                 depth -= 1
         # SafeLoader subclass: no arbitrary Python object constructors.
-        parsed = yaml.load(raw, Loader=_ExactSafeLoader)  # nosec B506
-        config = YamlConfig.model_validate(parsed)
+        return yaml.load(raw, Loader=_ExactSafeLoader)  # nosec B506
+    except (yaml.YAMLError, ValueError, TypeError, OSError) as exc:
+        raise ConfigurationError("YAML configuration validation failed") from exc
+
+
+def load_yaml_config(
+    path: str | Path,
+    *,
+    allowed_symbols: Collection[str],
+    settings: Settings | None = None,
+) -> YamlConfig:
+    """GD-02/R-02: load frozen policy and enforce instrument/env identity."""
+    try:
+        config = YamlConfig.model_validate(load_exact_yaml(path))
         config.assert_allowed_symbols(allowed_symbols)
         if settings is not None:
             config.assert_settings_consistent(settings)

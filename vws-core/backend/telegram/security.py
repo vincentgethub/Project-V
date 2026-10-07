@@ -16,7 +16,7 @@ from backend.core.database import SecurityEvent, transaction
 from backend.core.errors import ConfigurationError, DataIntegrityError
 from backend.core.ledger import Ledger
 
-_HEAVY = frozenset({"/watch", "/pnl", "/report", "/tax", "/progress"})
+_HEAVY = frozenset({"/watch", "/pnl", "/report", "/edge", "/tax", "/progress"})
 _UNLIMITED = frozenset({"/halt", "/pause"})
 _MASKED = frozenset(
     {

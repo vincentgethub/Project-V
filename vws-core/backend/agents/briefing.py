@@ -193,6 +193,7 @@ class DeskCommands:
             "/positions": self.positions,
             "/digest": self.digest,
             "/report": self.report,
+            "/edge": self.edge,
             "/help": self.help,
             "/progress": self.progress,
         }
@@ -352,19 +353,38 @@ class DeskCommands:
         with Session(self.state.engine) as session:
             row = session.scalar(
                 select(SecurityEvent)
-                .where(SecurityEvent.kind == "WEEKLY_REPORT")
+                .where(
+                    SecurityEvent.kind == "WEEKLY_REPORT",
+                    SecurityEvent.detail["account_id"].as_string() == self.account_id,
+                    SecurityEvent.detail["cohort"].as_string()
+                    == ("PAPER" if self.settings.paper_trading else "LIVE"),
+                )
                 .order_by(SecurityEvent.seq.desc())
                 .limit(1)
             )
+        if row is None:
+            return pages("No weekly report has been generated yet.")
+        from backend.evaluation.evidence import recorded_publication
+        from backend.evaluation.weekly import render_weekly
+
+        report = recorded_publication(row.detail)
+        if (
+            report.context.account_id != self.account_id
+            or report.context.cohort != ("PAPER" if self.settings.paper_trading else "LIVE")
+            or (report.security is not None and report.security.as_of > self.state.clock.now())
+        ):
+            raise DataIntegrityError("EV-02: stored report account/mode/hash binding differs")
         return pages(
-            escape(
-                "No weekly report has been generated yet." if row is None else row.detail["text"]
-            )
+            escape(render_weekly(report, mask_amounts=self.settings.telegram_mask_amounts))
         )
+
+    async def edge(self, argument: str) -> tuple[str, ...]:
+        """ER-03: same after-cost evidence; private admission and heavy rate limits apply."""
+        return await self.report(argument)
 
     async def help(self, argument: str) -> tuple[str, ...]:
         return (
-            "/status · /positions · /digest · /report · /progress\n"
+            "/status · /positions · /digest · /report · /edge · /progress\n"
             "/halt reason stops entries immediately. /pause allows reductions only.\n"
             "Approve creates a manual ticket after fresh checks. Details is read-only.\n"
             "I placed it records your action; broker fills are checked separately.\n"

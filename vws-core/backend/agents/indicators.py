@@ -18,7 +18,7 @@ from collections.abc import Callable
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from functools import wraps
-from typing import ParamSpec, Self, TypeVar
+from typing import Literal, ParamSpec, Protocol, Self, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -28,6 +28,7 @@ from backend.core.errors import DataIntegrityError
 from backend.core.money import CENT, decimal_money, validate_cent_price
 from backend.data.data_layer import Bar
 from backend.domain.models import FrozenModel, Money, validate_symbol
+from backend.indicators.seeding import sma_seed
 
 Series = tuple[Money | None, ...]
 Array = NDArray[np.float64]
@@ -115,7 +116,7 @@ def _average(values: Array, period: int, alpha: np.float64) -> Array:
     """GD-03: seed after period finite observations, then recurse exactly once."""
     result = np.full(values.shape, np.nan, dtype=np.float64)
     if len(values) >= period:
-        result[period - 1] = np.mean(values[:period], dtype=np.float64)
+        result[period - 1] = sma_seed(values, period)
         for index in range(period, len(values)):
             result[index] = alpha * values[index] + (1 - alpha) * result[index - 1]
     return result
@@ -282,16 +283,39 @@ class IndicatorSeries(FrozenModel):
         return self
 
 
+class IndicatorDisk(Protocol):
+    def calculate(
+        self,
+        symbol: str,
+        adjustment: Literal["RAW", "SPLIT", "DIVIDEND", "ALL"],
+        bars: tuple[Bar, ...],
+        anchor_index: int,
+        *,
+        feed: Literal["SIP", "FAKE"],
+    ) -> IndicatorSeries: ...
+
+    def invalidate_symbol(self, symbol: str) -> int: ...
+
+
 class IndicatorMemo:
     """DAT-05: compute each symbol/session once; changed same-session data fails."""
 
-    def __init__(self) -> None:
-        self._entries: dict[tuple[str, date], tuple[str, int, IndicatorSeries]] = {}
+    def __init__(
+        self, disk: IndicatorDisk | None = None, *, feed: Literal["SIP", "FAKE"] = "SIP"
+    ) -> None:
+        if feed not in {"SIP", "FAKE"}:
+            raise DataIntegrityError("PF-02: memo requires an explicit supported feed")
+        self._disk, self._feed = disk, feed
+        self._entries: dict[tuple[str, str, date], tuple[str, int, IndicatorSeries]] = {}
         self._lock = threading.RLock()
 
     @_fail_closed
-    def calculate(self, symbol: str, bars: tuple[Bar, ...], anchor_index: int) -> IndicatorSeries:
+    def calculate(
+        self, symbol: str, bars: tuple[Bar, ...], anchor_index: int, *, adjustment: str = "SPLIT"
+    ) -> IndicatorSeries:
         validate_symbol(symbol)
+        if adjustment not in {"RAW", "SPLIT", "DIVIDEND", "ALL"}:
+            raise DataIntegrityError("DQ-01: unsupported memo adjustment")
         checked = _bars(bars)
         if type(anchor_index) is not int or not 0 <= anchor_index < len(checked):
             raise DataIntegrityError("DAT-05: memoized AVWAP requires a valid anchor")
@@ -302,23 +326,44 @@ class IndicatorMemo:
             allow_nan=False,
         )
         digest = hashlib.sha256(encoded.encode()).hexdigest()
-        key = (symbol, checked[-1].session_date)
+        key = (symbol, adjustment, checked[-1].session_date)
         with self._lock:
             prior = self._entries.get(key)
             if prior is not None:
                 if prior[0] != digest or prior[1] != anchor_index:
                     raise DataIntegrityError("DAT-05: same-session indicator input changed")
                 return IndicatorSeries.model_validate(prior[2])
-            prices = tuple(bar.close for bar in checked)
-            result = IndicatorSeries(
-                ema20=ema(prices, 20),
-                ema50=ema(prices, 50),
-                ema200=ema(prices, 200),
-                rsi14=rsi(prices),
-                atr14=atr(checked),
-                macd=macd(prices),
-                rvol20=rvol(tuple(bar.volume for bar in checked)),
-                anchored_vwap=anchored_vwap(checked, anchor_index),
-            )
+            if self._disk is not None:
+                result = self._disk.calculate(
+                    symbol,
+                    cast(Literal["RAW", "SPLIT", "DIVIDEND", "ALL"], adjustment),
+                    checked,
+                    anchor_index,
+                    feed=self._feed,
+                )
+                result = IndicatorSeries.model_validate(result)
+            else:
+                prices = tuple(bar.close for bar in checked)
+                result = IndicatorSeries(
+                    ema20=ema(prices, 20),
+                    ema50=ema(prices, 50),
+                    ema200=ema(prices, 200),
+                    rsi14=rsi(prices),
+                    atr14=atr(checked),
+                    macd=macd(prices),
+                    rvol20=rvol(tuple(bar.volume for bar in checked)),
+                    anchored_vwap=anchored_vwap(checked, anchor_index),
+                )
             self._entries[key] = (digest, anchor_index, result)
             return result
+
+    @_fail_closed
+    def invalidate_symbol(self, symbol: str) -> None:
+        """DQ-01: discard derived memory only; immutable ledger levels are untouched."""
+        validate_symbol(symbol)
+        with self._lock:
+            if self._disk is not None:
+                self._disk.invalidate_symbol(symbol)
+            for key in tuple(self._entries):
+                if key[0] == symbol:
+                    del self._entries[key]

@@ -16,6 +16,7 @@ from backend.data.market_calendar import MarketCalendar
 from backend.domain.instruments import InstrumentRegistry
 from backend.domain.models import (
     FrozenModel,
+    MarketStatus,
     Money,
     ProviderStatus,
     Symbol,
@@ -89,14 +90,18 @@ class BatchPeerProvider:
         if ensure_utc(as_of) != self.batch.as_of:
             raise DataIntegrityError("GD-03: peer context differs from the scanner batch time")
         sector = SECTOR_ETFS.get(self.registry.get(symbol).gics_sector)
-        available = {row.symbol for row in self.batch.entries}
+        available = {
+            row.symbol
+            for row in self.batch.entries
+            if row.adjustment == "ALL" and row.status == MarketStatus.OK
+        }
         if sector is None or not {symbol, sector, "SPY"}.issubset(available):
             return await NullPeerProvider().get(symbol, as_of)
         return calculate_peer_strength(
             symbol,
-            self.batch.for_symbol(symbol),
-            self.batch.for_symbol(sector),
-            self.batch.for_symbol("SPY"),
+            self.batch.for_symbol(symbol, "ALL"),
+            self.batch.for_symbol(sector, "ALL"),
+            self.batch.for_symbol("SPY", "ALL"),
             registry=self.registry,
             calendar=self.calendar,
             as_of=as_of,

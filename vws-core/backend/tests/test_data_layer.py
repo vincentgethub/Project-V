@@ -119,6 +119,31 @@ def make_layer(
     return layer, state, ledger, notifier
 
 
+@pytest.mark.parametrize("fault", ["ohlc", "session", "duplicate", "missing"])
+def test_DQ_03_sync_sanity_failure_persists_suspect_before_halt(
+    engine: Engine, calendar: MarketCalendar, fault: str
+) -> None:
+    first, last = daily_bar(date(2026, 9, 25)), daily_bar(date(2026, 9, 28))
+    bars: tuple[Bar, ...] = (first, last)
+    if fault == "ohlc":
+        bars = (first.model_copy(update={"high": Decimal(99)}), last)
+    elif fault == "session":
+        bars = (first, daily_bar(date(2026, 9, 26)), last)
+    elif fault == "duplicate":
+        bars = (first, first, last)
+    else:
+        bars = (daily_bar(date(2026, 9, 24)), last)
+    layer, state, ledger, _ = make_layer(engine, calendar, bars=bars)
+    with pytest.raises(SafetyError):
+        layer.completed_daily_bars("AAPL", bars[0].session_date)
+    assert state.current() == SystemState.HALTED
+    with transaction(engine) as session:
+        assert any(
+            '"status": "SUSPECT"' in row.reason for row in session.scalars(select(SystemEvent))
+        )
+    ledger.verify_chain()
+
+
 @pytest.mark.parametrize("age,passes", [(0, True), (60, True), (61, False)])
 def test_DAT_01_regular_quote_age_exact_boundary(
     calendar: MarketCalendar,
@@ -202,7 +227,7 @@ def test_DAT_03_inprogress_daily_is_persisted_raw_and_not_returned(
     assert len(snapshots) == 1
     snapshot = snapshots[0]
     assert snapshot.bar_count == 2 and len(snapshot.bars) == 2
-    assert snapshot.feed == "SIP" and snapshot.adjustment == "ALL"
+    assert snapshot.feed == "SIP" and snapshot.adjustment == "SPLIT"
     assert snapshot.fetched_at == NOW
     assert len(snapshot.sha256) == 64
     ledger.verify_chain()
@@ -660,7 +685,7 @@ def test_DAT_03_official_sdk_symbol_shapes_and_sip_iex_request_contracts(
     assert len(bars) == 20
     request = client.requests[-1]
     assert isinstance(request, StockBarsRequest)
-    assert request.feed == DataFeed.SIP and request.adjustment == Adjustment.ALL
+    assert request.feed == DataFeed.SIP and request.adjustment == Adjustment.SPLIT
     # Pinned alpaca-py normalizes aware inputs to naive UTC in the request model.
     assert request.start == datetime(2026, 8, 31, 4, 0)
     assert request.end == datetime(2026, 9, 28, 20, 0)

@@ -63,6 +63,12 @@ sizing:
   stop_atr_mult: 2.0
   target_r: 2.0
   swing_lookback: 10
+cm:
+  spread_floor_bps: {high: 2, mid: 5, low: 15}
+  stop_slip_atr_frac: 0.05
+  max_participation: 0.01
+evaluation:
+  max_hold_sessions: 20
 playbooks:
   TREND_50EMA:
     criteria_weights:

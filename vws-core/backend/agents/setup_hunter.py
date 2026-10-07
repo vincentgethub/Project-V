@@ -74,6 +74,40 @@ class HuntDrop(FrozenModel):
     reason: str = Field(max_length=280)
 
 
+class PlaybookWindow(FrozenModel):
+    """PF-03: sufficient completed-bar facts for the shared daily gate logic.
+
+    Replay computes these once. Prices retain the current session's split basis;
+    neither a future bar nor portfolio state is needed to grade a playbook.
+    """
+
+    latest: Bar
+    prior: Bar
+    ema20: Price
+    ema50: Price
+    ema200: Price
+    old_ema50: Price
+    rsi14: Money = Field(ge=0, le=100)
+    atr14: Money = Field(ge=0)
+    rvol20: Money = Field(ge=0)
+    anchored_vwap: Price | None
+    prior_anchored_vwap: Price | None
+    swing_low: Price
+    pullback_low: Price
+    base_high: Price
+    base_low: Price
+
+    @model_validator(mode="after")
+    def coherent(self) -> Self:
+        if self.prior.session_date >= self.latest.session_date or self.base_low > self.base_high:
+            raise ValueError("PF-03: gate window is unordered")
+        with localcontext() as precision:
+            precision.prec = 80
+            if self.atr14 != self.atr14.quantize(CENT):
+                raise ValueError("PF-03: ATR must retain the cent-valued indicator boundary")
+        return self
+
+
 class HuntResult(FrozenModel):
     symbol: Symbol
     as_of: UTCDateTime
@@ -143,13 +177,53 @@ def evaluate_playbook(
         if any(value is None for value in values):
             return None
         e20, e50, e200, old50, rsi, atr, rvol = (value for value in values if value is not None)
+        window = PlaybookWindow(
+            latest=bars[-1],
+            prior=bars[-2],
+            ema20=e20,
+            ema50=e50,
+            ema200=e200,
+            old_ema50=old50,
+            rsi14=rsi,
+            atr14=atr,
+            rvol20=rvol,
+            anchored_vwap=series.anchored_vwap[-1],
+            prior_anchored_vwap=series.anchored_vwap[-2],
+            swing_low=min(bar.low for bar in bars[-sizing.swing_lookback :]),
+            pullback_low=min(bar.low for bar in bars[-5:]),
+            base_high=max(bar.high for bar in bars[-21:-1]),
+            base_low=min(bar.low for bar in bars[-21:-1]),
+        )
+        return evaluate_window(playbook, window, weights, sizing)
+
+    except (DataIntegrityError, ConfigurationError):
+        raise
+    except Exception:
+        raise DataIntegrityError(
+            "GD-03: deterministic playbook evidence cannot be verified"
+        ) from None
+
+
+def evaluate_window(
+    playbook: Playbook,
+    window: PlaybookWindow,
+    weights: PlaybookConfig,
+    sizing: SizingConfig,
+) -> PlaybookEvidence | None:
+    """GD-03/PF-03: the same fixed hard gates, grades and levels for live/replay."""
+    try:
+        window = PlaybookWindow.model_validate(window)
+        weights = PlaybookConfig.model_validate(weights)
+        sizing = SizingConfig.model_validate(sizing)
+        e20, e50, e200, old50 = window.ema20, window.ema50, window.ema200, window.old_ema50
+        rsi, atr, rvol = window.rsi14, window.atr14, window.rvol20
         with localcontext() as context:
             context.prec = 80
-            t, prior = bars[-1], bars[-2]
+            t, prior = window.latest, window.prior
             entry = t.high + CENT
             stop = min(
                 entry - sizing.stop_atr_mult * atr,
-                min(bar.low for bar in bars[-sizing.swing_lookback :]) - CENT,
+                window.swing_low - CENT,
             ).quantize(CENT, rounding=ROUND_FLOOR)
             if stop <= 0 or atr <= 0 or (entry - stop) / entry > sizing.max_stop_pct:
                 return None
@@ -158,7 +232,7 @@ def evaluate_playbook(
             )
             range_pos = _ZERO if t.high == t.low else (t.close - t.low) / (t.high - t.low)
             slope = (e50 / old50 - 1) if old50 > 0 else _ZERO
-            pullback = min(bar.low for bar in bars[-5:])
+            pullback = window.pullback_low
             grades: dict[str, tuple[Decimal, str]]
             if playbook == Playbook.TREND_50EMA:
                 if not (
@@ -194,9 +268,8 @@ def evaluate_playbook(
                     "rsi": (Decimal(45 <= rsi <= 65), f"RSI14={rsi}"),
                 }
             elif playbook == Playbook.BASE_BREAKOUT:
-                base = bars[-21:-1]
-                ceiling = max(bar.high for bar in base)
-                base_range = (ceiling - min(bar.low for bar in base)) / t.close
+                ceiling = window.base_high
+                base_range = (ceiling - window.base_low) / t.close
                 margin = t.close / ceiling - 1
                 if not (
                     t.close > ceiling and rvol >= Decimal("1.5") and base_range <= Decimal("0.15")
@@ -230,7 +303,7 @@ def evaluate_playbook(
                     ),
                 }
             elif playbook == Playbook.ANCHORED_VWAP_RECLAIM:
-                avwap, old_vwap = series.anchored_vwap[-1], series.anchored_vwap[-2]
+                avwap, old_vwap = window.anchored_vwap, window.prior_anchored_vwap
                 if (
                     avwap is None
                     or old_vwap is None
@@ -319,20 +392,53 @@ class SetupHunter:
             )
             if symbol not in self.config.watchlist:
                 raise DataIntegrityError("GD-03: hunter symbol is outside configured watchlist")
-            results: list[SetupCandidate] = []
-            drops: list[HuntDrop] = []
             series = (
                 self.memo.calculate(symbol, checked, select_anchor(checked)[0])
                 if len(checked) >= 200 and market.status == MarketStatus.OK
                 else None
             )
-            for name, weights in self.config.playbooks.items():
+            evidence = tuple(
+                evaluate_playbook(Playbook(name), checked, series, weights, self.config.sizing)
+                if series is not None
+                else None
+                for name, weights in self.config.playbooks.items()
+            )
+            return self.size_evidence(symbol, evidence, snapshot, market, instant)
+
+        except (DataIntegrityError, ConfigurationError):
+            raise
+        except Exception:
+            raise DataIntegrityError("GD-03: hunter failed closed") from None
+
+    def size_evidence(
+        self,
+        symbol: str,
+        evidence: tuple[PlaybookEvidence | None, ...],
+        snapshot: PortfolioSnapshot,
+        market: MarketContext,
+        now: datetime,
+    ) -> HuntResult:
+        """PF-03: sequential portfolio sizing of precomputed, revalidated grades."""
+        try:
+            validate_symbol(symbol)
+            instant = ensure_utc(now)
+            snapshot = PortfolioSnapshot.model_validate(snapshot)
+            market = MarketContext.model_validate(market)
+            if (
+                symbol not in self.config.watchlist
+                or not isinstance(evidence, tuple)
+                or len(evidence) != 3
+            ):
+                raise DataIntegrityError("PF-03: bounded configured daily evidence required")
+            results: list[SetupCandidate] = []
+            drops: list[HuntDrop] = []
+            for name, item in zip(self.config.playbooks, evidence, strict=True):
                 playbook = Playbook(name)
-                found = (
-                    evaluate_playbook(playbook, checked, series, weights, self.config.sizing)
-                    if series is not None
-                    else None
-                )
+                found = PlaybookEvidence.model_validate(item) if item is not None else None
+                if found is not None and found.playbook != playbook:
+                    raise DataIntegrityError("PF-03: precomputed playbook ordering differs")
+                if market.status != MarketStatus.OK:
+                    found = None
                 reason = "hard gate, indicator or level evidence unavailable"
                 if found is not None and score_eligible(
                     found.score, self.cro.config.min_setup_score
@@ -354,7 +460,7 @@ class SetupHunter:
                         )
                     reason = "quantity zero; no alert or LLM call"
                     if qty:
-                        identity = f"{snapshot.account_id}/{symbol}/{name}/{instant.isoformat()}/{self.config.config_hash}"
+                        identity = f"{snapshot.account_id}/{symbol}/{playbook.value}/{instant.isoformat()}/{self.config.config_hash}"
                         proposal = TradeProposal(
                             proposal_id=uuid5(_IDENTITY, identity),
                             signal_id=uuid5(_IDENTITY, identity + "/signal"),
@@ -399,4 +505,4 @@ class SetupHunter:
         except (DataIntegrityError, ConfigurationError):
             raise
         except Exception:
-            raise DataIntegrityError("GD-03: hunter failed closed") from None
+            raise DataIntegrityError("PF-03: replay sizing failed closed") from None

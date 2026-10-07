@@ -46,7 +46,7 @@ jobs:
       - name: Execution source guard
         run: python -m backend.core.source_guard .
       - name: Production source security checks
-        run: python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/net backend/ops backend/security backend/telegram backend/notifications backend/tax scripts vws -c pyproject.toml
+        run: python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/net backend/ops backend/security backend/telegram backend/notifications backend/tax backend/evaluation backend/indicators scripts vws -c pyproject.toml
       - name: Audit runtime and development dependency locks
         run: |
           python -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off --timeout 15
