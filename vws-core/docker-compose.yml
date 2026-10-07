@@ -1,0 +1,44 @@
+services:
+  vws:
+    build: .
+    user: "10001:10001"
+    env_file: .env
+    environment:
+      DB_URL: ${VWS_DB_URL:-sqlite:////app/data/vws.db}
+      LOG_FILE_PATH: /app/logs/vws.jsonl
+      BACKUP_DIR: /app/backups
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./backups:/app/backups
+    restart: unless-stopped
+  postgres:
+    profiles: [postgres]
+    # Public Docker Hub OCI digest; verified October 6, 2026.
+    # pragma: allowlist secret - public container digest
+    image: postgres:16-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
+    environment:
+      POSTGRES_DB: vws
+      POSTGRES_USER: vws
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready --username=vws --dbname=vws"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+secrets:
+  postgres_password:
+    file: ${VWS_POSTGRES_PASSWORD_FILE:-./data/postgres-password}
+volumes:
+  postgres_data:

@@ -253,6 +253,10 @@ def test_SEC_73_cli_panic_still_persists_halt_with_a_corrupted_ledger(
 def make_pre_news_schema(engine: Engine) -> None:
     """SEC-73: synthetic prior schema, without changing an owner's database."""
     with engine.begin() as connection:
+        from backend.core.database import JobRun, TicketEvent
+
+        JobRun.metadata.tables[JobRun.__tablename__].drop(connection)
+        TicketEvent.metadata.tables[TicketEvent.__tablename__].drop(connection)
         NewsHeadlineRecord.metadata.tables[NewsHeadlineRecord.__tablename__].drop(connection)
         connection.execute(update(SchemaMeta).where(SchemaMeta.id == 1).values(version=2))
 

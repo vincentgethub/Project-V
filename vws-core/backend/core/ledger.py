@@ -29,6 +29,7 @@ from backend.core.database import (
     ApprovalEvent,
     ConfigSnapshot,
     Fill,
+    JobRun,
     LedgerRecord,
     LLMCall,
     MoneyType,
@@ -41,6 +42,7 @@ from backend.core.database import (
     Signal,
     SystemControl,
     SystemEvent,
+    TicketEvent,
     TradeTicket,
     UTCDateTime,
     transaction,
@@ -374,9 +376,35 @@ class Ledger:
             self._validate_alert_event(session, record)
         if isinstance(record, TradeTicket):
             self._validate_ticket(session, record)
+        if isinstance(record, TicketEvent):
+            ticket = session.get(TradeTicket, record.ticket_id)
+            if (
+                ticket is None
+                or ticket.created_at > record.created_at
+                or record.action not in {"TICKET_PLACED", "TICKET_SKIPPED"}
+                or type(record.telegram_user_id) is not int
+                or record.telegram_user_id <= 0
+                or session.scalar(
+                    select(TicketEvent).where(TicketEvent.ticket_id == record.ticket_id)
+                )
+                is not None
+            ):
+                raise LedgerIntegrityError(
+                    "GD-06: ticket follow-up lacks single-use approved provenance"
+                )
+        if isinstance(record, JobRun):
+            if (
+                record.finished_at < record.started_at
+                or record.finished_at > record.created_at
+                or type(record.duration_ms) is not int
+                or record.duration_ms < 0
+            ):
+                raise LedgerIntegrityError("GD-04: job interval or duration is invalid")
 
     def _validate_common(self, record: LedgerRecord, *, verifying: bool = False) -> None:
         """R-02/R-04/R-05/R-13: exact field boundaries also apply during verification."""
+        if isinstance(record, JobRun):
+            self._validate_job_run(record)
         for column in record.__table__.columns:
             if column.name in {"row_hash", "ticket_sha256"} and not verifying:
                 continue
@@ -435,6 +463,37 @@ class Ledger:
             self._validate_news_headline(record)
         if isinstance(record, ConfigSnapshot):
             self._reject_secret_fields(record.settings)
+
+    @staticmethod
+    def _validate_job_run(record: JobRun) -> None:
+        if (
+            record.job
+            not in {
+                "daily_scan",
+                "premarket_check",
+                "position_monitor",
+                "news_watch",
+                "weekly_report",
+                "housekeeping",
+            }
+            or record.outcome not in {"PASS", "FAIL", "SKIPPED"}
+            or record.finished_at < record.started_at
+            or record.finished_at > record.created_at
+            or type(record.duration_ms) is not int
+            or record.duration_ms < 0
+            or not isinstance(record.counts, dict)
+            or len(record.counts) > 30
+            or any(
+                not isinstance(key, str)
+                or not 1 <= len(key) <= 48
+                or not key.isascii()
+                or not key.replace("_", "").isalnum()
+                or type(value) is not int
+                or not 0 <= value <= 10**9
+                for key, value in record.counts.items()
+            )
+        ):
+            raise LedgerIntegrityError("GD-04: job run evidence is invalid")
 
     @staticmethod
     def _validate_news_headline(record: NewsHeadlineRecord) -> None:
@@ -928,7 +987,23 @@ class Ledger:
         decisions: dict[UUID, ApprovalEvent] = {}
         ticket_alerts: set[UUID] = set()
         event_approvals: set[UUID] = set()
+        tickets: dict[UUID, TradeTicket] = {}
+        ticket_followups: set[UUID] = set()
         for record in sorted(records, key=lambda row: row.seq):
+            if isinstance(record, TicketEvent):
+                ticket = tickets.get(record.ticket_id)
+                if (
+                    ticket is None
+                    or record.ticket_id in ticket_followups
+                    or record.action not in {"TICKET_PLACED", "TICKET_SKIPPED"}
+                    or type(record.telegram_user_id) is not int
+                    or record.telegram_user_id <= 0
+                    or record.created_at < ticket.created_at
+                ):
+                    raise LedgerIntegrityError("GD-06: forged/replayed ticket follow-up")
+                ticket_followups.add(record.ticket_id)
+            if isinstance(record, TradeTicket):
+                tickets[record.id] = record
             if isinstance(record, Alert):
                 order = orders.get(record.proposal_id)
                 if (
@@ -1064,9 +1139,22 @@ class Ledger:
         qty: int,
         price: Decimal,
         filled_at: datetime,
+        session: Session | None = None,
     ) -> Fill:
         """R-08: record a broker-observed fill locally; mismatch latches HALTED."""
         try:
+            if session is not None:
+                # The owner of the serialized transaction rolls back and halts
+                # on failure; a nested writer cannot safely perform that halt.
+                return self.append_in_session(
+                    session,
+                    Fill,
+                    order_id=order_id,
+                    broker_fill_id=broker_fill_id,
+                    qty=qty,
+                    price=price,
+                    filled_at=filled_at,
+                )
             return self.append(
                 Fill,
                 order_id=order_id,
@@ -1076,6 +1164,10 @@ class Ledger:
                 filled_at=filled_at,
             )
         except Exception as exc:
+            if session is not None:
+                raise ReconciliationError(
+                    "Observed fill rejected; owning transaction must halt"
+                ) from exc
             try:
                 self._halt("observed fill could not be reconciled")
             except Exception as halt_error:

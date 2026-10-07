@@ -1,17 +1,17 @@
 # ASSUMPTIONS
 
-The master specification and Amendments 01–04 in docs/spec govern this project.
+The master specification and Amendments 01–06 in docs/spec govern this project.
 Later amendments override conflicting earlier specifications and addenda. The
 earlier LLM fundamental addendum is superseded by deterministic Stage E rules.
-The owner authorized automatic continuation: audit/fixes → S → D → E → F → G → H
-→ J → I → K, with a report and local commit after each green stage. Required
+The owner authorized automatic continuation: audit/fixes → S → D → E → F → G/G+ → H
+→ J → I → K → V → W, with a report and local commit after each green stage. Required
 credentials/decisions, an unresolved gate, a STOP-class finding or a safety
 weakening stops progress. No push is authorized.
 
 Stages A–C have historical verified deliveries. The audit-fixes gate passed
 2,167 offline tests, with complete risk/state branch coverage. Stage S security
-components and host commands are under combined verification. Stage D is
-unfinished under the amended requirements. Order execution is absent before
+components and host commands passed their offline gates. Stage D and E passed
+their amended offline gates. Stage F passed its full offline gate. Order execution is absent before
 Stage I; current ledger orders are local proposal/audit records. Stage I alone
 may add the specified isolated executor. Money movement remains banned everywhere.
 
@@ -333,3 +333,30 @@ delivery and in VERIFY.md.
     can write config; even those cannot write code/prompts. The standalone lock
     compiler has exactly two build-output exceptions and cannot be runtime-imported.
     READY and five healthy required feed sessions become extra live prerequisites.
+77. Stage F schema version 4 adds only job_runs and ticket_events. The earlier
+    approval-event constraint stays intact; P/S attribution uses the new unique
+    ticket event. Emergency panic accepts the exact prior v2/v3 inventories;
+    no owner database is migrated or rewritten during development.
+78. Peer strength uses a fixed 20-session comparison and is informational; it
+    cannot alter setup score or quantity. Pending policy is bound by a recorded
+    desk-policy hash. Atomic reservations enforce cooldown and daily alert caps.
+79. Telegram polling preserves pending updates and refuses a configured webhook
+    in every mode. A failed send never creates a confirmed message binding, and
+    ambiguity halts without an automatic actionable-message retry.
+80. Observed fills must be whole shares and exact cent prices. A broker's
+    fractional shares or sub-cent fill does not get rounded into accepted proof.
+    BUY matches at or below limit; SELL at or above. One broker order cannot be
+    split across different manual tickets by repeated polling.
+81. Unmatched MANUAL fills become observed-fill signal payloads tied to a stored
+    public SIP snapshot; no stop, target or ticket is invented. They are not
+    ledger Order submissions. The future tax stage consumes this attribution.
+82. With optional AI off, recall/fraud/bankruptcy/guidance/investigation/restatement
+    headline keywords request human review. They never choose a trade or alter
+    its risk values. Missing overnight evidence is an annotation, never a pass.
+83. One unchanged exit warning per symbol/reason/NY session suppresses repeated
+    notices; a stop warning is urgent. Quantities remain capped at observed held
+    shares, and an unfilled ticket has zero sell shares.
+84. F job bodies require weekly-report and maintenance dependencies. G supplies
+    report production; H supplies actual connected source, urgent notifier,
+    startup, encrypted nightly maintenance and container healthcheck composition.
+    F fake callbacks do not certify those later runtime dependencies.

@@ -10,8 +10,9 @@ from typing import Any
 
 import httpx
 from requests import Response, Session
+from telegram.request import BaseRequest, RequestData
 
-from backend.core.errors import ConfigurationError, ProviderError
+from backend.core.errors import ConfigurationError, EgressDeniedError, ProviderError
 from backend.net.egress import EgressPolicy
 
 _policy: EgressPolicy | None = None
@@ -44,12 +45,21 @@ class GuardedAsyncClient:
         policy: EgressPolicy,
         transport: httpx.AsyncBaseTransport | None = None,
         request_hook: Callable[[], Awaitable[None]] | None = None,
+        allow_redirects: bool = True,
+        max_response_bytes: int = 33_554_432,
     ) -> None:
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,47}", purpose):
             raise ConfigurationError("HTTP purpose must be a short nonsecret identifier")
+        if (
+            type(allow_redirects) is not bool
+            or type(max_response_bytes) is not int
+            or not 1 <= max_response_bytes <= 33_554_432
+        ):
+            raise ConfigurationError("HTTP response and redirect bounds are invalid")
         self.purpose = purpose
         self.policy = policy
         self.request_hook = request_hook
+        self.allow_redirects, self.max_response_bytes = allow_redirects, max_response_bytes
         self._client = httpx.AsyncClient(
             verify=True,
             trust_env=False,
@@ -82,10 +92,23 @@ class GuardedAsyncClient:
                     if self.request_hook is not None:
                         await self.request_hook()
                     response = await self._client.send(request, stream=True, follow_redirects=False)
-                    await response.aread()
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(body) + len(chunk) > self.max_response_bytes:
+                            raise ProviderError("HTTP response exceeds its bounded body size")
+                        body.extend(chunk)
                     next_request = response.next_request
                     if next_request is None:
-                        return response
+                        return httpx.Response(
+                            response.status_code,
+                            headers=response.headers,
+                            content=bytes(body),
+                            request=request,
+                        )
+                    if not self.allow_redirects:
+                        self.policy.deny(
+                            purpose=self.purpose, reason="authenticated API redirects prohibited"
+                        )
                     self.policy.check_url(str(next_request.url), purpose=self.purpose)
                     if next_request.url.host != request.url.host:
                         if next_request.method not in {"GET", "HEAD"} or await next_request.aread():
@@ -130,10 +153,17 @@ def make_client(
     policy: EgressPolicy | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     request_hook: Callable[[], Awaitable[None]] | None = None,
+    allow_redirects: bool = True,
+    max_response_bytes: int = 33_554_432,
 ) -> GuardedAsyncClient:
     """SEC-30: the one application HTTP factory; transport injection is for tests."""
     return GuardedAsyncClient(
-        purpose, policy=_require_policy(policy), transport=transport, request_hook=request_hook
+        purpose,
+        policy=_require_policy(policy),
+        transport=transport,
+        request_hook=request_hook,
+        allow_redirects=allow_redirects,
+        max_response_bytes=max_response_bytes,
     )
 
 
@@ -277,3 +307,95 @@ class TimeoutSession(Session):
         exact = ExactJSONResponse()
         exact.__dict__.update(response.__dict__)
         return exact
+
+
+_TELEGRAM_METHODS = frozenset(
+    {
+        "getMe",
+        "getWebhookInfo",
+        "getUpdates",
+        "deleteWebhook",
+        "sendMessage",
+        "editMessageText",
+        "editMessageReplyMarkup",
+        "answerCallbackQuery",
+        "leaveChat",
+        "getChat",
+    }
+)
+
+
+class TelegramRequest(BaseRequest):
+    """Pinned PTB BaseRequest adapter: TLS, no proxy/redirects, bounded body.
+
+    Telegram performs POSTs even for read-only API operations. The inventory is
+    limited to polling and private alert UX; files and webhooks cannot be sent.
+    """
+
+    def __init__(
+        self, token: str, policy: EgressPolicy, *, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
+        super().__init__()
+        if not token.strip() or policy.ledger is None:
+            raise ConfigurationError("GD-05: Telegram needs a token and audited egress policy")
+        self._prefix = "https://api.telegram.org/bot" + token + "/"
+        self.policy = policy
+        self._client = httpx.AsyncClient(
+            verify=True,
+            trust_env=False,
+            follow_redirects=False,
+            timeout=httpx.Timeout(connect=5, read=25, write=20, pool=5),
+            transport=transport,
+        )
+
+    @property
+    def read_timeout(self) -> float:
+        return 25.0
+
+    async def initialize(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        await self._client.aclose()
+
+    async def do_request(
+        self,
+        url: str,
+        method: str,
+        request_data: RequestData | None = None,
+        read_timeout: Any = None,
+        write_timeout: Any = None,
+        connect_timeout: Any = None,
+        pool_timeout: Any = None,
+    ) -> tuple[int, bytes]:
+        self.policy.check_url(url, purpose="telegram_api")
+        if (
+            not url.startswith(self._prefix)
+            or url[len(self._prefix) :] not in _TELEGRAM_METHODS
+            or method not in {"GET", "POST"}
+            or (request_data is not None and request_data.multipart_data)
+        ):
+            self.policy.deny(purpose="telegram_api", reason="Telegram method/path/files prohibited")
+        data = None if request_data is None else request_data.json_parameters
+        # PTB bootstrap clears an already-empty webhook, with no update loss.
+        if url.endswith("deleteWebhook") and data and data.get("drop_pending_updates") == "true":
+            self.policy.deny(purpose="telegram_api", reason="cannot discard pending owner updates")
+        try:
+            async with asyncio.timeout(30):
+                async with self._client.stream(
+                    method, url, data=data, follow_redirects=False
+                ) as response:
+                    if 300 <= response.status_code < 400:
+                        self.policy.deny(
+                            purpose="telegram_api", reason="Telegram redirects prohibited"
+                        )
+                    body = bytearray()
+                    async for part in response.aiter_bytes():
+                        body.extend(part)
+                        if len(body) > 2 * 1024 * 1024:
+                            raise ProviderError("GD-05: Telegram response exceeds its boundary")
+                    return response.status_code, bytes(body)
+        except EgressDeniedError:
+            raise
+        except Exception:
+            raise ProviderError("GD-05: Telegram request failed or exceeded its deadline") from None

@@ -45,15 +45,17 @@ LIVE_BROKER_ENDPOINT = "https://api.alpaca.markets"
 LIVE_CONFIRMATION = "I_ACCEPT_REAL_MONEY_RISK"
 YAML_INTEGER_BOUNDS: Mapping[str, tuple[int, int]] = MappingProxyType(
     {
-        "scan_interval_minutes": (1, 1440),
-        "offhours_interval_minutes": (1, 10080),
+        "monitor_interval_minutes": (1, 1440),
+        "offhours_news_interval_minutes": (1, 10080),
         "scheduler_misfire_grace_seconds": (1, 3600),
         "daily_bar_sip_lag_seconds": (960, 3600),
         "daily_scan_delay_minutes": (30, 1440),
         "alert_cooldown_sessions": (1, 30),
     }
 )
-YAML_ALLOWED_SETTING_NAMES = frozenset(YAML_INTEGER_BOUNDS)
+YAML_ALLOWED_SETTING_NAMES = frozenset(YAML_INTEGER_BOUNDS) | frozenset(
+    {"scan_interval_minutes", "offhours_interval_minutes"}
+)
 KEYRING_ONLY_ENV_NAMES = frozenset({"plaid_access_token", "plaid_token_path", "fernet_key"})
 
 
@@ -745,18 +747,18 @@ class _FrozenYamlModel(BaseModel):
 class ScheduleConfig(_FrozenYamlModel):
     """GD-04: bounded deterministic schedule, without risk controls."""
 
-    scan_interval_minutes: int = 15
-    offhours_interval_minutes: int = 60
     scheduler_misfire_grace_seconds: int = 60
     daily_bar_sip_lag_seconds: int = 960
     daily_scan_delay_minutes: int = 30
+    monitor_interval_minutes: int = 15
+    offhours_news_interval_minutes: int = 60
 
     @field_validator(
-        "scan_interval_minutes",
-        "offhours_interval_minutes",
         "scheduler_misfire_grace_seconds",
         "daily_bar_sip_lag_seconds",
         "daily_scan_delay_minutes",
+        "monitor_interval_minutes",
+        "offhours_news_interval_minutes",
         mode="before",
     )
     @classmethod

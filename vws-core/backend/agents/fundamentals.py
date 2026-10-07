@@ -188,6 +188,27 @@ class FundamentalReport(FrozenModel):
     failure_reasons: tuple[str, ...] = Field(max_length=5)
     data_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
+    @classmethod
+    def from_recorded(cls, payload: dict[str, Any]) -> FundamentalReport:
+        """Decode canonical ledger timestamps/dates, then revalidate all facts."""
+        try:
+            values = dict(payload)
+            values["as_of"] = datetime.fromisoformat(values["as_of"])
+            for key in ("latest_filing_date", "latest_period_end"):
+                values[key] = None if values[key] is None else date.fromisoformat(values[key])
+            values["metrics"] = tuple(
+                {
+                    **row,
+                    "period_end": None
+                    if row["period_end"] is None
+                    else date.fromisoformat(row["period_end"]),
+                }
+                for row in values["metrics"]
+            )
+            return cls.model_validate(values)
+        except Exception:
+            raise DataIntegrityError("FA-01: recorded fundamental facts are invalid") from None
+
     @model_validator(mode="after")
     def consistent_report(self) -> Self:
         if tuple(item.name for item in self.metrics) != NAMES:

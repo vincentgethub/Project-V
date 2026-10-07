@@ -5,10 +5,29 @@ data and fake services. Connected commands need your explicit account
 type and saved credentials. Examples below use `python` from the vws-core venv;
 on Windows you can use `.venv\Scripts\python.exe`. Never paste secrets into chat.
 
+## Current paper workflow
+
+1. Read `python -m vws progress`; preview `python scripts/dry_run.py --dry-run NVDA --offline`.
+   The preview uses RAM and synthetic data and sends nothing.
+2. Connected startup awaits Stage H. Once configured, check `/status`, read the
+   full card and Details, then Approve or Reject. Approval first rechecks fresh
+   evidence and creates manual instructions; it places no order.
+3. Place a paper LIMIT entry yourself in the broker dashboard. After filling,
+   verify the correct whole-share STOP coverage and optional target/OCO there.
+   Tap I placed it or Skip. That records your attribution only.
+4. Read-only polling matches observed fills to tickets. Unmatched manual fills
+   remain observed records. Inspect reconciliation warnings; never guess a stop.
+5. Use `/halt REASON` for urgent entry shutdown once the bot is connected.
+   Valid held exits and stop protection remain your responsibility in MANUAL.
+   Ctrl-C stops the later host service; reset requires host investigation and RESET.
+6. Rotate suspected secrets with the commands below, retain encrypted backups
+   and compare ledger anchors. No current paper result authorizes live mode.
+
 ## Start, stop and current mode
 
 Read `python -m vws progress`. The service `setup` and `start` commands arrive in
-Stage H; private Telegram cards arrive in Stage F. Current behavior is MANUAL,
+Stage H; private Telegram components are implemented in Stage F and tested
+against fake HTTP. Your bot is not connected or running here. Current behavior is MANUAL,
 paper by default, with no order executor. Ordinary stop uses Ctrl-C once the
 service exists. To stop entries during an incident, use panic below.
 
@@ -45,7 +64,8 @@ the configured maximum age WARNs at 90 days by default (allowed range 30-365).
 Telegram token: BotFather `/revoke` invalidates the old token immediately, then
 rotate `TELEGRAM_BOT_TOKEN`, then doctor. BotFather `/setjoingroups` -> Disable
 and `/setprivacy` -> Enable. A configured webhook is urgent, suggests a leaked
-token, and refuses AUTO. Keep the bot in a confirmed private chat only.
+token, and refuses polling in every mode without deleting the webhook.
+Keep the bot in a confirmed private chat only.
 
 Alpaca: dashboard -> API Keys -> Regenerate the affected pair; revoke from your
 phone if the host is lost. Rotate the matching saved key and secret. Trading API
@@ -80,10 +100,10 @@ account-restriction and pending-order evidence. Missing evidence refuses entries
 Confirmed earnings near a proposal block entries; estimated or unknown dates
 show warnings. The account-type check halts on a reported CASH/MARGIN mismatch.
 
-The current fresh schema is version 3. Normal startup refuses a version-2
-database; never delete it or change its version number by hand. Stage H supplies
+The current fresh schema is version 4. Normal startup refuses a version-2 or
+version-3 database; never delete it or change its version number by hand. Stage H supplies
 the explicit backup-first additive migration. Host `python -m vws ops panic --operator NAME --reason REASON` remains available for the exact compatible
-version-2 schema and persists HALTED without upgrading it. It does not certify
+version-2/version-3 schemas and persists HALTED without upgrading them. It does not certify
 old or damaged ledger chains. An incompatible control schema is refused.
 
 The real paper check is UNVERIFIED. After paper credentials exist, use
@@ -108,7 +128,7 @@ The effective non-secret config includes env policy and config.yaml,
 instruments.csv, macro_events.csv and accounts.yaml. Unacknowledged drift alerts
 urgently and pauses AUTO entries. A revert alone does not clear the pause.
 Investigate first, then use `ops ack-config --operator NAME` on the host.
-Monitor composition is pending Stage F; an unexplained broker identity change
+Connected monitor composition is pending Stage H; an unexplained broker identity change
 already has a tested persistent HALT service. Legitimate rotation needs matching
 SECRET_ROTATED evidence. Telegram cannot acknowledge config or upgrade a mode.
 

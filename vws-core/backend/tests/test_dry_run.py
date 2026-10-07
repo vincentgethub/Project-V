@@ -9,7 +9,12 @@ from backend.agents import offline_run as module
 from backend.agents.llm_client import SDKTransport
 from backend.core.config import Settings
 from backend.core.errors import ConfigurationError, DataIntegrityError
-from backend.domain.models import FlowSignal, ProviderStatus
+from backend.domain.models import (
+    FlowSignal,
+    ProviderStatus,
+    SentimentClassification,
+    SentimentSignal,
+)
 from backend.notifications.card_formatter import display_time, format_card, manual_instructions
 
 
@@ -121,3 +126,23 @@ async def test_GD_05_oversize_card_fails_without_silently_truncating_evidence() 
             result.contexts[0].model_copy(update={"flow": flow}),
             Settings(broker_account_type="CASH"),
         )
+
+
+@pytest.mark.asyncio
+async def test_GD_05_valid_public_sentiment_displays_citations_without_changing_trade_numbers() -> (
+    None
+):
+    result = await module.offline_run("NVDA")
+    context = result.contexts[0]
+    sentiment = SentimentSignal(
+        score=Decimal(4),
+        classification=SentimentClassification.CONFIRMING,
+        evidence_headline_ids=(context.news.news.headlines[0].stable_id,),
+        summary="Public fixture headline confirms the stated catalyst.",
+    )
+    news = context.news.model_copy(update={"sentiment": sentiment, "sentiment_status": "OK"})
+    text = format_card(
+        context.model_copy(update={"news": news}), Settings(broker_account_type="CASH")
+    )
+    assert "News: +4 CONFIRMING [" in text
+    assert "Buy limit $101.76 · Stop $99.12 · Target $107.04" in text

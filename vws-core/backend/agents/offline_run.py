@@ -4,40 +4,31 @@ This acceptance harness cannot start the connected runtime or approve trades.
 F builds the live provider composition and authenticated ticket lifecycle.
 """
 
-import asyncio
 import hashlib
 import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
 
 from pydantic import Field
 
-from backend.agents.expiry import proposal_expiry
-from backend.agents.flow_tracker import FlowTracker
-from backend.agents.fundamentals import compute_fundamentals, framework_allows
 from backend.agents.indicators import IndicatorMemo
 from backend.agents.llm_client import FakeLLMClient
 from backend.agents.news_reader import NewsReader
-from backend.agents.providers import NullEarningsProvider, NullIVProvider
 from backend.agents.scanner import scan
 from backend.agents.setup_hunter import SetupHunter
+from backend.agents.swarm_runner import ResearchRequest, SwarmRunner
 from backend.core.clock import FrozenClock
 from backend.core.config import Settings, load_yaml_config
 from backend.core.database import (
-    Alert,
     DataSnapshot,
-    Order,
-    ResearchReport,
-    Signal,
     create_database,
     create_schema,
 )
 from backend.core.errors import ConfigurationError, DataIntegrityError
 from backend.core.notifier import ConsoleNotifier
 from backend.core.system_state import SystemStateStore
-from backend.data.data_layer import Bar
+from backend.data.data_layer import Bar, _bars_digest
 from backend.data.market_calendar import MarketCalendar
 from backend.data.news import NewsInput, NewsProviderName, NewsResult, NewsStore
 from backend.domain.instruments import InstrumentRegistry
@@ -45,18 +36,13 @@ from backend.domain.models import (
     AccountFlags,
     AccountType,
     CapitalStatus,
-    Decision,
     DeployableCapital,
     FrozenModel,
-    Intent,
     MarketContext,
     MarketStatus,
     PortfolioSnapshot,
-    ProposalSource,
     ProviderStatus,
-    Side,
     Symbol,
-    TradeProposal,
     validate_symbol,
 )
 from backend.notifications.card_formatter import CardContext, format_card, manual_instructions
@@ -174,18 +160,17 @@ async def _offline_run(symbol: str, *, require_fundamentals: bool) -> OfflineRes
             memo=memo,
         )
         hunted = SetupHunter(cro, config, memo).hunt(symbol, bars, snapshot, market, now)
-        fundamental = compute_fundamentals(registry.get(symbol), None, now, config.fundamentals)
         recorded = ledger.append(
             DataSnapshot,
             symbol=symbol,
             timeframe="1Day",
             range_start=bars[0].timestamp,
             range_end=bars[-1].timestamp,
-            feed="IEX",
-            adjustment="SPLIT",
+            feed="FAKE",
+            adjustment="ALL",
             fetched_at=now,
             bar_count=len(bars),
-            sha256=digest,
+            sha256=_bars_digest(bars)[0],
             bars=[bar.model_dump(mode="json") for bar in bars],
         )
         news_store = NewsStore(ledger)
@@ -213,129 +198,54 @@ async def _offline_run(symbol: str, *, require_fundamentals: bool) -> OfflineRes
         contexts: list[CardContext] = []
         vetoes: list[str] = []
         dropped = [f"{row.playbook.value}: {row.reason}" for row in hunted.drops]
+
+        class RecordedNews:
+            async def fetch(
+                self, symbols: tuple[str, ...], start: datetime, end: datetime
+            ) -> NewsResult:
+                return news
+
+        swarm = SwarmRunner(
+            settings,
+            config,
+            risk,
+            compliance,
+            state,
+            clock,
+            reader,
+            news=RecordedNews(),
+            memo=memo,
+            offline=True,
+        )
         for candidate in hunted.candidates if scanned.status.value == "OK" else ():
-            signal = ledger.append(
-                Signal,
-                agent_name="SetupHunter",
-                symbol=symbol,
-                direction="BUY",
-                confidence=candidate.score / 10,
-                structured_thesis=candidate.model_dump(mode="json"),
-                invalidation="stop or revalidation failure",
-                data_snapshot_id=recorded.id,
-                prompt_hash=None,
-            )
-            proposal = TradeProposal(
-                proposal_id=uuid4(),
-                signal_id=signal.id,
-                account_id=snapshot.account_id,
-                symbol=symbol,
-                side=Side.BUY,
-                intent=Intent.ENTRY,
-                qty=candidate.qty,
-                limit_price=candidate.entry_price,
-                stop_price=candidate.stop_price,
-                target_price=candidate.target_price,
-                source=ProposalSource.SIGNAL,
-                created_at=now,
-                expires_at=proposal_expiry(now, settings.proposal_ttl_sessions, calendar),
-            )
-            first = risk.evaluate(proposal, snapshot, market, deployable=capital)
-            if first.decision != Decision.APPROVED:
-                vetoes.extend(
-                    row.rule_id
-                    for row in first.results
-                    if not row.passed and row.severity.value == "BLOCK"
+            result = await swarm.run(
+                ResearchRequest(
+                    candidate=candidate,
+                    data_snapshot_id=recorded.id,
+                    portfolio=snapshot,
+                    market=market,
+                    capital=capital,
+                    tax_accounts=(
+                        ExternalAccount(
+                            account_id=snapshot.account_id, tax_status=TaxStatus.TAXABLE
+                        ),
+                    ),
+                    flags=AccountFlags(
+                        trading_blocked=False,
+                        account_blocked=False,
+                        trade_suspended_by_user=False,
+                        status="ACTIVE",
+                    ),
                 )
-                continue
-            if not framework_allows(fundamental, config.fundamentals):
-                dropped.append("FA-08: required fundamentals unavailable/failed")
-                continue
-            earnings, iv, flow = await asyncio.gather(
-                NullEarningsProvider().get(symbol, now),
-                NullIVProvider().get(symbol, now),
-                FlowTracker().read(symbol, now),
             )
-            market = MarketContext.model_validate({**market.model_dump(), "earnings": earnings})
-            assessment = await reader.read(symbol, news, eligible=True)
-            final = risk.evaluate(proposal, snapshot, market, deployable=capital)
-            cmp = compliance.evaluate(
-                proposal,
-                snapshot,
-                (),
-                (),
-                (ExternalAccount(account_id=snapshot.account_id, tax_status=TaxStatus.TAXABLE),),
-                flags=AccountFlags(
-                    trading_blocked=False,
-                    account_blocked=False,
-                    trade_suspended_by_user=False,
-                    status="ACTIVE",
-                ),
-            )
-            failed = tuple(
-                row.rule_id
-                for row in (*final.results, *cmp.results)
-                if not row.passed and row.severity.value == "BLOCK"
-            )
-            if failed or state.current().value != "RUNNING":
-                vetoes.extend(failed or ("CRO-01",))
-                continue
-            context = CardContext(
-                candidate=candidate,
-                proposal=proposal,
-                snapshot=snapshot,
-                verdict=final,
-                compliance=cmp,
-                fundamentals=fundamental,
-                news=assessment,
-                flow=flow,
-                market_context="SPY unavailable (synthetic offline fixture)",
-            )
-            card = format_card(context, settings)
-            ledger.append(
-                Order,
-                **proposal.model_dump(exclude={"created_at", "expires_at"}),
-                client_order_id="offline-" + proposal.proposal_id.hex,
-                order_type="LIMIT",
-            )
-            alert = ledger.append(
-                Alert,
-                proposal_id=proposal.proposal_id,
-                signal_id=signal.id,
-                symbol=symbol,
-                playbook=candidate.playbook.value,
-                score=candidate.score,
-                status="PENDING",
-                telegram_chat_id=None,
-                telegram_message_id=None,
-                card_text=card,
-                config_hash=settings.config_hash,
-                expires_at=proposal.expires_at,
-            )
-            for name, payload, status in (
-                ("fundamentals", fundamental, "OK"),
-                ("news", assessment, news.status.value),
-                ("flow", flow, flow.status.value),
-                ("iv", iv, iv.status.value),
-                (
-                    "earnings",
-                    earnings,
-                    "UNAVAILABLE" if earnings.status.value == "UNKNOWN" else "OK",
-                ),
-                ("cro", final, "OK"),
-                ("compliance", cmp, "OK"),
-            ):
-                ledger.append(
-                    ResearchReport,
-                    alert_id=alert.id,
-                    agent_name=name,
-                    status=status,
-                    payload=payload.model_dump(mode="json"),
-                    prompt_hash=None,
-                )
-            cards.append(card)
-            contexts.append(context)
-            previews.append(manual_instructions(proposal, settings))
+            if result.status == "DROPPED":
+                dropped.extend(result.reasons)
+            elif result.status == "VETOED":
+                vetoes.extend(result.reasons)
+            elif result.context is not None and result.proposal is not None:
+                cards.append(format_card(result.context, settings))
+                contexts.append(result.context)
+                previews.append(manual_instructions(result.proposal, settings))
         ledger.verify_chain()
         from sqlalchemy import func, select
         from sqlalchemy.orm import Session

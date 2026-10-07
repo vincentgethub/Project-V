@@ -1,3 +1,69 @@
+# Stage F verification - 2026-10-07
+
+The full cumulative offline gate passed **3,366 tests, 44 skipped, 2 warnings**
+in **739.93 seconds**. Required coverage is **100%: 2,202 statements and 716
+branches, zero missing/partial** across risk/state/compliance contracts/
+fundamentals/notifications/tax. All five actual Git-root hooks passed.
+Actual static checks: 178 files formatted, 162 strictly typed authored sources,
+production Bandit zero findings, full AST guard PASS, hash-lock install and
+pip check PASS. The 123-pin development lock audit found no known vulnerabilities.
+Gitleaks scanned eight prior commits/25.65MB with zero leaks. The synthetic NVDA
+preview passed: one card, zero LLM calls, verified RAM ledger, no send or order.
+Authored secret findings are zero. The only inline secret allowlist additions
+identify the public disposable CI fixture password at its example lines.
+
+Reproduce the complete local gate from an activated venv in vws-core:
+
+```text
+python -m ruff check .
+python -m ruff format --check .
+python -m backend.core.check_stage_d
+python -m backend.core.source_guard .
+python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/net backend/ops backend/security backend/telegram backend/notifications backend/tax scripts vws -c pyproject.toml
+python -m pip check
+python -m pip_audit -r requirements-dev.lock --no-deps --disable-pip --progress-spinner off --timeout 15
+python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov-branch --cov-fail-under=100 --cov-report=term-missing
+python scripts/dry_run.py --dry-run NVDA --offline
+```
+
+On Windows, set `$env:PYTHONIOENCODING = 'utf-8'` before the strict mypy wrapper.
+Unit tests block sockets and isolate application variables; they never discover
+real dotenv or keyring values. Private Telegram flow uses actual PTB 22.8 SDK
+calls through MockTransport. No real chat has been contacted or admitted.
+
+**UNVERIFIED**: POSIX mutation testing (Windows has no fork), real PostgreSQL,
+Docker build/runtime, remote CI, paper/Plaid/Telegram/optional LLM connections,
+owner keyring/host attestations and real encrypted backups. Forty-three PG
+cases skip unless an explicit disposable loopback URL is supplied. The real
+paper check separately requires explicit credentials. Never count skips as PASS.
+
+Linux CI now schedules separate mutation/PG jobs and a synthetic container build.
+Actions and official Python/PostgreSQL images use verified SHA/digest pins.
+CI has not run remotely, and no push is authorized. Exact reproduction:
+
+```text
+python -m mutmut run
+python -m mutmut results --all > /tmp/vws-mutants.txt
+python -m scripts.check_mutations /tmp/vws-mutants.txt
+python -m pytest -q backend/tests/test_postgres.py --postgres-test-url 'postgresql+psycopg://vws_ci:CI_FIXTURE_ONLY@127.0.0.1:5432/vws_ci' # pragma: allowlist secret - public disposable CI fixture
+python -m pytest -m integration --paper-integration-env-file PRIVATE_PAPER_CONFIG
+```
+
+PG requires a disposable PostgreSQL 16 database/user named `vws_ci`; CI_FIXTURE_ONLY
+is a public test password. The tests isolate generated schemas and cannot accept
+an owner database URL. For Docker in a disposable checkout only, copy
+`.env.example` to `.env`, then `docker compose build`. There are no application
+ports; the optional PG production profile also exposes no ports. Its secret
+password file must be deliberately supplied. Connected startup and healthcheck
+CLI composition await Stage H, so a build will not certify running service health.
+
+Read-only fill polling uses documented [Trading API account activities](https://docs.alpaca.markets/us/reference/getaccountactivities-2),
+not an invented SDK method. Installed TradingClient 0.44.0 has no activity reader.
+The central HTTPS adapter binds account/key/endpoint, disables redirects, bounds
+response size and pages, and accepts only whole-share/cent-price observed fills.
+The pinned PTB request boundary follows [BaseRequest](https://docs.python-telegram-bot.org/en/latest/telegram.request.baserequest.html).
+These contracts are verified offline; actual account entitlements remain unchecked.
+
 # Stage D verification - 2026-10-05
 
 The final whole-suite Stage D gate passed 2,901 cases in 404.77 seconds, with

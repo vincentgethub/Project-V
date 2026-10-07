@@ -9,10 +9,10 @@ jobs:
       run:
         working-directory: ${{ env.VWS_PROJECT_DIR || '.' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, official ref verified 2026-10-06
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5, official ref verified 2026-10-06
         with:
           python-version: '3.12'
       - name: Locate project
@@ -27,6 +27,7 @@ jobs:
         run: |
           python -m pip install --require-hashes --no-deps -r requirements-dev.lock
           python -m pip install --no-deps --no-build-isolation -e .
+          python -m pip check
       - name: Scan complete Git history for secrets
         env:
           GITLEAKS_ARCHIVE_SHA256: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' # pragma: allowlist secret - published release checksum
@@ -60,3 +61,74 @@ jobs:
           python -c "from pathlib import Path; from vws.progress import read_progress, require_progress_update; read_progress(); require_progress_update(tuple(Path('/tmp/vws-changed-files.txt').read_text().splitlines()))"
       - name: Offline tests and complete risk/state/fundamentals/card/tax branch coverage
         run: python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov-branch --cov-fail-under=100 --cov-report=term-missing
+      - name: Build non-root container from synthetic configuration
+        run: |
+          cp .env.example .env
+          docker compose build
+  mutations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ${{ env.VWS_PROJECT_DIR || '.' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Locate project
+        working-directory: .
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo 'VWS_PROJECT_DIR=.' >> "$GITHUB_ENV"
+          else
+            echo 'VWS_PROJECT_DIR=vws-core' >> "$GITHUB_ENV"
+          fi
+      - name: Install hashed dependencies and local source
+        run: |
+          python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+      - name: Mutate risk, approval validation and deterministic fundamentals
+        run: |
+          python -m mutmut run
+          python -m mutmut results --all > /tmp/vws-mutants.txt
+          python -m scripts.check_mutations /tmp/vws-mutants.txt
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
+        env:
+          POSTGRES_DB: vws_ci
+          POSTGRES_USER: vws_ci
+          POSTGRES_PASSWORD: CI_FIXTURE_ONLY # pragma: allowlist secret - public disposable CI fixture
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: ${{ env.VWS_PROJECT_DIR || '.' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Locate project
+        working-directory: .
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo 'VWS_PROJECT_DIR=.' >> "$GITHUB_ENV"
+          else
+            echo 'VWS_PROJECT_DIR=vws-core' >> "$GITHUB_ENV"
+          fi
+      - name: Install hashed dependencies and local source
+        run: |
+          python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+      - name: Trigger and concurrent writer tests on explicit disposable database
+        run: python -m pytest -q backend/tests/test_postgres.py --postgres-test-url 'postgresql+psycopg://vws_ci:CI_FIXTURE_ONLY@127.0.0.1:5432/vws_ci' # pragma: allowlist secret - public disposable CI fixture

@@ -44,13 +44,7 @@ class PersistedPortfolioMarks:
                 or len(account_id) > 128
             ):
                 raise ValueError("invalid managed account or marks dependencies")
-            values = config.model_dump()
-            if (
-                not config.telegram_allowed_user_ids
-                and "telegram_allowed_user_ids" not in config.model_fields_set
-            ):
-                values.pop("telegram_allowed_user_ids")
-            self.config = Settings(**values)
+            self.config = Settings.validated_copy(config)
             self.ledger = ledger
             self.account_id = account_id
             self.calendar = calendar

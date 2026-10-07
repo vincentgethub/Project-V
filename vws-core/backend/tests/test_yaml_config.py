@@ -51,7 +51,7 @@ def test_GD_02_shipped_yaml_uses_exact_frozen_weights_and_levels() -> None:
     )
     assert len(config.watchlist) == 32
     assert set(config.watchlist).issubset(ALLOWED_SYMBOLS)
-    assert config.schedule.scan_interval_minutes == 15
+    assert config.schedule.monitor_interval_minutes == 15
     assert config.alerts.alert_cooldown_sessions == 1
     assert set(config.playbooks) == {"TREND_50EMA", "BASE_BREAKOUT", "ANCHORED_VWAP_RECLAIM"}
     for playbook in config.playbooks.values():
@@ -61,7 +61,7 @@ def test_GD_02_shipped_yaml_uses_exact_frozen_weights_and_levels() -> None:
     with pytest.raises(ValidationError):
         config.watchlist = ("NVDA",)
     with pytest.raises(ValidationError):
-        config.schedule.scan_interval_minutes = 30
+        config.schedule.monitor_interval_minutes = 30
     with pytest.raises(TypeError):
         config.playbooks["TREND_50EMA"] = config.playbooks["BASE_BREAKOUT"]  # type: ignore[index]
     with pytest.raises(TypeError):
@@ -214,8 +214,8 @@ def test_GD_02_playbook_invalid_levels_fail_closed(
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("scan_interval_minutes", 20),
-        ("offhours_interval_minutes", 120),
+        ("monitor_interval_minutes", 20),
+        ("offhours_news_interval_minutes", 120),
         ("scheduler_misfire_grace_seconds", 120),
         ("daily_bar_sip_lag_seconds", 1200),
         ("alert_cooldown_sessions", 2),
@@ -298,12 +298,12 @@ def test_GD_04_yaml_integer_bounds_are_separate_and_preserved(
 def test_GD_04_yaml_only_overrides_pass_and_do_not_enter_env_settings(
     valid_payload: dict[str, Any], tmp_path: Path
 ) -> None:
-    valid_payload["schedule"]["scan_interval_minutes"] = 20
+    valid_payload["schedule"]["monitor_interval_minutes"] = 20
     config = load_yaml_config(
         write_yaml(tmp_path, valid_payload), allowed_symbols=ALLOWED_SYMBOLS, settings=Settings()
     )
-    assert config.schedule.scan_interval_minutes == 20
-    assert "scan_interval_minutes" not in Settings.model_fields
+    assert config.schedule.monitor_interval_minutes == 20
+    assert "monitor_interval_minutes" not in Settings.model_fields
     assert "alert_cooldown_sessions" not in Settings.model_fields
 
 
@@ -339,8 +339,8 @@ def test_R_03_GD_02_combined_hash_tracks_yaml_and_ignores_credentials(
         "!!python/object/apply:os.system ['echo unsafe']",
         "watchlist: &symbols [NVDA]\nother: *symbols\n",
         "watchlist: [NVDA]\nwatchlist: [AAPL]\n",
-        "watchlist: [NVDA]\nschedule: {scan_interval_minutes: 15, scan_interval_minutes: 20}\n",
-        "watchlist: [NVDA]\nschedule: {scan_interval_minutes: .nan}\n",
+        "watchlist: [NVDA]\nschedule: {monitor_interval_minutes: 15, monitor_interval_minutes: 20}\n",
+        "watchlist: [NVDA]\nschedule: {monitor_interval_minutes: .nan}\n",
         "[]",
         "",
         "watchlist: [",

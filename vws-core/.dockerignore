@@ -31,3 +31,7 @@ build
 dist
 *.egg-info
 deliveries
+data
+logs
+backups
+tmp-*.json

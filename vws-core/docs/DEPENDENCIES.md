@@ -12,6 +12,7 @@ Only the specified fixed, registered variants are allowed; no generated search.
 - `pydantic`: frozen validated domain contracts and exact output schemas.
 - `pydantic-settings`: explicit environment configuration with masked secrets.
 - `sqlalchemy`: transactional append-only ledger on SQLite/PostgreSQL.
+- `psycopg`: specified optional PostgreSQL driver and trigger/concurrency CI tests; binary wheels are hash pinned.
 - `alpaca-py`: specified broker/data SDK, with order isolation and endpoint binding.
 - `plaid-python`: specified read-only pinned checking-account balance SDK.
 - `pandas`: tabular market-data handling specified by the master.

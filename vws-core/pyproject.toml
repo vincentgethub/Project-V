@@ -15,6 +15,7 @@ dependencies = [
   "openai==3.24.0", "python-telegram-bot==22.8", "APScheduler==3.11.3",
   "httpx==0.28.1", "feedparser==6.0.14", "numpy==2.5.3", "PyYAML==6.0.3",
   "keyring==25.7.0",
+  "psycopg[binary]==3.3.6",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +56,10 @@ files = ["backend", "scripts", "vws"]
 module = ["exchange_calendars.*", "alpaca.*", "plaid.*", "tenacity.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 branch = true
 source = ["backend.core.system_state", "backend.risk", "backend.domain.compliance_models"]
@@ -63,7 +68,7 @@ source = ["backend.core.system_state", "backend.risk", "backend.domain.complianc
 exclude_dirs = ["backend/tests", ".venv", "mutants"]
 
 [tool.mutmut]
-source_paths = ["backend/risk/"]
-also_copy = ["backend/core", "backend/data", "backend/domain", "backend/tests", "config", "scripts"]
-pytest_add_cli_args_test_selection = ["backend/tests/test_risk_cro.py", "backend/tests/test_compliance.py", "backend/tests/test_wash_sales.py", "backend/tests/test_compliance_boundary.py", "backend/tests/test_stage_c_adversarial.py"]
+source_paths = ["backend/risk/", "backend/notifications/callbacks.py", "backend/agents/fundamentals.py"]
+also_copy = ["backend", "config", "scripts", "vws", "prompts", "docs/PROGRESS.md"]
+pytest_add_cli_args_test_selection = ["backend/tests/test_risk_cro.py", "backend/tests/test_compliance.py", "backend/tests/test_wash_sales.py", "backend/tests/test_compliance_boundary.py", "backend/tests/test_stage_c_adversarial.py", "backend/tests/test_swarm_and_callbacks.py", "backend/tests/test_fundamentals.py"]
 pytest_add_cli_args = ["--disable-socket", "-q"]

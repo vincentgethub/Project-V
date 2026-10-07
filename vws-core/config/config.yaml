@@ -33,8 +33,8 @@ watchlist:
   - XLU
   - XLV
 schedule:
-  scan_interval_minutes: 15
-  offhours_interval_minutes: 60
+  monitor_interval_minutes: 15
+  offhours_news_interval_minutes: 60
   scheduler_misfire_grace_seconds: 60
   daily_bar_sip_lag_seconds: 960
   daily_scan_delay_minutes: 30

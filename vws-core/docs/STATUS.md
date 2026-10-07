@@ -6,6 +6,53 @@ records the certified implementation. Amendments 01–06 supersede conflicts in 
 earlier addenda. Execution order: audit/fixes → S → D → E → F → G/G+ → H → J → I → K → V → W.
 Optional ideas require plain-words approval and live only in PROGRESS Suggestions.
 
+## Stage F traceability - October 7 (offline gate passed)
+
+| Requirement | Implementation | Test / verification limit |
+| --- | --- | --- |
+| GD-01..03 fan-out | agents/swarm_runner.py; peer_strength.py | test_swarm_and_callbacks.py; test_peer_strength.py; two CRO checks, CMP, deterministic fundamentals, six bounded public results plus immutable desk policy |
+| GD-06 candidate provenance | SwarmRunner cache reconstruction and actual hunter recomputation | forged score/level/quantity, changed or future bars, source sequence/hash and SIP lag cases; connected sources require persisted financial marks |
+| GD-04/XNYS jobs | agents/orchestrator.py and jobs.py; core/database.py JobRun | test_scheduler.py: early close/holiday/DST/HALT/coalescing/failure; test_desk_jobs.py actual daily/premarket/monitor/news/housekeeping bodies |
+| GD-04 suppression | agents/desk.py atomic DESK_RESERVED/DESK_COMPLETED | concurrent admission, session cooldown and daily cap cases; reservations count in-flight proposals |
+| GD-05/GD-06/SEC-51 | notifications/callbacks.py; telegram_bot.py | test_swarm_and_callbacks.py/test_telegram_flow.py real pinned SDK via fake HTTP; private allowlist, HMAC/action/config/chat/message binding; no external sends |
+| Fresh approval boundary | ApprovalGate fresh IEX/account/CRO/CMP/fundamental checks and serialized state/time recheck | double approve creates exactly one ticket; actual-check phone-halt/expiry/stale races; valid capped held SELL works during HALT |
+| Details/manual tickets/P/S | notifications/card_formatter.py; callbacks.py; additive TicketEvent | exact card/ticket goldens, full RuleResults, immutable ticket hash; read-only Details; single-use approved-ticket placement/skip; Approve replay preserves follow-up buttons |
+| Quiet hours/expiry/annotations | TelegramBot durable queued notice/note evidence; terminal ApprovalEvent | frozen CT/DST queue/urgent stop tests; changed policy/lost provenance HALT; expiry writer-consumption and failed-edit tests; HTML/UTF-16 boundaries |
+| Private commands/PG-04 | agents/briefing.py DeskCommands; TelegramBot command admission | test_desk_jobs.py/test_telegram_flow.py status/positions/digest/report/help/full progress; missing reports/evidence explicit; wrong account/stale holdings fail job and halt |
+| R-09 monitor | agents/position_monitor.py; jobs.py | test_position_monitor.py/test_desk_jobs.py fresh explicit IEX/symbol checks, held-share caps, open-ticket zero sell shares, urgent suggestions during HALT |
+| Read-only fills | data/fill_polling.py; Ledger.record_fill optional serialized session | test_fill_polling.py 20 cases passed; account-bound GET activity parsing, dedup/partial/order binding/qty/limit/expiry; unmatched MANUAL observations without invented stop |
+| GD-08 offline run | agents/offline_run.py and scripts/dry_run.py | test_dry_run.py actual SwarmRunner, RAM-only, sockets blocked, zero LLM calls; CLI preview passed with no sends/orders |
+| R-02/schema v4 | core/database.py; core/ledger.py | adds only job_runs/ticket_events; raw UPDATE/DELETE controls; exact prior v2/v3 emergency inventories; no owner migration |
+| GD-09/OPS-06 package | Dockerfile/docker-compose.yml; .github/workflows/ci.yml | digest-pinned Python/PostgreSQL, non-root app, no production ports; SHA-pinned CI mutation/PG/build jobs; local Docker/PG/remote CI UNVERIFIED |
+| Mutation certification | pyproject.toml; scripts/check_mutations.py | test_mutation_gate.py 10 cases passed; non-killed/unverified results rejected; actual POSIX mutation run UNVERIFIED on Windows |
+| SEC-20 closure | pyproject.toml; requirements*.lock; docs/DEPENDENCIES.md | 62 runtime/123 dev hash records compiled, all prior pins retained; hash install/editable/pip check passed; 123-pin dev audit has no known vulnerabilities |
+| F final artifacts | README.md, RUNBOOK.md, VERIFY.md, ASSUMPTIONS.md, SELF_REVIEW.md | applied safety review covers 23 failure routes with code/test references; owner progress rewritten in the same stage commit |
+
+Current static checks: Ruff lint PASS, 178 files format clean; strict authored-source
+mypy PASS for 162 files; full AST source guard PASS; production Bandit zero
+findings across 21,965 lines. The final cumulative gate passed **3,366 tests,
+44 skipped, 2 warnings, 739.93s**. Risk/state/compliance contracts/fundamentals/
+notifications/tax have **100% statement and branch coverage: 2,202 statements,
+716 branches, zero missing/partial**. The skips are one explicit-key paper test
+and 43 explicit-URL PostgreSQL cases; none are counted as PASS. Warnings are the
+pinned SDK deprecation and the deliberate socket-blocking positive control.
+All five actual Git-root pre-commit hooks passed. Authored secret findings are
+zero; only the public disposable CI password is explicitly allowlisted at its
+example lines. Gitleaks scanned eight prior commits/25.65MB with zero leaks.
+Earlier focused runs overlap: 182 PASS with 99% combined selected coverage before
+the final Telegram policy/provenance/expiry cases; 20 fill cases PASS and 392
+source-guard/egress cases PASS. Counts are never added across those runs.
+Two later injected tests initially failed due to fixture assumptions (the first
+Alert read was intercepted too early; 31 seconds was inside the configured
+60-second freshness limit). Both were corrected; the final full suite passed both.
+
+Python base OCI index: 3.12.14-slim-bookworm sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e.
+Optional PostgreSQL 16 index: sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4.
+Both were resolved from the official registry. Docker/psql are absent locally.
+The container startup/health CLI and actual connected source/notifier/maintenance
+composition are Stage H dependencies; weekly report production is Stage G.
+No real keys, Telegram messages, broker orders, owner database migration or push occurred.
+
 ## Stage E traceability - current October 6 work
 
 | Requirement | Implementation | Actual local evidence / limit |

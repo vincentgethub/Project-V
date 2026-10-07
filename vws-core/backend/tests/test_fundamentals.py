@@ -35,6 +35,14 @@ FIXTURES = Path(__file__).parent / "fixtures" / "sec"
 END = date(2026, 6, 30)
 
 
+def test_FA_01_recorded_reports_round_trip_and_reject_malformed_provenance() -> None:
+    report = compute_fundamentals(stock(), evidence(synthetic()), AS_OF, FundamentalsConfig())
+    assert FundamentalReport.from_recorded(report.model_dump(mode="json")) == report
+    for invalid in ({}, {**report.model_dump(mode="json"), "as_of": "unknown"}):
+        with pytest.raises(DataIntegrityError, match="recorded fundamental"):
+            FundamentalReport.from_recorded(invalid)
+
+
 def stock(symbol: str = "MSFT", sector: str = "Information Technology") -> Instrument:
     return Instrument(
         symbol=symbol,

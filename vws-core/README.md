@@ -2,12 +2,14 @@
 
 The [master specification](docs/spec/MASTER_SPEC.md) and
 [Amendments 01](docs/spec/AMENDMENT_01.md), [02](docs/spec/AMENDMENT_02.md),
-[03](docs/spec/AMENDMENT_03.md), and [04](docs/spec/AMENDMENT_04.md) govern the
+[03](docs/spec/AMENDMENT_03.md), [04](docs/spec/AMENDMENT_04.md),
+[05](docs/spec/AMENDMENT_05.md), [06](docs/spec/AMENDMENT_06.md), and the
+[owner tax profile](docs/spec/TAX_PROFILE.md) govern the
 project. Later amendments win over conflicting earlier specifications and
 addenda. See [owner progress](docs/PROGRESS.md) and [technical status](docs/STATUS.md).
 
-Work continues automatically through audit/fixes → S → D → E → F → G → H → J →
-I → K after each green gate and local commit. It stops only for the specified
+Work continues automatically through audit/fixes → S → D → E → F → G/G+ → H → J →
+I → K → V → W after each green gate and local commit. It stops only for the specified
 unresolved gate, required credential/decision, STOP-class finding, or safety
 weakening. Nothing is pushed without the owner's instruction.
 
@@ -37,7 +39,11 @@ windows, manual CSV account evidence, indicators and a deterministic scanner.
 Its final combined gate passed 2,901 tests, with one paper integration skipped;
 risk/state/contracts retain 100% statement and branch coverage. The older core/gate.py is not a
 certified human-approval boundary.
-The research swarm and Telegram bot are still pending. The project is not
+Stage E supplies deterministic fundamentals and optional public-only summaries.
+Stage F supplies the swarm, private Telegram approval boundary, six scheduled
+job bodies, manual tickets and read-only fill matching. Its offline gate passed
+3,366 tests with 44 unverified checks skipped and complete required branch coverage;
+connected host composition is Stage H work. The project is not
 finished, and no broker order execution path currently exists. Stage I alone
 may add the specified isolated order executor; money movement remains banned.
 
@@ -81,7 +87,8 @@ application environment variables. A real dotenv file is never auto-read.
 
 The guided first-run flow specified for Stage H will be install, then
 `python -m vws setup`, `python -m vws start`, and review cards in your private
-Telegram chat. Setup, start and the bot are not available yet. Setup will save
+Telegram chat. Setup and start are not available yet. The bot component has
+fake-HTTP tests; it has not been connected to your real private chat. Setup will save
 secrets to the native keyring, start in MANUAL + paper, confirm your chat and
 guide you through account-security attestations. It never enables auto mode.
 For commands available at the current stage, see [RUNBOOK.md](RUNBOOK.md).
@@ -95,24 +102,44 @@ python -m ruff check .
 python -m ruff format --check .
 python -m backend.core.check_stage_d
 python -m backend.core.source_guard .
-python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/security backend/net backend/ops backend/telegram scripts vws -c pyproject.toml
+python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/security backend/net backend/ops backend/telegram backend/notifications backend/tax scripts vws -c pyproject.toml
 python -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off --timeout 15
 python -m pip_audit -r requirements-dev.lock --no-deps --disable-pip --progress-spinner off --timeout 15
 python -m detect_secrets scan --all-files --exclude-files '(^|[\\/])(\.venv|backend[\\/]tests|deliveries|\.git|\.mypy_cache|\.pytest_cache|\.ruff_cache|\.hypothesis|__pycache__|mutants|build|dist)[\\/]'
-python -m pytest backend/tests --disable-socket --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov-branch --cov-fail-under=100 --cov-report=term-missing
+python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov-branch --cov-fail-under=100 --cov-report=term-missing
+python scripts/dry_run.py --dry-run NVDA --offline
 ```
 
-On Windows `.venv\Scripts\python.exe -m` can replace python -m. The secrets scan
+On Windows `.venv\Scripts\python.exe -m` can replace python -m. Set
+`$env:PYTHONIOENCODING = 'utf-8'` before the authored-source typing wrapper;
+it runs strict mypy and checks the source guard. The secrets scan
 emits JSON; an empty results object is required. Synthetic tests and the full
 source delivery are excluded from that heuristic scan, not from the AST guard.
 The guard checks all authored Python files, with only its banned-list constants
 module exempt. The pre-commit configuration provides the same local source checks.
 
-See STATUS.md for the final combined audit-fixes results and exact commands for
-checks marked UNVERIFIED. The coverage gate includes every risk module, the
-state machine and Stage C tax contracts. Callback mutation tests, the
-end-to-end dry run and Docker build belong to later stages. PostgreSQL runtime,
-Docker, mutation testing and real paper API integration are not locally verified.
+See [technical status](docs/STATUS.md) for actual counts and
+[verification](VERIFY.md) for exact reproduction commands. The coverage gate
+includes risk, state, compliance contracts, fundamentals, notifications and tax.
+Linux CI has separate mutation and disposable PostgreSQL jobs plus the container
+build. Remote CI, PostgreSQL runtime, Docker, mutation testing and real paper
+API integration remain UNVERIFIED until they run. No push is authorized here.
+
+Run the Linux-only checks in an activated venv on an isolated Linux checkout:
+
+```text
+python -m mutmut run
+python -m mutmut results --all > /tmp/vws-mutants.txt
+python -m scripts.check_mutations /tmp/vws-mutants.txt
+python -m pytest -q backend/tests/test_postgres.py --postgres-test-url 'postgresql+psycopg://vws_ci:CI_FIXTURE_ONLY@127.0.0.1:5432/vws_ci' # pragma: allowlist secret - public disposable CI fixture
+```
+
+The PostgreSQL command requires a disposable local PostgreSQL 16 database and
+user both named `vws_ci`; the password shown is a public CI fixture. Tests never
+discover an owner database or dotenv. All generated test schemas are isolated.
+For the container build, copy `.env.example` to `.env` only in a disposable
+checkout, then run `docker compose build`. The non-root package opens no ports;
+its startup and healthcheck CLI depend on Stage H and are not certified yet.
 
 ## Secure your accounts
 

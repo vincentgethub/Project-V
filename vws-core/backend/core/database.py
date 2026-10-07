@@ -37,7 +37,7 @@ from backend.core.clock import ensure_utc
 from backend.core.errors import DatabaseError, LedgerIntegrityError, SafetyError
 from backend.core.money import money_to_scaled, scaled_to_money, validate_cent_price
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class MoneyType(TypeDecorator[Decimal]):
@@ -520,6 +520,46 @@ class TradeTicket(LedgerRecord):
         return self.id
 
 
+class TicketEvent(LedgerRecord):
+    """GD-06: one append-only placed/skipped follow-up per approved ticket.
+
+    Separate additive table preserves the earlier ApprovalEvent CHECK and its
+    single decision constraint without rewriting any existing ledger row.
+    """
+
+    __tablename__ = "ticket_events"
+    __table_args__ = (
+        CheckConstraint("action IN ('TICKET_PLACED', 'TICKET_SKIPPED')", name="ck_ticket_action"),
+        CheckConstraint("telegram_user_id > 0", name="ck_ticket_user"),
+    )
+    ticket_id: Mapped[UUID] = mapped_column(
+        ForeignKey("trade_tickets.id"), nullable=False, unique=True
+    )
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class JobRun(LedgerRecord):
+    """GD-04: complete or failed scheduled runs remain immutable."""
+
+    __tablename__ = "job_runs"
+    __table_args__ = (
+        CheckConstraint("finished_at >= started_at", name="ck_job_interval"),
+        CheckConstraint("duration_ms >= 0", name="ck_job_duration"),
+        CheckConstraint("outcome IN ('PASS', 'FAIL', 'SKIPPED')", name="ck_job_outcome"),
+        CheckConstraint(
+            "job IN ('daily_scan', 'premarket_check', 'position_monitor', 'news_watch', 'weekly_report', 'housekeeping')",
+            name="ck_job_name",
+        ),
+    )
+    job: Mapped[str] = mapped_column(String(32), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(8), nullable=False)
+    counts: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class LLMCall(LedgerRecord):
     """GD-01: exact observed costs; missing transport usage is explicitly unknown."""
 
@@ -632,6 +672,8 @@ LEDGER_MODELS: tuple[type[LedgerRecord], ...] = (
     ApprovalEvent,
     AlertEvent,
     TradeTicket,
+    TicketEvent,
+    JobRun,
     LLMCall,
     SecurityEvent,
 )
@@ -724,11 +766,12 @@ def prepare_panic_schema(engine: Engine) -> None:
         if "schema_meta" in existing:
             with engine.connect() as connection:
                 version = connection.scalar(select(SchemaMeta.version).where(SchemaMeta.id == 1))
-            if version == 2:
+            if version in {2, 3}:
                 expected = {
                     name
                     for name in Base.metadata.tables
-                    if name != NewsHeadlineRecord.__tablename__
+                    if name not in {TicketEvent.__tablename__, JobRun.__tablename__}
+                    and (version != 2 or name != NewsHeadlineRecord.__tablename__)
                 }
                 if existing != expected:
                     raise DatabaseError("Emergency ledger table inventory is incompatible")

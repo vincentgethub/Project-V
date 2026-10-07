@@ -20,6 +20,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Explicit private paper-only configuration file; integration only",
     )
+    parser.addoption(
+        "--postgres-test-url",
+        default=None,
+        help="Explicit disposable loopback vws_ci database only; never owner storage",
+    )
 
 
 def pytest_asyncio_loop_factories() -> dict[str, Callable[[], asyncio.AbstractEventLoop]]:

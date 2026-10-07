@@ -213,11 +213,23 @@ def _all_records(ledger: Ledger, clock: FrozenClock) -> dict[type[LedgerRecord],
         telegram_message_id=456,
         reason="delivery fixture",
     )
-    ledger.record_trade_ticket(
+    ticket = ledger.record_trade_ticket(
         alert.id,
         telegram_user_id=789,
         reasons=[{"rule_id": "CRO-01", "passed": True}],
         valid_until=alert.expires_at,
+    )
+    from backend.core.database import JobRun, TicketEvent
+
+    ledger.append(TicketEvent, ticket_id=ticket.id, action="TICKET_PLACED", telegram_user_id=789)
+    ledger.append(
+        JobRun,
+        job="daily_scan",
+        started_at=clock.now(),
+        finished_at=clock.now(),
+        outcome="PASS",
+        counts={"alerts": 1},
+        duration_ms=0,
     )
     ledger.append(
         LLMCall,

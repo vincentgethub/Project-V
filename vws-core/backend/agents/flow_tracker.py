@@ -6,7 +6,12 @@ from datetime import datetime
 from backend.agents.providers import FlowProvider, NullFlowProvider
 from backend.core.clock import ensure_utc
 from backend.core.content import injection_suspect, sanitize_text
-from backend.core.errors import ConfigurationError, DataIntegrityError, ProviderError
+from backend.core.errors import (
+    ConfigurationError,
+    DataIntegrityError,
+    EgressDeniedError,
+    ProviderError,
+)
 from backend.domain.models import FlowSignal, ProviderStatus, validate_symbol
 
 
@@ -35,6 +40,8 @@ class FlowTracker:
             ):
                 raise DataIntegrityError("GD-03: flow evidence identifiers are invalid")
             return result
+        except EgressDeniedError:
+            raise
         except (TimeoutError, ProviderError):
             return FlowSignal(status=ProviderStatus.UNAVAILABLE)
         except DataIntegrityError:
