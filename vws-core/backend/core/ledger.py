@@ -430,7 +430,14 @@ class Ledger:
                 elif not isinstance(value, dict):
                     raise DataIntegrityError("Ledger object fields require JSON objects")
                 _json_value(value)
-            if column.name in {"qty", "input_tokens", "output_tokens", "latency_ms"}:
+            if column.name in {
+                "qty",
+                "input_tokens",
+                "output_tokens",
+                "latency_ms",
+                "version",
+                "source_version",
+            }:
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise DataIntegrityError("Counts and whole shares require integers")
             if column.name in {"telegram_chat_id", "telegram_message_id", "telegram_user_id"}:
@@ -448,6 +455,7 @@ class Ledger:
                 "ticket_sha256",
                 "stable_id",
                 "headline_sha256",
+                "backup_sha256",
             }:
                 if not isinstance(value, str) or len(value) != 64:
                     raise DataIntegrityError(

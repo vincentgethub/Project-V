@@ -426,6 +426,25 @@ async def test_GD_06_details_read_only_all_rules_and_fundamentals(harness: Harne
 
 
 @pytest.mark.asyncio
+async def test_GD_06_valid_hmac_unknown_proposal_is_ignored(harness: Harness) -> None:
+    h = harness
+    proposal_id = uuid4()
+    result = await h.gate.handle(
+        CallbackClick(
+            user_id=123,
+            chat_id=123,
+            message_id=456,
+            chat_type="private",
+            data=callback_data("A", proposal_id, 123, h.settings),
+        ),
+        acknowledge=ack,
+    )
+    assert result.status == "IGNORED" and result.text is None
+    assert h.source.calls == count(h, ApprovalEvent) == count(h, TradeTicket) == 0
+    h.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("action,expected", [("R", "REJECTED"), ("P", "HANDLED"), ("S", "HANDLED")])
 async def test_GD_06_reject_and_followup_before_approval(
     harness: Harness, action: str, expected: str

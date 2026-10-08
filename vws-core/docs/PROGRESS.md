@@ -1,22 +1,23 @@
 # Project V progress
-Last updated: October 7, 2026 - reports and replay passed offline checks
+Last updated: October 8, 2026 - host stage passed offline
 
 ## Where things stand
-Safety, data, research, private alerts, reports and replay passed offline checks.
-Guided setup and auto trading remain unfinished, and live stays locked.
+Research, tickets, host checks and reports pass their offline safety tests.
+Account/tax records, auto trading, validation and learning remain unfinished.
 
 ## What works now
 From the vws-core folder in PowerShell:
 - Read this page: `.venv\Scripts\python.exe -m vws progress`
 - Preview a fake setup: `.venv\Scripts\python.exe scripts/dry_run.py --dry-run NVDA --offline`
 - Replay fake data: `.venv\Scripts\python.exe -m vws replay --start 2026-08-01 --end 2026-10-02 --symbols NVDA --offline-fixtures --workers 1`
-The preview uses RAM. Replay saves labeled fake reports and never opens your DB.
+- Guided configuration: `.venv\Scripts\python.exe -m vws setup`
+Preview and replay do not open your DB. Setup needs confirmation before saving.
 Private approvals create manual tickets after fresh checks; AI starts off.
 Tax defaults are single, Texas state zero and NIIT zero; federal rates are unset.
 
 ## What's being built next
-Guided setup and reliable host startup, followed by account and tax reports,
-paper auto trading, emergency drills, validation and the learning loop.
+Build account and tax records, then paper auto trading,
+emergency drills, validation and the learning loop, in that order.
 
 ## Waiting on you
 Nothing right now for offline work. Setup will later need:
@@ -32,17 +33,19 @@ Do not paste secrets; setup stores keys in the computer's secret store.
 
 ## Not checked yet
 Real broker, bank, Telegram, FRED and SEC checks need setup.
-The full safety run passed 3,709 tests; 44 service checks were skipped.
-The separate seven-year, 20-stock fake replay passed in 88.4 seconds.
+The full safety run passed 4,080 tests; 46 service checks were skipped.
+The current seven-year, 20-stock fake replay passed in 97.7 seconds.
+All required safety and report coverage is 100%; missing history blocks tickets.
 Skipped checks are not passes. Code-changing tests, the optional database,
 container build/runtime and remote CI have not run here; commands are supplied.
 Your secret storage, protections and actual backup remain unchecked.
-Setup/start, tax imports and sale-screen prompts are still being built.
+Containers lack native secret storage; tax imports and sale prompts are unfinished.
 Your DB has not been opened; older versions need a backed-up upgrade.
 No real trading edge or readiness verdict has been established.
 
 ## Try this next
-Run the fake replay command above and read its labeled report.
+After setup: `.venv\Scripts\python.exe -m vws doctor`, then `-m vws start`.
+Start requires verified checks and MANUAL paper. Fake preview/replay remains safe.
 
 ## Safety status
 Default: MANUAL, paper account. No order calls exist; live remains locked.

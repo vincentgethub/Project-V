@@ -37,7 +37,7 @@ from backend.core.clock import ensure_utc
 from backend.core.errors import DatabaseError, LedgerIntegrityError, SafetyError
 from backend.core.money import money_to_scaled, scaled_to_money, validate_cent_price
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class MoneyType(TypeDecorator[Decimal]):
@@ -613,6 +613,21 @@ class SecurityEvent(LedgerRecord):
     ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
+class SchemaVersion(LedgerRecord):
+    """OPS-05: immutable versioned migrations with the verified backup digest."""
+
+    __tablename__ = "schema_version"
+    __table_args__ = (
+        CheckConstraint(
+            "version > source_version AND source_version >= 2", name="ck_migration_forward"
+        ),
+        UniqueConstraint("version", name="uq_migration_version"),
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    backup_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class SchemaMeta(Base):
     """R-02: refuse older schemas instead of silently mixing audit contracts."""
 
@@ -676,6 +691,7 @@ LEDGER_MODELS: tuple[type[LedgerRecord], ...] = (
     JobRun,
     LLMCall,
     SecurityEvent,
+    SchemaVersion,
 )
 
 
@@ -723,6 +739,23 @@ def create_database(url: str) -> Engine:
         raise DatabaseError("Database engine initialization failed") from exc
 
 
+def enable_sqlite_wal(engine: Engine) -> None:
+    """OPS-02: explicit host startup only, after schema/backup verification."""
+    if engine.dialect.name != "sqlite":
+        return
+    if engine.url.database in {None, "", ":memory:"}:
+        raise DatabaseError("Host WAL requires a file-backed SQLite ledger")
+    try:
+        with engine.connect() as connection:
+            mode = connection.exec_driver_sql("PRAGMA journal_mode=WAL").scalar()
+            if mode != "wal":
+                raise DatabaseError("SQLite WAL could not be enabled")
+    except SafetyError:
+        raise
+    except Exception:
+        raise DatabaseError("SQLite WAL setup failed") from None
+
+
 @contextmanager
 def transaction(engine: Engine) -> Iterator[Session]:
     """R-02: serialize SQLite writers; lock the allocation row on PostgreSQL."""
@@ -766,11 +799,15 @@ def prepare_panic_schema(engine: Engine) -> None:
         if "schema_meta" in existing:
             with engine.connect() as connection:
                 version = connection.scalar(select(SchemaMeta.version).where(SchemaMeta.id == 1))
-            if version in {2, 3}:
+            if version in {2, 3, 4}:
                 expected = {
                     name
                     for name in Base.metadata.tables
-                    if name not in {TicketEvent.__tablename__, JobRun.__tablename__}
+                    if name != SchemaVersion.__tablename__
+                    and (
+                        version == 4
+                        or name not in {TicketEvent.__tablename__, JobRun.__tablename__}
+                    )
                     and (version != 2 or name != NewsHeadlineRecord.__tablename__)
                 }
                 if existing != expected:
@@ -811,26 +848,7 @@ def create_schema(engine: Engine) -> None:
                     raise DatabaseError("Persisted ledger columns require an explicit migration")
         Base.metadata.create_all(engine)
         with engine.begin() as connection:
-            if engine.dialect.name == "postgresql":
-                connection.exec_driver_sql(
-                    "CREATE OR REPLACE FUNCTION vws_reject_ledger_mutation() RETURNS trigger "
-                    "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'append-only ledger'; END; $$"
-                )
-            for model in LEDGER_MODELS:
-                table = model.__tablename__
-                for operation in ("UPDATE", "DELETE"):
-                    trigger = f"vws_{table}_{operation.lower()}"
-                    if engine.dialect.name == "sqlite":
-                        connection.exec_driver_sql(
-                            f"CREATE TRIGGER IF NOT EXISTS {trigger} BEFORE {operation} ON {table} "
-                            "BEGIN SELECT RAISE(ABORT, 'append-only ledger'); END"
-                        )
-                    else:
-                        connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {trigger} ON {table}")
-                        connection.exec_driver_sql(
-                            f"CREATE TRIGGER {trigger} BEFORE {operation} ON {table} "
-                            "FOR EACH ROW EXECUTE FUNCTION vws_reject_ledger_mutation()"
-                        )
+            install_append_only_triggers(connection)
         with engine.begin() as connection:
             insert = sqlite_insert if engine.dialect.name == "sqlite" else postgresql_insert
             connection.execute(
@@ -852,3 +870,27 @@ def create_schema(engine: Engine) -> None:
         raise
     except Exception as exc:
         raise DatabaseError("Database schema initialization failed") from exc
+
+
+def install_append_only_triggers(connection: Connection) -> None:
+    """OPS-05: share exact immutable-table protection with additive migration."""
+    if connection.dialect.name == "postgresql":
+        connection.exec_driver_sql(
+            "CREATE OR REPLACE FUNCTION vws_reject_ledger_mutation() RETURNS trigger "
+            "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'append-only ledger'; END; $$"
+        )
+    for model in LEDGER_MODELS:
+        table = model.__tablename__
+        for operation in ("UPDATE", "DELETE"):
+            trigger = f"vws_{table}_{operation.lower()}"
+            if connection.dialect.name == "sqlite":
+                connection.exec_driver_sql(
+                    f"CREATE TRIGGER IF NOT EXISTS {trigger} BEFORE {operation} ON {table} "
+                    "BEGIN SELECT RAISE(ABORT, 'append-only ledger'); END"
+                )
+            else:
+                connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {trigger} ON {table}")
+                connection.exec_driver_sql(
+                    f"CREATE TRIGGER {trigger} BEFORE {operation} ON {table} "
+                    "FOR EACH ROW EXECUTE FUNCTION vws_reject_ledger_mutation()"
+                )

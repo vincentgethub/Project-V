@@ -43,7 +43,7 @@ Stage E supplies deterministic fundamentals and optional public-only summaries.
 Stage F supplies the swarm, private Telegram approval boundary, six scheduled
 job bodies, manual tickets and read-only fill matching. Its offline gate passed
 3,366 tests with 44 unverified checks skipped and complete required branch coverage;
-connected host composition is Stage H work. The project is not
+connected host composition is supplied by Stage H. The project is not
 finished, and no broker order execution path currently exists. Stage I alone
 may add the specified isolated order executor; money movement remains banned.
 
@@ -53,7 +53,15 @@ replay, split-aware cache invalidation and deterministic parallel indicators.
 Its cumulative offline gate passed 3,709 cases with 44 unverified service checks
 skipped; required safety branch coverage is 100%. The separate fixed 20-symbol,
 seven-year replay passed in 88.411 seconds. Synthetic results never certify an
-edge or live readiness. Guided setup and connected runtime remain Stage H.
+edge or live readiness.
+
+Stage H supplies guided native-keyring setup, doctor, one-process host startup,
+locks/heartbeat/watchdog, backed-up additive migration, encrypted maintenance,
+private logging and pinned CI/deployment configuration. Its final offline gate
+passed 4,080 tests, 46 service checks skipped, with complete required branch
+coverage including evaluation. The current fixed replay passed in 97.666 seconds.
+Actual account services, deployment and remote CI remain UNVERIFIED. J follows
+for account history, cash-flow, daily P&L and tax production; I then adds auto mode.
 
 Stage S passed its offline gates on October 5, 2026. The encryption, anchor, drift and
 panic service suite passed 137 offline tests with complete statement and branch
@@ -93,13 +101,58 @@ as historical audit evidence. No
 credentials are needed for these tests. Unit tests block sockets and isolate
 application environment variables. A real dotenv file is never auto-read.
 
-The guided first-run flow specified for Stage H will be install, then
-`python -m vws setup`, `python -m vws start`, and review cards in your private
-Telegram chat. Setup and start are not available yet. The bot component has
-fake-HTTP tests; it has not been connected to your real private chat. Setup will save
-secrets to the native keyring, start in MANUAL + paper, confirm your chat and
-guide you through account-security attestations. It never enables auto mode.
+After installing, run the guided setup and required checks from this folder:
+
+```powershell
+.venv\Scripts\python.exe -m vws setup
+.venv\Scripts\python.exe -m vws doctor
+.venv\Scripts\python.exe -m vws start
+```
+
+Setup saves secrets only in Windows Credential Manager or Linux Secret Service,
+confirms your private Telegram chat and explains account security. Enter your
+FRED key and SEC name/email only there. Cancel restores prior configuration and
+secret entries; append-only audit records remain. Start currently accepts MANUAL
+with paper keys, preserves saved halts, and refuses failed required doctor checks.
+Optional unverified checks remain labeled. Review cards in your private chat;
+approval creates a manual ticket. Account-history production is still pending J,
+so missing history blocks tickets. No real connected operation is certified here.
+The setup/start implementation passed the Stage H offline acceptance gate.
 For commands available at the current stage, see [RUNBOOK.md](RUNBOOK.md).
+
+## Run it 24/7
+
+On Windows, use the same standard user who completed setup. In Task Scheduler,
+create a task triggered **At log on**, running only when that user is logged on.
+Leave **Run with highest privileges** off. Action: `powershell.exe`, arguments
+`-NoProfile -WindowStyle Hidden -File "FULL_PATH\deploy\windows_start.ps1"`, and
+Start in the vws-core folder. Use "Do not start a new instance" and a bounded
+restart policy, for example three retries one minute apart. Do not impose a time
+limit. The script invokes the installed venv and inherits no secret arguments.
+Screen lock can remain enabled. Stopping a foreground process with Ctrl-C drains
+workers and releases its OS lock; a forced Task Scheduler stop is a crash, not a
+graceful shutdown. Startup re-verifies the ledger and never clears a halt.
+
+On Linux, install under `/opt/vws-core` for a dedicated non-root `vws` user and
+complete setup as that user first. Review `deploy/vws.service` before installing
+it. Create its data/logs/backups directories, owned by that user with mode 0700;
+the non-secret `.env` must be 0600. The user's unlocked Secret Service and private
+D-Bus socket must remain available. Set `DBUS_SESSION_BUS_ADDRESS` to that user's
+exact `/run/user/UID/bus` in the service environment; the security guard verifies
+ownership and refuses TCP/alternate buses. A headless host without native secret
+storage cannot start. Install the reviewed unit with `systemctl daemon-reload`
+and `systemctl enable --now vws.service` only after successful setup/doctor.
+SIGTERM drains jobs; the unit limits restarts, memory and tasks and opens no ports.
+Home and runtime-user directories remain read-only so the owned Secret Service
+socket stays visible; source/configuration files are also read-only to the unit.
+These host changes are operator steps; none have been applied by this build.
+
+Docker keeps non-root, read-only, capability-free execution and only the specified
+data/logs/backups mounts. It does not mount a desktop secret-store socket. With
+the current required keyring backend, that container therefore refuses connected
+startup. Build and OS-lock health checks are provided; actual container operation
+and native Linux secret storage remain UNVERIFIED. Use the documented host process
+after setup. There is no plaintext secret fallback.
 
 ## Verify the audited core
 
@@ -114,7 +167,7 @@ python -m bandit -r backend/core backend/domain backend/risk backend/data backen
 python -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off --timeout 15
 python -m pip_audit -r requirements-dev.lock --no-deps --disable-pip --progress-spinner off --timeout 15
 python -m detect_secrets scan --all-files --exclude-files '(^|[\\/])(\.venv|backend[\\/]tests|deliveries|\.git|\.mypy_cache|\.pytest_cache|\.ruff_cache|\.hypothesis|__pycache__|mutants|build|dist)[\\/]'
-python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov-branch --cov-fail-under=100 --cov-report=term-missing
+python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing
 python scripts/dry_run.py --dry-run NVDA --offline
 ```
 
@@ -147,7 +200,8 @@ user both named `vws_ci`; the password shown is a public CI fixture. Tests never
 discover an owner database or dotenv. All generated test schemas are isolated.
 For the container build, copy `.env.example` to `.env` only in a disposable
 checkout, then run `docker compose build`. The non-root package opens no ports;
-its startup and healthcheck CLI depend on Stage H and are not certified yet.
+its startup and healthcheck CLI passed fake host tests. Native secret storage
+is unavailable under these restricted mounts, so connected startup refuses.
 
 ## Secure your accounts
 
@@ -196,7 +250,8 @@ until run on your configured machine; passing fake tests does not attest to them
 
 ## Advanced: explicit manual configuration
 
-The owner-facing setup wizard is pending Stage H. Developers can deliberately
+The owner-facing setup wizard passed its H offline acceptance gate.
+Developers can deliberately
 load a private non-secret configuration with `--env-file .env`; tests never
 read it implicitly. Verify the actual CASH or MARGIN account type rather than
 copying the sample CASH value as an assumption. Keep strategy/schedules in

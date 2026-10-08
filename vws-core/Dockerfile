@@ -17,5 +17,5 @@ COPY docs/PROGRESS.md ./docs/PROGRESS.md
 USER 10001:10001
 HEALTHCHECK --interval=60s --timeout=15s --start-period=90s --retries=3 \
     CMD ["python", "-m", "vws", "--healthcheck"]
-# The host command and runtime heartbeat are composed in Stage H.
+# Host runtime and OS-lock heartbeat are implemented; native keyring is required.
 ENTRYPOINT ["python", "-m", "vws", "start"]

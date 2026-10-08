@@ -314,3 +314,43 @@ async def test_GD_04_open_ticket_exit_warning_requires_bound_iex_quote(
     with Session(h.state.engine) as session:
         run = session.scalar(select(JobRun).where(JobRun.job == "position_monitor"))
         assert run is not None and run.outcome == "FAIL"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["", "dropped", "foreign_symbol", "foreign_snapshot"])
+async def test_OPS_02_refresh_before_research_never_changes_bound_identity(
+    harness: Harness, fault: str
+) -> None:
+    from uuid import uuid4
+
+    from backend.agents.swarm_runner import ResearchRequest
+
+    h = harness
+    jobs, _, api = composition(h)
+    called: list[str] = []
+
+    async def refresh(request: ResearchRequest) -> ResearchRequest | None:
+        called.append(request.candidate.symbol)
+        if fault == "dropped":
+            return None
+        if fault == "foreign_symbol":
+            return request.model_copy(
+                update={"candidate": request.candidate.model_copy(update={"symbol": "SPY"})}
+            )
+        if fault == "foreign_snapshot":
+            return request.model_copy(update={"data_snapshot_id": uuid4()})
+        return request
+
+    jobs.refresh_request = refresh
+    await jobs.bot.start()
+    try:
+        if fault.startswith("foreign"):
+            with pytest.raises(DataIntegrityError, match="changed"):
+                await jobs.daily_scan()
+            assert not api.messages
+        else:
+            result = await jobs.daily_scan()
+            assert result.counts["fresh_setup_dropped" if fault else "sent"] == 1
+        assert called == ["NVDA"]
+    finally:
+        await jobs.bot.stop()

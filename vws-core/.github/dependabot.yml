@@ -1,0 +1,27 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /vws-core
+    schedule:
+      interval: weekly
+    groups:
+      python-pins:
+        patterns: ['*']
+    # Proposed changes require owner review, hash-lock regeneration and all CI gates.
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      action-pins:
+        patterns: ['*']
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /vws-core
+    schedule:
+      interval: weekly
+    groups:
+      image-pins:
+        patterns: ['*']
+    open-pull-requests-limit: 5

@@ -72,12 +72,16 @@ class DeskJobs:
         weekly_report: JobBody,
         maintenance: JobBody,
         fill_poll: Callable[[], Awaitable[JobCounts]],
+        *,
+        refresh_request: Callable[[ResearchRequest], Awaitable[ResearchRequest | None]]
+        | None = None,
     ) -> None:
         if bot.state is not desk.swarm.state or commands.state is not bot.state:
             raise ConfigurationError("GD-04: job bodies must share the defensive desk")
         self.desk, self.bot, self.commands, self.source = desk, bot, commands, source
         self.weekly_report, self.maintenance, self.fill_poll = weekly_report, maintenance, fill_poll
         self.state, self.clock = bot.state, bot.clock
+        self.refresh_request = refresh_request
 
     def bodies(self) -> dict[JobName, JobBody]:
         return {
@@ -130,6 +134,21 @@ class DeskJobs:
             }
         )
         for request in cycle.requests:
+            if self.refresh_request is not None:
+                refreshed = await self.refresh_request(request)
+                if refreshed is None:
+                    counts["fresh_setup_dropped"] += 1
+                    continue
+                refreshed = ResearchRequest.model_validate(refreshed)
+                if (
+                    refreshed.candidate.symbol != request.candidate.symbol
+                    or refreshed.candidate.playbook != request.candidate.playbook
+                    or refreshed.data_snapshot_id != request.data_snapshot_id
+                ):
+                    raise DataIntegrityError(
+                        "Refreshed setup changed its symbol, playbook or data provenance"
+                    )
+                request = refreshed
             result = await self.desk.research(request)
             counts[result.status.lower()] += 1
             if result.status == "ALERT":
@@ -158,6 +177,7 @@ class DeskJobs:
                 evidence = ReviewEvidence.model_validate(
                     await self.source.review(alert.symbol, now)
                 )
+            now = ensure_utc(self.clock.now())
             actions, fund, news = evidence.actions, evidence.fundamental, evidence.news
             if (
                 fund.symbol != alert.symbol
@@ -304,9 +324,9 @@ class DeskJobs:
         return JobCounts(counts={**fills.counts, "exit_suggestions": count})
 
     async def news_watch(self) -> JobCounts:
-        now = ensure_utc(self.clock.now())
         pending = self.pending()
         view = PositionView.model_validate(await self.source.positions())
+        now = ensure_utc(self.clock.now())
         if view.portfolio.account_id != self.commands.account_id or not timedelta(
             0
         ) <= now - view.portfolio.as_of <= timedelta(seconds=self.bot.settings.stale_quote_seconds):
@@ -316,7 +336,10 @@ class DeskJobs:
         for symbol in symbols:
             async with asyncio.timeout(30):
                 news = NewsAssessment.model_validate(await self.source.news(symbol, now))
-            if news.symbol != symbol or news.news.as_of != now:
+            completed = ensure_utc(self.clock.now())
+            if news.symbol != symbol or not timedelta(
+                0
+            ) <= completed - news.news.as_of <= timedelta(seconds=30):
                 raise DataIntegrityError("GD-04: news-watch issuer/time binding failed")
             flag = self._news_flag(news)
             if flag is None:

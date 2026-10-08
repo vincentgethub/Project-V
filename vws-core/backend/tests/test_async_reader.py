@@ -222,3 +222,32 @@ def test_DAT_06_legacy_read_defaults_follow_selected_plan(engine: Engine) -> Non
     assert ResilientReader(clock, state, plan="ALGO_TRADER_PLUS").calls_per_minute == 9000
     with pytest.raises(ProviderError):
         ResilientReader(clock, state, calls_per_minute=181)
+
+
+@pytest.mark.asyncio
+async def test_OPS_02_close_drains_blocking_read_and_refuses_new_work(engine: Engine) -> None:
+    clock = MovingClock(datetime(2026, 9, 29, 15, tzinfo=UTC))
+    state = SystemStateStore(engine, clock, ConsoleNotifier())
+    reader = AsyncAlpacaReader(clock, state)
+    begun, release = threading.Event(), threading.Event()
+
+    def operation() -> str:
+        begun.set()
+        release.wait(2)
+        return "Synthetic completed worker"
+
+    task = asyncio.create_task(reader.run(operation))
+    for _ in range(100):
+        if begun.is_set():
+            break
+        await asyncio.sleep(0.005)
+    assert begun.is_set()
+    closing = asyncio.create_task(reader.aclose())
+    await asyncio.sleep(0)
+    assert not closing.done()
+    release.set()
+    await closing
+    assert await task == "Synthetic completed worker"
+    assert not reader._workers and reader.tripped
+    with pytest.raises(ProviderError):
+        await reader.run(lambda: "must not run")

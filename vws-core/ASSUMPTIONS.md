@@ -360,3 +360,20 @@ delivery and in VERIFY.md.
     report production; H supplies actual connected source, urgent notifier,
     startup, encrypted nightly maintenance and container healthcheck composition.
     F fake callbacks do not certify those later runtime dependencies.
+85. Setup cancellation restores caught configuration and secret changes, while
+    immutable cancellation/audit events remain. Multiple files are not
+    power-loss atomic; an interrupted partial commit is detected as drift.
+86. Linux Secret Service access requires the exact owned Unix user bus and
+    a synchronous thread-local capability. Docker's approved mounts do not
+    supply that native store, so connected container startup is refused.
+87. Rotation and scheduled encrypted cleanup never remove unauthenticated
+    backups or unrelated paths. Logs rotate ten-MiB chunks into at most five
+    archives per UTC day and expire archives by age. Windows line-ending bytes
+    count toward each chunk's size limit.
+88. Broker quote/trade timestamps are checked against read completion. A quote
+    that arrives during its request is valid; backward clocks or a changed
+    completed session refuse the batch. Future timestamps remain invalid.
+89. Required evaluation branch coverage was omitted from prior commands. The
+    H gate now includes the whole evaluation package and both CI mirrors.
+    Capacity constants retain their production values; tests use smaller
+    restrictive bounds without creating oversized synthetic tapes.

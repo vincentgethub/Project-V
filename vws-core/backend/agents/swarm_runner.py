@@ -418,6 +418,18 @@ class SwarmRunner:
         return p
 
     async def run(self, request: ResearchRequest) -> SwarmResult:
+        from uuid import uuid4
+
+        from structlog.contextvars import bound_contextvars, get_contextvars
+
+        with bound_contextvars(
+            cycle_id=get_contextvars().get("cycle_id", str(uuid4())),
+            proposal_id=None,
+            alert_id=None,
+        ):
+            return await self._checked_run(request)
+
+    async def _checked_run(self, request: ResearchRequest) -> SwarmResult:
         """Typed failures audit and HALT; expected public outages stay visible.
 
         Order rows below are immutable local proposals, not broker requests.
@@ -455,6 +467,9 @@ class SwarmRunner:
             )
             return SwarmResult(status="DROPPED", reasons=("score below minimum",))
         p = self._proposal(request, now, bars)
+        from structlog.contextvars import bind_contextvars
+
+        bind_contextvars(proposal_id=str(p.proposal_id))
         first = self.risk.evaluate(p, request.portfolio, request.market, deployable=request.capital)
         self._audit_risk(first)
         if first.decision != Decision.APPROVED:
@@ -635,6 +650,7 @@ class SwarmRunner:
             config_hash=self.settings.config_hash,
             expires_at=p.expires_at,
         )
+        bind_contextvars(alert_id=str(alert.id))
         facts = (
             (
                 "fundamentals",

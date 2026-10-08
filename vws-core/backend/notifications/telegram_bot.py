@@ -132,6 +132,14 @@ class TelegramBot:
         )
 
     async def deliver(self, alert_id: UUID, chat_id: int) -> bool:
+        from uuid import uuid4
+
+        from structlog.contextvars import bound_contextvars
+
+        with bound_contextvars(cycle_id=str(uuid4()), alert_id=str(alert_id), proposal_id=None):
+            return await self._deliver(alert_id, chat_id)
+
+    async def _deliver(self, alert_id: UUID, chat_id: int) -> bool:
         if not self._admitted or chat_id not in self.settings.telegram_allowed_user_ids:
             raise ConfigurationError("SEC-51: private bot admission required before delivery")
         async with self._delivery_lock:

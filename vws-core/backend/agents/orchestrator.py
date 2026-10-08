@@ -8,12 +8,14 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta
 from enum import StrEnum
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pydantic import Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from structlog.contextvars import bound_contextvars
 
 from backend.core.clock import Clock, ensure_utc
 from backend.core.config import YamlConfig
@@ -63,13 +65,18 @@ class Orchestrator:
         state: SystemStateStore,
         clock: Clock,
         jobs: Mapping[JobName, JobBody],
+        *,
+        on_finished: Callable[[JobRun], Awaitable[None]] | None = None,
     ) -> None:
         self.config = YamlConfig.model_validate(config)
         if set(jobs) != set(JobName) or state.clock is not clock:
             raise ConfigurationError("GD-04: all six jobs and the bound clock are required")
         self.calendar, self.state, self.clock = calendar, state, clock
         self.jobs = dict(jobs)
+        self.on_finished = on_finished
         self._locks = {name: asyncio.Lock() for name in JobName}
+        self._active: set[asyncio.Task[object]] = set()
+        self._closing = False
         self.scheduler = AsyncIOScheduler(timezone="UTC")
         for name in JobName:
             # A minute dispatcher computes close/holiday/DST eligibility from
@@ -153,6 +160,17 @@ class Orchestrator:
         )
 
     async def tick(self, name: JobName) -> None:
+        task = asyncio.current_task()
+        if self._closing or task is None:
+            return
+        self._active.add(task)
+        try:
+            with bound_contextvars(cycle_id=str(uuid4()), job=name.value):
+                await self._tick(name)
+        finally:
+            self._active.discard(task)
+
+    async def _tick(self, name: JobName) -> None:
         if self._locks[name].locked():
             return
         async with self._locks[name]:
@@ -185,7 +203,7 @@ class Orchestrator:
             if finished < started:
                 self.state.escalate(SystemState.HALTED, "GD-04 job clock moved backward")
                 raise DataIntegrityError("GD-04: cannot certify job interval")
-            self.state.ledger.append(
+            finished_run = self.state.ledger.append(
                 JobRun,
                 job=name.value,
                 started_at=started,
@@ -194,14 +212,41 @@ class Orchestrator:
                 counts=counts.counts,
                 duration_ms=max(0, int((loop.time() - start_mono) * 1000)),
             )
+            if self.on_finished is not None:
+                try:
+                    async with asyncio.timeout(30):
+                        await self.on_finished(finished_run)
+                except Exception as exc:
+                    self.state.halt_for_error(exc)
+                    self.state.ledger.append(
+                        SecurityEvent,
+                        kind="JOB_COMPLETION_HOOK_FAILED",
+                        detail={"job": name.value, "error_type": type(exc).__name__},
+                    )
             if cancelled:
                 raise asyncio.CancelledError
 
     def start(self) -> None:
+        if self._closing:
+            raise ConfigurationError("A closed scheduler cannot be restarted")
         self.scheduler.start()
 
     def stop(self) -> None:
+        self._closing = True
         self.scheduler.shutdown(wait=False)
+
+    async def aclose(self) -> None:
+        """Finish cancellation audits before host resources or DB are closed."""
+        self._closing = True
+        if self.scheduler.running:
+            self.stop()
+        await asyncio.sleep(0)  # APScheduler's shutdown is queued on this loop.
+        active = tuple(task for task in self._active if task is not asyncio.current_task())
+        for task in active:
+            task.cancel()
+        if active:
+            async with asyncio.timeout(35):
+                await asyncio.gather(*active, return_exceptions=True)
 
     def healthcheck(self) -> bool:
         """A running scheduler and verified ledger are necessary, not readiness."""

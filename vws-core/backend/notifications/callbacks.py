@@ -159,6 +159,16 @@ class ApprovalGate:
     async def handle(
         self, click: CallbackClick, *, acknowledge: Callable[[str], Awaitable[None]]
     ) -> ClickResult:
+        from uuid import uuid4
+
+        from structlog.contextvars import bound_contextvars
+
+        with bound_contextvars(cycle_id=str(uuid4()), proposal_id=None, alert_id=None):
+            return await self._checked_click(click, acknowledge=acknowledge)
+
+    async def _checked_click(
+        self, click: CallbackClick, *, acknowledge: Callable[[str], Awaitable[None]]
+    ) -> ClickResult:
         try:
             item = CallbackClick.model_validate(click)
             self.ledger.verify_chain()
@@ -183,6 +193,9 @@ class ApprovalGate:
             if not hmac.compare_digest(item.data, expected):
                 self._audit("CALLBACK_BAD_HMAC", item.user_id)
                 return ClickResult(status="IGNORED")
+            from structlog.contextvars import bind_contextvars
+
+            bind_contextvars(proposal_id=str(UUID(hex_id)))
             async with self._lock:
                 return await self._handle(item, action, UUID(hex_id), acknowledge)
         except asyncio.CancelledError:
@@ -204,6 +217,10 @@ class ApprovalGate:
     ) -> ClickResult:
         with Session(self.ledger.engine) as session:
             alert = session.scalar(select(Alert).where(Alert.proposal_id == proposal_id))
+            if alert is not None:
+                from structlog.contextvars import bind_contextvars
+
+                bind_contextvars(alert_id=str(alert.id))
             delivery = (
                 None
                 if alert is None

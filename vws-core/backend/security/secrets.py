@@ -29,10 +29,13 @@ from backend.core.database import SecurityEvent, transaction
 from backend.core.errors import ConfigurationError, DataIntegrityError
 from backend.core.ledger import Ledger
 from backend.core.logging import register_secrets
+from backend.security.native_ipc import native_keyring_call
 
 _NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _ROTATION_LOCK = RLock()
-_LEGACY_PLAID_NAMES = frozenset({"PLAID_ACCESS_TOKEN", "PLAID_TOKEN_PATH", "FERNET_KEY"})
+_LEGACY_PLAID_NAMES = frozenset(
+    {"PLAID_ACCESS_TOKEN", "PLAID_TOKEN_PATH", "FERNET_KEY", "FRED_API_KEY"}
+)
 _LIVE_ENV_ALIASES = frozenset(
     {"BROKER_API_KEY", "BROKER_SECRET_KEY", "ALPACA_API_KEY", "ALPACA_SECRET_KEY"}
 )
@@ -131,7 +134,7 @@ class KeyringSecretStore:
         """SEC-11: a backend failure is unavailable evidence, never a fallback."""
         _name(name)
         try:
-            with self._lock:
+            with self._lock, native_keyring_call():
                 raw = self._backend.get_password(f"vws-core:{name}", "vws")
             if raw is None:
                 return None
@@ -150,7 +153,7 @@ class KeyringSecretStore:
         _name(name)
         raw = _secret(value)
         try:
-            with self._lock:
+            with self._lock, native_keyring_call():
                 self._backend.set_password(f"vws-core:{name}", "vws", raw)
                 observed = self._backend.get_password(f"vws-core:{name}", "vws")
                 if not isinstance(observed, str) or not hmac.compare_digest(observed, raw):
@@ -164,7 +167,7 @@ class KeyringSecretStore:
         """SEC-13: idempotently restore a previously missing native entry."""
         _name(name)
         try:
-            with self._lock:
+            with self._lock, native_keyring_call():
                 if self._backend.get_password(f"vws-core:{name}", "vws") is not None:
                     self._backend.delete_password(f"vws-core:{name}", "vws")
                 if self._backend.get_password(f"vws-core:{name}", "vws") is not None:
@@ -187,7 +190,7 @@ def assert_secret_sources(
     source = os.environ if environment is None else environment
     names = {name.upper() for name in (*source, *dotenv_keys)}
     if names.intersection(_LEGACY_PLAID_NAMES):
-        raise ConfigurationError("Plaid access token must exist only in the native keyring")
+        raise ConfigurationError("Keyring-only credentials must exist only in the native keyring")
     if mode == "AUTO_LIVE" and any(
         name.startswith("ALPACA_LIVE_")
         or name in {"TELEGRAM_BOT_TOKEN", "PLAID_SECRET"}

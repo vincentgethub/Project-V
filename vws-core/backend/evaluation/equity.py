@@ -25,6 +25,8 @@ from backend.evaluation.dividends import (
 from backend.evaluation.edge import EdgeKey, EquityCurve, EquityPoint
 from backend.evaluation.outcomes import Outcome
 
+MAX_EQUITY_SESSIONS = 20000
+
 
 class EquityBuild(FrozenModel):
     status: Literal["AVAILABLE", "UNAVAILABLE"]
@@ -88,7 +90,7 @@ def build_equity_curve(
             raise ValueError("XNYS session endpoints required")
         days: list[date] = [start]
         while days[-1] < end:
-            if len(days) >= 20000:
+            if len(days) >= MAX_EQUITY_SESSIONS:
                 raise ValueError("equity window exceeds its bound")
             days.append(calendar.add_sessions(days[-1], 1))
         if any(

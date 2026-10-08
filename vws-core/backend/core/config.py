@@ -56,7 +56,9 @@ YAML_INTEGER_BOUNDS: Mapping[str, tuple[int, int]] = MappingProxyType(
 YAML_ALLOWED_SETTING_NAMES = frozenset(YAML_INTEGER_BOUNDS) | frozenset(
     {"scan_interval_minutes", "offhours_interval_minutes"}
 )
-KEYRING_ONLY_ENV_NAMES = frozenset({"plaid_access_token", "plaid_token_path", "fernet_key"})
+KEYRING_ONLY_ENV_NAMES = frozenset(
+    {"plaid_access_token", "plaid_token_path", "fernet_key", "fred_api_key"}
+)
 
 
 def _reject_yaml_environment_keys() -> None:
@@ -195,6 +197,7 @@ class Settings(BaseSettings):
             "log_retention_days": (7, 365),
             "tg_rate_per_min": (1, 20),
             "tg_heavy_rate_per_min": (1, 5),
+            "backup_retention_days": (1, 365),
         }
     )
     SECRET_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -289,12 +292,16 @@ class Settings(BaseSettings):
     )
     telegram_bot_token: SecretStr = Field(default=SecretStr(""), repr=False)
     telegram_allowed_user_ids: tuple[int, ...] = ()
+    telegram_chat_id: int | None = Field(default=None, strict=True, gt=0, le=2**63 - 1)
     telegram_callback_secret: SecretStr = Field(default=SecretStr(""), repr=False)
     newsapi_key: SecretStr = Field(default=SecretStr(""), repr=False)
     anchor_file_path: Path | None = None
     telegram_mask_amounts: bool = False
     secret_max_age_days: int = 90
     log_retention_days: int = 30
+    log_file_path: Path | None = None
+    backup_dir: Path = Path("data/backups")
+    backup_retention_days: int = 30
     tg_rate_per_min: int = 20
     tg_heavy_rate_per_min: int = 5
     healthcheck_ping_url: SecretStr = Field(default=SecretStr(""), repr=False)
@@ -355,7 +362,7 @@ class Settings(BaseSettings):
         """R-06: process env cannot silently override YAML-only settings."""
         _reject_yaml_environment_keys()
         if any(name.casefold() in KEYRING_ONLY_ENV_NAMES for name in os.environ):
-            raise ValueError("Plaid access token and backup key must come from the keyring")
+            raise ValueError("Keyring-only credentials cannot appear in environment settings")
         return value
 
     @field_validator("execution_mode", mode="before")
@@ -472,6 +479,13 @@ class Settings(BaseSettings):
         ):
             raise ValueError("LLM_MODEL_NAME must be a nonempty trimmed model name")
         return value
+
+    @field_validator("telegram_chat_id", mode="before")
+    @classmethod
+    def validate_private_chat_id(cls, value: object) -> int | None:
+        if value is None:
+            return None
+        return _bounded_integer(value, "telegram_chat_id", (1, 2**63 - 1))
 
     @field_validator("telegram_allowed_user_ids", mode="before")
     @classmethod

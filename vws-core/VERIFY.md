@@ -1,3 +1,78 @@
+# Stage H verified offline - 2026-10-08
+
+The final cumulative offline safety gate passed **4,080 tests, 46 skipped,
+one perf deselected, two warnings, 1,001.32s**. Required state/risk/contracts,
+fundamentals, notifications, tax and evaluation coverage is **100%: 4,168
+statements / 1,346 branches, zero missing/partial**. H is GREEN OFFLINE.
+The first attempt passed 3,974 cases but failed required coverage (99.97%);
+the missing callback branch and connected quote timing have been addressed.
+The subsequent targeted gate passed eight cases. A later 3,978-case gate passed
+but omitted the required evaluation scope; it was not H certification. The
+final full command below corrects that omission. Its 46 unavailable cases are 45 PostgreSQL
+checks and one explicit-key paper integration, never counted as passes.
+Latest static evidence: 257 strictly typed sources, full AST guard PASS, pip
+check PASS and production Bandit zero findings (32,194 lines, 12 explicitly
+reviewed skips). Both real JSON lock audits matched every selected pin: 62
+runtime and 141 development, with no skips or known vulnerabilities. Generated
+CycloneDX inventories match those locks; the actual CLI accepts the tested flags.
+Amendment 01 section 7 also requires the complete evaluation package. Earlier
+coverage commands omitted it; the final H command below includes that scope.
+The fresh focused evaluation gate passed 364 tests, one perf case deselected,
+one SDK warning, 169.20s; 1,951 statements and 628 branches, 100%, no exclusions.
+Full-history Gitleaks 8.30.1: ten commits, 26.44MB, zero leaks. Authored-source
+secret scan: zero findings. These checks touched no owner DB, dotenv or keyring.
+
+Separate current fixed 20-symbol/seven-year replay: **1 PASS, 4 deselected,
+133.74s overall; replay 97.666s, 443 decisions**, three workers plus parent.
+SHA: `783fe52c18b79f3921628abed5dd05d3969af0549c15347e7a256a684ad1226d`.
+The four other replay CLI cases belong to the full non-perf gate; do not sum them.
+
+Focused history is retained in STATUS.md, including failed attempts and genuine
+fixes. The same cumulative coverage command below is H's required final gate.
+To check the implemented host components independently:
+
+```text
+python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing -m "not perf"
+python -m pytest -q backend/tests/test_host_runtime.py backend/tests/test_process_health.py backend/tests/test_security_cli.py backend/tests/test_scheduler.py backend/tests/test_desk_jobs.py
+python -m pytest -q backend/tests/test_setup_wizard.py backend/tests/test_host_config.py backend/tests/test_doctor.py backend/tests/test_read_checks.py backend/tests/test_broker_clock.py backend/tests/test_host_probes.py
+python -m pytest -q backend/tests/test_native_ipc.py backend/tests/test_secrets.py backend/tests/test_egress.py
+python -m pytest -q backend/tests/test_migrations.py backend/tests/test_backups.py backend/tests/test_watchdog_maintenance.py backend/tests/test_job_health.py
+python -m pytest -q backend/tests/test_supply_chain_h.py backend/tests/test_dependency_audit.py backend/tests/test_account_context.py backend/tests/test_logging.py
+python -m cyclonedx_py requirements requirements.lock --output-format JSON --output-file build/sbom/runtime.json
+python -m cyclonedx_py requirements requirements-dev.lock --output-format JSON --output-file build/sbom/development.json
+```
+
+After owner setup, use `python -m vws doctor`, then `python -m vws start` for
+MANUAL paper. `python -m vws --healthcheck` inspects only the heartbeat and OS
+lock and never reads credentials or storage. Migration is explicit:
+`python -m vws ops migrate --operator NAME`; it backs up before additive DDL.
+Host audit evidence is produced with `python -m vws ops audit-dependencies
+--operator NAME`, never by asserting a CI success on this machine.
+
+Actual owner services, host protections/native stores/backup, Linux runtime,
+remote CI, PostgreSQL and Docker remain UNVERIFIED. Supported Linux CI gates
+are present at the actual Git root and mirrored under vws-core. Local Windows
+reproduction uses a disposable database or synthetic configuration only:
+
+```text
+python -m pytest -q backend/tests/test_postgres.py --postgres-test-url postgresql+psycopg://vws_ci:CI_FIXTURE_ONLY@127.0.0.1:5432/vws_ci # pragma: allowlist secret - public disposable CI fixture
+python -m mutmut run
+python -m mutmut results > build/mutmut-results.txt
+python -m scripts.check_mutations build/mutmut-results.txt
+docker compose build
+python -m pytest -q backend/tests/test_paper_integration.py --paper-integration-env-file PATH_TO_PRIVATE_PAPER_CONFIG
+```
+
+Do not use an owner database as the disposable target. Native secret storage is
+mandatory; the restricted Docker mounts do not expose the host store and the
+container refuses connected startup. No fallback or secret environment file is
+provided. The Linux unit requires an available unlocked user Secret Service and
+the exact owned user bus. Reviewed references: [systemd execution settings](https://github.com/systemd/systemd/blob/main/man/systemd.exec.xml),
+[Microsoft Task Scheduler contexts](https://learn.microsoft.com/en-us/windows/win32/taskschd/security-contexts-for-running-tasks),
+[CycloneDX usage](https://cyclonedx-bom-tool.readthedocs.io/en/v7.5.0/usage.html).
+Systemd's read-only home/runtime-user view preserves native IPC visibility;
+actual Linux startup is still unverified. No service or scheduled task was installed.
+
 # Stage G/G+ verification - 2026-10-07
 
 The final cumulative non-perf offline gate passed **3,709 tests, 44 skipped,

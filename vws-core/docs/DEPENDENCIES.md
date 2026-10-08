@@ -46,6 +46,7 @@ Only the specified fixed, registered variants are allowed; no generated search.
 - `pytest-asyncio`: offline async admission/scheduler/provider tests.
 - `types-pyyaml`: typed strict YAML handling.
 - `pip-tools`: reproducible runtime/dev locks with package SHA256 hashes.
+- `cyclonedx-bom`: Amendment 03's required CycloneDX SBOM from the hashed locks; CI/build tool only.
 - `setuptools`: pinned build backend and editable local package metadata.
 
 The standalone CI history scanner is Gitleaks 8.30.1. Its Linux archive is

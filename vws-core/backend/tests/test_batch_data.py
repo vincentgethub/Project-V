@@ -419,7 +419,9 @@ async def test_DAT_08_expired_real_sdk_pagination_cannot_publish_cache_or_start_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("quote_kind", ["valid", "future", "stale", "suspect"])
+@pytest.mark.parametrize(
+    "quote_kind", ["valid", "future", "stale", "suspect", "arriving", "backwards", "session_change"]
+)
 async def test_DAT_08_quote_uses_shared_iex_budget_cached_adv_and_durable_status(
     engine: Engine,
     calendar: MarketCalendar,
@@ -435,6 +437,11 @@ async def test_DAT_08_quote_uses_shared_iex_budget_cached_adv_and_durable_status
         timestamp = clock.now() + timedelta(seconds=1)
     elif quote_kind == "stale":
         timestamp -= timedelta(hours=1)
+    elif quote_kind in {"arriving", "backwards"}:
+        clock.current = datetime(2026, 9, 30, 15, tzinfo=UTC)
+        timestamp = clock.now() + timedelta(seconds=1)
+    elif quote_kind == "session_change":
+        clock.current = datetime(2026, 9, 30, 20, 29, 59, tzinfo=UTC)
 
     def observed(
         session: requests.Session, method: str, url: str, *args: Any, **kwargs: Any
@@ -442,6 +449,11 @@ async def test_DAT_08_quote_uses_shared_iex_budget_cached_adv_and_durable_status
         if "/bars" in url:
             return request(session, method, url, *args, **kwargs)
         quote_calls.append(url)
+        if "/trades/" in url:
+            if quote_kind in {"arriving", "session_change"}:
+                clock.current += timedelta(seconds=2)
+            elif quote_kind == "backwards":
+                clock.current -= timedelta(seconds=1)
         assert kwargs["params"]["feed"] == "iex"
         key = "quotes" if "/quotes/" in url else "trades"
         payload = (
@@ -460,13 +472,14 @@ async def test_DAT_08_quote_uses_shared_iex_budget_cached_adv_and_durable_status
         await reader.run(
             partial(provider._status._record_symbol_status, "AAPL", "SUSPECT", None, "new gap")
         )
-    if quote_kind in {"future", "stale"}:
+    if quote_kind in {"future", "stale", "backwards", "session_change"}:
         with pytest.raises((DataIntegrityError, ProviderError)):
             await provider.latest_market("AAPL", batch)
         assert reader.state.current() == SystemState.HALTED
     else:
         context = await provider.latest_market("AAPL", batch)
         assert context.last_price == Decimal("100.00")
+        assert context.last_price_ts == timestamp
         assert context.adv20_usd == Decimal("10000000.000000")
         assert context.status == (
             MarketStatus.SUSPECT if quote_kind == "suspect" else MarketStatus.OK

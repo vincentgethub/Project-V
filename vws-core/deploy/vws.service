@@ -1,0 +1,33 @@
+[Unit]
+Description=Project V guarded paper desk
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=vws
+Group=vws
+WorkingDirectory=/opt/vws-core
+EnvironmentFile=/opt/vws-core/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/vws-core/.venv/bin/python -m vws start
+Restart=on-failure
+RestartSec=15
+KillSignal=SIGTERM
+TimeoutStopSec=150
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Keep the owned user bus visible for native Secret Service; never writable.
+ProtectHome=read-only
+ReadWritePaths=/opt/vws-core/data /opt/vws-core/logs /opt/vws-core/backups
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=1G
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

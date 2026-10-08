@@ -436,7 +436,10 @@ class DataLayer:
             else:
                 context = self.reader.run(lambda: self.provider.latest_market(symbol, now))
             context = MarketContext.model_validate(context)
-            validate_quote(context, now, self.config, self.calendar)
+            completed_at = ensure_utc(self.clock.now())
+            if completed_at < now:
+                raise DataIntegrityError("DAT-02: clock moved backwards during quote read")
+            validate_quote(context, completed_at, self.config, self.calendar)
             self._status._reload_symbol_status()
             if symbol in self._status._suspect:
                 context = context.model_copy(update={"status": MarketStatus.SUSPECT})
@@ -720,6 +723,10 @@ class AlpacaMarketData:
             )
             q = quote[symbol]
             t = trade[symbol]
+            completed_at = ensure_utc(self.reader.clock.now())
+            if completed_at < now:
+                raise DataIntegrityError("DAT-02: clock moved backwards during quote read")
+            now = completed_at
             bid, ask = _provider_money(q["bp"]), _provider_money(q["ap"])
             if ask < bid:
                 raise DataIntegrityError("DAT-02: invalid bid/ask")
@@ -1321,6 +1328,14 @@ class AsyncAlpacaMarketData:
         ):
             raise DataIntegrityError("DAT-02: quote/trade symbol differs from request")
         q, t = quote[symbol], trade[symbol]
+        completed_at = ensure_utc(self.reader.clock.now())
+        if completed_at < now or batch.through != _eligible_session(
+            self.calendar, completed_at, self.delay
+        ):
+            raise DataIntegrityError(
+                "DAT-01/02: clock or completed session changed during quote read"
+            )
+        now = completed_at
         bid, ask = _provider_money(q["bp"]), _provider_money(q["ap"])
         if ask < bid:
             raise DataIntegrityError("DAT-02: invalid bid/ask")

@@ -215,6 +215,16 @@ class AsyncAlpacaReader:
         if not worker.cancelled():
             worker.exception()
 
+    async def aclose(self) -> None:
+        """Refuse new reads and await admitted threads before closing clients."""
+        self.tripped = True
+        workers = tuple(self._workers)
+        if workers:
+            async with asyncio.timeout(self.deadline_seconds + 1):
+                await asyncio.shield(asyncio.gather(*workers, return_exceptions=True))
+        if self._halt_task is not None:
+            await asyncio.shield(self._halt_task)
+
     async def run(self, operation: Callable[[], ReadT], *, budget_request: bool = False) -> ReadT:
         """DAT-04/08: preserve one deadline across retries and all SDK pages."""
         if self.tripped:

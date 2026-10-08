@@ -33,6 +33,7 @@ from backend.core.database import (
     ResearchReport,
     RiskDecision,
     RiskRuleResult,
+    SchemaVersion,
     SecurityEvent,
     Signal,
     SystemControl,
@@ -187,6 +188,7 @@ def _all_records(ledger: Ledger, clock: FrozenClock) -> dict[type[LedgerRecord],
             event_type="ESCALATE",
         )
     ledger.append(ConfigSnapshot, config_hash="d" * 64, settings={"paper_trading": True})
+    ledger.append(SchemaVersion, version=5, source_version=4, backup_sha256="e" * 64)
     alert = ledger.append(
         Alert,
         proposal_id=order.proposal_id,

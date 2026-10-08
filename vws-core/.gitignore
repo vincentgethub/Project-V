@@ -38,5 +38,6 @@ gitleaks*.json
 /backups/
 /logs/
 *.vwsbak
+*.bak-*
 compile-*.log
 secrets-report.json

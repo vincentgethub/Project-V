@@ -19,6 +19,7 @@ from backend.evaluation.replay import ReplayRequest
 from backend.evaluation.weekly import SYNTHETIC_NOTICE
 
 SYNTHETIC = SYNTHETIC_NOTICE
+MAX_FIXTURE_SESSIONS = 20000
 
 
 def offline_settings() -> Settings:
@@ -89,7 +90,7 @@ def seal_offline_fixtures(
         dates = list(calendar.previous_sessions(first, 200))
         dates.append(first)
         while dates[-1] < last:
-            if len(dates) >= 20000:
+            if len(dates) >= MAX_FIXTURE_SESSIONS:
                 raise ValueError("synthetic tape exceeds its bound")
             dates.append(calendar.add_sessions(dates[-1], 1))
         bars: list[Bar] = []

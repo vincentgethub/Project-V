@@ -76,6 +76,7 @@ from backend.evaluation.weekly import (
 from backend.indicators.replay import SymbolGates, precompute_symbol
 from backend.risk.risk_cro import STATE_RANK, ChiefRiskOfficer
 
+MAX_REPLAY_DECISIONS = 100000
 IDENTITY = UUID("14a44fba-f801-468d-b619-f3cbdc6af2bb")
 NOTICE = "Hypothetical starting cash/funding; no deposits, withdrawals, leverage or broker execution. Sale proceeds excluded from entry cash until T+1."
 
@@ -503,7 +504,7 @@ def replay(
                         decision_indices[identity] = len(decisions)
                         decisions.append(ReplayDecision(outcome=outcome, verdict=verdict))
                         contexts[identity] = ctx
-                        if len(decisions) > 100000:
+                        if len(decisions) > MAX_REPLAY_DECISIONS:
                             raise DataIntegrityError("EV-03: replay decision bound exceeded")
                         if verdict.decision == Decision.APPROVED:
                             pending[identity] = outcome

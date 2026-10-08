@@ -51,6 +51,19 @@ jobs:
         run: |
           python -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off --timeout 15
           python -m pip_audit -r requirements-dev.lock --no-deps --disable-pip --progress-spinner off --timeout 15
+      - name: CycloneDX SBOMs from both hashed locks
+        # VERIFY: https://cyclonedx-bom-tool.readthedocs.io/en/v7.5.0/usage.html
+        run: |
+          mkdir -p build/sbom
+          python -m cyclonedx_py requirements requirements.lock --output-format JSON --output-file build/sbom/runtime.json
+          python -m cyclonedx_py requirements requirements-dev.lock --output-format JSON --output-file build/sbom/development.json
+      - name: Upload public dependency inventories
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0; official tag verified 2026-10-08
+        with:
+          name: dependency-sboms
+          path: '**/build/sbom/*.json'
+          if-no-files-found: error
+          retention-days: 30
       - name: Scan authored files for secrets
         run: |
           python -m detect_secrets scan --all-files --exclude-files '(^|[\\/])(\.venv|backend[\\/]tests|deliveries|\.git|\.mypy_cache|\.pytest_cache|\.ruff_cache|\.hypothesis|__pycache__|mutants|build|dist)[\\/]' > /tmp/vws-secrets.json
@@ -60,7 +73,7 @@ jobs:
           git diff-tree --root --no-commit-id --name-only -r HEAD > /tmp/vws-changed-files.txt
           python -c "from pathlib import Path; from vws.progress import read_progress, require_progress_update; read_progress(); require_progress_update(tuple(Path('/tmp/vws-changed-files.txt').read_text().splitlines()))"
       - name: Offline tests and complete risk/state/fundamentals/card/tax branch coverage
-        run: python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov-branch --cov-fail-under=100 --cov-report=term-missing
+        run: python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing
       - name: Build non-root container from synthetic configuration
         run: |
           cp .env.example .env

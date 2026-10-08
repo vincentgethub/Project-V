@@ -14,7 +14,7 @@ from pydantic import SecretStr
 from sqlalchemy.engine import Engine, make_url
 
 from backend.core.clock import SystemClock
-from backend.core.config import Settings, load_settings, load_yaml_config
+from backend.core.config import Settings, YamlConfig, load_settings, load_yaml_config
 from backend.core.database import create_database, create_schema, prepare_panic_schema
 from backend.core.errors import ConfigurationError, DataIntegrityError, ProviderError
 from backend.core.ledger import Ledger
@@ -25,6 +25,7 @@ from backend.net.egress import EgressPolicy, SDKSocketGuard, build_allowlist
 from backend.net.http import configure_network, make_client
 from backend.ops.anchors import LedgerAnchors
 from backend.ops.backups import BackupService
+from backend.ops.doctor import DoctorResult
 from backend.ops.security import ACCOUNT_ITEMS, ConfigDriftGuard, SecurityOps, effective_config_hash
 from backend.security.permissions import check_permissions
 from backend.security.secrets import (
@@ -33,6 +34,7 @@ from backend.security.secrets import (
     assert_secret_sources,
 )
 from backend.telegram.security import bot_security_findings
+from vws.host_config import load_host_settings
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -60,11 +62,17 @@ class SecurityContext:
         )
 
 
-def open_context(env_file: Path | None = None, *, for_panic: bool = False) -> SecurityContext:
+def open_context(
+    env_file: Path | None = None, *, for_panic: bool = False, store: SecretStore | None = None
+) -> SecurityContext:
     """SEC-10: private dotenv is read only on an explicit command option."""
     engine: Engine | None = None
     try:
-        settings = load_settings(env_file=env_file)
+        settings = (
+            load_settings(env_file=env_file)
+            if store is None
+            else load_host_settings(PROJECT, env_file, store)
+        )
         keys: tuple[str, ...] = ()
         if env_file is not None:
             text = env_file.read_text(encoding="utf-8-sig")
@@ -77,7 +85,7 @@ def open_context(env_file: Path | None = None, *, for_panic: bool = False) -> Se
             env_file=env_file,
             data_dir=PROJECT / "data",
             logs_dir=PROJECT / "logs",
-            backups_dir=PROJECT / "backups",
+            backups_dir=backup_directory(settings),
             db_path=db_path if db_path is not None and db_path.exists() else None,
             mode="MANUAL" if for_panic else settings.execution_mode,
         )
@@ -117,6 +125,12 @@ def local_database_path(settings: Settings) -> Path | None:
     return Path(str(url.database)).resolve()
 
 
+def backup_directory(settings: Settings) -> Path:
+    """OPS-04: bind relative BACKUP_DIR to the project, never the caller's cwd."""
+    selected = settings.backup_dir
+    return selected if selected.is_absolute() else PROJECT / selected
+
+
 def configure_egress(context: SecurityContext) -> SDKSocketGuard:
     """SEC-31/32: explicit network startup verifies YAML grants first."""
     settings = context.settings
@@ -131,7 +145,7 @@ def configure_egress(context: SecurityContext) -> SDKSocketGuard:
         build_allowlist(
             mode=settings.execution_mode,
             plaid_env=settings.plaid_env,
-            llm_enabled=settings.llm_daily_budget_usd > 0,
+            llm_enabled=settings.llm_enabled,
             llm_base_url=settings.llm_base_url,
             healthcheck_url=settings.healthcheck_ping_url.get_secret_value() or None,
             rss_urls=yaml.news.rss_urls,
@@ -316,7 +330,7 @@ def doctor(context: SecurityContext, store: SecretStore) -> tuple[str, ...]:
         env_file=context.env_file,
         data_dir=PROJECT / "data",
         logs_dir=PROJECT / "logs",
-        backups_dir=PROJECT / "backups",
+        backups_dir=backup_directory(context.settings),
         db_path=local_database_path(settings),
         mode=settings.execution_mode,
     ):
@@ -367,8 +381,56 @@ def doctor(context: SecurityContext, store: SecretStore) -> tuple[str, ...]:
     return tuple(messages)
 
 
+async def doctor_result(context: SecurityContext, store: SecretStore) -> DoctorResult:
+    """OPS-01: actual checklist; optional observations remain explicitly unverified."""
+    from backend.data.market_calendar import MarketCalendar
+    from backend.domain.instruments import InstrumentRegistry
+    from backend.ops.doctor import Doctor
+    from backend.ops.host import inspect_host
+    from backend.ops.read_checks import ReadChecksClient
+
+    config = load_yaml_config(
+        PROJECT / "config/config.yaml",
+        allowed_symbols=InstrumentRegistry.from_csv(PROJECT / "config").symbols,
+        settings=context.settings,
+    )
+    configure_egress(context)
+    host = await asyncio.to_thread(inspect_host, PROJECT / "data")
+    return await Doctor(
+        context.settings,
+        config,
+        context.state,
+        MarketCalendar(),
+        context.ledger.clock,
+        store,
+        ReadChecksClient(_require_network_policy(context, config), context.ledger.clock),
+        project=PROJECT,
+        host_findings=host,
+    ).run()
+
+
+def _require_network_policy(context: SecurityContext, config: YamlConfig) -> EgressPolicy:
+    """SEC-31: construct the same validated grants for explicit read clients."""
+    settings = context.settings
+    return EgressPolicy(
+        build_allowlist(
+            mode=settings.execution_mode,
+            plaid_env=settings.plaid_env,
+            llm_enabled=settings.llm_enabled,
+            llm_base_url=settings.llm_base_url,
+            healthcheck_url=settings.healthcheck_ping_url.get_secret_value() or None,
+            rss_urls=config.news.rss_urls,
+            news_provider=settings.news_provider,
+            extra_hosts={entry.host: entry.comment for entry in config.egress.extra_hosts},
+        ),
+        context.ledger,
+    )
+
+
 def backups(context: SecurityContext, store: SecretStore) -> BackupService:
-    return BackupService(context.ledger, context.ledger.clock, store, PROJECT / "backups")
+    return BackupService(
+        context.ledger, context.ledger.clock, store, backup_directory(context.settings)
+    )
 
 
 def attest_item(value: str) -> str:

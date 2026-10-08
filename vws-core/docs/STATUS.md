@@ -15,6 +15,82 @@ docs/FINAL_REPORT.md with per-stage gates, the final cumulative offline/replay
 result, every unverified prerequisite, unmet spec IDs, known risks and exact
 setup/doctor/paper-start commands; then stop. No AUTO_LIVE or live trading.
 
+## Stage H GREEN OFFLINE - October 8
+
+The final cumulative offline gate passed **4,080 tests, 46 skipped, one perf
+deselected, two warnings, 1,001.32s**. All required coverage, including evaluation,
+is **100%: 4,168 statements and 1,346 branches, zero missing/partial**.
+The 46 skips are 45 explicit PostgreSQL cases and one explicit-key paper check,
+never passes. The separately recorded fixed replay adds one distinct passed case;
+its 97.666-second run/443 decisions and SHA are retained below. Offline success
+does not verify owner services, deployment, mutation, PostgreSQL, Docker or CI.
+
+| Requirement | Implementation | Offline evidence / operational limit |
+| --- | --- | --- |
+| OPS-01; RT-01 folded into H | ops/doctor.py, host.py, read_checks.py; data/broker_clock.py; vws/security_cli.py | test_doctor.py / test_host_probes.py / test_broker_clock.py / test_read_checks.py: required failures, optional UNVERIFIED, broker identity, five-second skew, strict dates/early close/DST/cache, native probes; actual account/host remains UNVERIFIED |
+| WZ-01..10; TAX_PROFILE defaults | vws/setup.py, setup_cli.py, host_config.py; ops/apply_config.py; README.md | test_setup_wizard.py / test_host_config.py: revised order, retry/skip unsets unknown evidence, hidden native secrets, private confirmation, cancellation restores files/keyring, names-only audit, no DB before confirmation, rerun/section isolation, MANUAL lock, single/Texas zero/NIIT zero/federal unset |
+| OPS-02; private process health | vws/runtime_cli.py, __main__.py; ops/runtime.py, process.py, desk_source.py, account_context.py; agents/orchestrator.py, jobs.py | test_host_runtime.py / test_process_health.py / test_security_cli.py / test_desk_jobs.py / test_account_context.py: six connected bodies, no execution import, bound per-candidate refresh, missing J evidence blocks, actual OS lock, WAL, signal cleanup/draining, saved HALT, bounded heartbeat, retry retained urgent notice |
+| OPS-03; AX-43 foundation | ops/watchdog.py, job_health.py; orchestrator completion hook | test_watchdog_maintenance.py / test_job_health.py: missed close+90, three failures, durable dedup, success-only guarded bounded HTTPS ping, no redirects; actual Telegram/dead-man service remains UNVERIFIED |
+| OPS-04; SEC-40/42 | ops/maintenance.py, backups.py; runtime_cli nightly composition | test_watchdog_maintenance.py / test_backups.py: online authenticated scratch restore, explicit retention, corruption refuses pruning, nightly anchors/private notice; real owner restore/off-box anchor remains UNVERIFIED |
+| OPS-05 | ops/migrations.py; vws/migrate_cli.py; core/database.py schema v5 | test_migrations.py / test_ledger.py / test_security_cli.py: only additive DDL for exact legacy v2/v3/v4 layouts, verified encrypted backup first, old hashes intact, transactional failure rollback; PostgreSQL automated upgrade refused, documented pg_dump/isolated restore |
+| OPS-06; SEC-22..24 | actual Git-root and mirrored .github/workflows/{ci,weekly-audit}.yml, dependabot.yml; ops/dependency_audit.py; pyproject/locks | test_supply_chain_h.py / test_dependency_audit.py: 40-hex actions, read permissions, no PR secrets/automerge, real CycloneDX CLI inventories, current platform lock coverage/hash-bound host audit; mutation/PG/Docker/remote CI remain UNVERIFIED locally |
+| OPS-07; SEC-35/70 | deploy/vws.service, windows_start.ps1; Dockerfile/compose; README.md/RUNBOOK.md | Reviewed standard-user/hidden scheduled-task and non-root systemd instructions, bounded restarts and graceful SIGTERM; no actual deployment performed; restricted Docker cannot access native keyring and refuses connected startup |
+| OPS-08; SEC-75 | core/logging.py; context binding in scheduler/swarm/callback/delivery | test_logging.py: UTF-8 redacted byte limits, UTC day boundary, five size archives/day, age retention 7-365; existing synthetic-secret fixture interference corrected; no external telemetry |
+| SEC-11/32 native Linux compatibility | security/native_ipc.py; secrets.py; net/egress.py | test_native_ipc.py / test_egress.py / test_secrets.py: synchronous thread-local native-store capability for the exact owned /run/user/UID/bus socket only; alternate/TCP buses, symlinks, wrong UID/family, other threads and listeners fail; real Linux Secret Service UNVERIFIED |
+
+Completed focused runs are overlapping evidence, never summed: initial combined
+components 411 PASS; immutable tables 183 PASS; native security union 168 PASS;
+startup/log/scheduler union 87 PASS. The expanded H regression had 555 PASS and
+one log fixture failure: earlier tests registered repeated synthetic x strings,
+which correctly shortened the redacted record. Isolating that registry and testing
+an explicit redacted secret made the final logging/read/worker union pass 64 cases.
+Additional real-factory composition and start/signal cases passed 4; setup CLI
+composition passed 2; account context 8; dependency proof 12; desk refresh 15.
+The first cumulative run passed 3,974 tests, skipped 46 unavailable integration
+cases and deselected one perf case (1,032.93s), but FAILED the required coverage
+gate: 99.97%, with callback branch 220->224 missing. A valid-HMAC click for an
+unknown proposal now checks that path without accessing fresh private evidence.
+Connected quote reads now validate against the injected completion clock; fresh
+quotes arriving during the GET pass, while backward clocks, future timestamps
+and a changed completed session halt. The focused regression passed 197 before
+one new test-fixture construction error; that fixture was corrected, and the
+final targeted callback/quote gate passed 8 cases. The subsequent runs follow below.
+The 46 skips are exactly 45 PostgreSQL cases and one explicit-key paper check.
+The rerun passed **3,978 tests, 46 skipped, one perf deselected, two warnings,
+955.84s**; the original protected scope is **100%: 2,217 statements and 718
+branches**. This does NOT close H: Amendment 01 section 7 also requires 100%
+evaluation branch coverage, omitted from earlier coverage commands. The actual
+Git-root/mirrored CI gate now includes evaluation and its guard test enforces it.
+The initial 241-case evaluation gate failed at 91.93%; the broader 283-case
+gate after new proof tests still failed at 93.25%. The final fresh focused gate
+passed **364 tests, one perf deselected, one SDK warning, 169.20s** with **100%
+coverage: 1,951 statements / 628 branches, zero missing/partial**. Nine safety
+test modules cover malformed filings, account/cost bindings, projection faults,
+publication proofs, capacity limits, cash conservation, splits and held exits.
+Production capacity values remain unchanged; named constants make restrictive
+test bounds possible without manufacturing huge tapes. The full combined gate
+including evaluation passed as recorded above. No guard or coverage exclusion was relaxed.
+Intermediate appended coverage is diagnostic only; final evidence must be a
+fresh run against the final source. No failed run is counted as green.
+
+Strict typing currently passes 257 authored sources; full AST source guard PASS;
+production Bandit zero findings; pip check PASS. Actual JSON pip-audit invocations
+covered all 62 runtime and 141 development pins, with no skipped/vulnerable pin.
+The new direct development dependency cyclonedx-bom==7.5.0 implements SEC-23;
+all earlier pins are retained. Generated public SBOMs belong in build/sbom, an
+existing generated-artifact exclusion; source/config checks are not relaxed.
+
+Schema v5 adds only chained schema_version records. Unknown schemas and altered
+columns are refused. Setup cancellation leaves immutable audit/doctor evidence;
+power loss between multiple file renames cannot be atomic, so startup validates
+the whole configuration and its drift hash. No automatic repair or source writes.
+H's account reader requires Stage J's actual account/lot/fill context, never an
+invented empty history. The weekly report requires a current sealed RAW/SPLIT/ALL
+history and includes the managed account from its first tracked alert; missing or
+stale history refuses. Recorded planned stops never claim broker stop coverage.
+Paper/live/order execution remains I; before I start refuses AUTO modes.
+No real dotenv, owner DB, keyring, FRED/SEC/chat/broker or host setting was used.
+
 ## Stage G/G+ traceability - October 7 (offline gate passed)
 
 | Requirement | Implementation | Current focused evidence / remaining work |

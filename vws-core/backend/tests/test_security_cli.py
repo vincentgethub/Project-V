@@ -3,6 +3,7 @@
 import asyncio
 import getpass
 import json
+import sys
 from collections.abc import Callable, Coroutine, Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -139,6 +140,227 @@ def active_account() -> dict[str, object]:
     }
 
 
+def test_OPS_02_healthcheck_reads_no_configuration_or_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from uuid import uuid4
+
+    from backend.core.clock import SystemClock
+    from backend.ops.process import Heartbeat, ProcessLock, write_heartbeat
+
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(cli, "__file__", str(tmp_path / "vws/__main__.py"))
+
+    def forbidden(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("health must never read settings, secrets or owner database")
+
+    monkeypatch.setattr(module, "open_context", forbidden)
+    monkeypatch.setattr(secret_module, "KeyringSecretStore", forbidden)
+    assert cli.main(["--healthcheck"]) == 1
+    write_heartbeat(
+        data / "runtime-heartbeat.json",
+        Heartbeat(
+            run_id=uuid4(),
+            updated_at=SystemClock().now(),
+            mode="MANUAL",
+            paper=True,
+            scheduler_running=True,
+        ),
+    )
+    with ProcessLock(data / "runtime.lock"):
+        assert cli.main(["--healthcheck"]) == 0
+    assert cli.main(["--healthcheck"]) == 1
+    with pytest.raises(SystemExit):
+        cli.main(["--healthcheck", "doctor"])
+
+
+@pytest.mark.asyncio
+async def test_OPS_02_composition_builds_six_real_jobs_without_orders_or_network(
+    context: module.SecurityContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import AsyncExitStack
+    from dataclasses import replace
+    from shutil import copytree
+
+    from backend.agents.orchestrator import JobName
+    from backend.core.errors import ProviderError
+    from backend.ops.account_context import LedgerAccountContext
+    from backend.ops.doctor import Check, DoctorResult
+    from backend.ops.read_checks import PaperAccountCheck, ReadChecksClient
+    from vws.runtime_cli import compose
+
+    original = Path(__file__).resolve().parents[2]
+    copytree(original / "config", module.PROJECT / "config")
+    context = replace(
+        context,
+        settings=Settings(
+            _env_file=None,
+            broker_account_type="CASH",
+            db_url=SecretStr(str(context.engine.url)),
+            broker_api_key=SecretStr("TEST_ONLY_PAPER_KEY"),
+            broker_secret_key=SecretStr("TEST_ONLY_PAPER_SECRET"),
+            telegram_bot_token=SecretStr("123456:TEST_ONLY_FAKE_TOKEN"),
+            telegram_callback_secret=SecretStr("TEST_ONLY_CALLBACK_KEY_WITH_32_BYTES_MINIMUM"),
+            telegram_allowed_user_ids=(123456,),
+            telegram_chat_id=123456,
+        ),
+    )
+
+    async def paper(
+        _self: ReadChecksClient, _key: SecretStr, _secret: SecretStr
+    ) -> PaperAccountCheck:
+        from decimal import Decimal
+        from uuid import UUID
+
+        from alpaca.trading.enums import AccountStatus
+
+        return PaperAccountCheck(
+            account_id=UUID("00000000-0000-0000-0000-000000000001"),
+            equity=Decimal("10000.00"),
+            buying_power=Decimal("10000.00"),
+            status=AccountStatus.ACTIVE,
+            currency="USD",
+            trading_blocked=False,
+            account_blocked=False,
+            trade_suspended_by_user=False,
+        )
+
+    monkeypatch.setattr(ReadChecksClient, "paper_account", paper)
+    policy = EgressPolicy(build_allowlist(), context.ledger)
+    monkeypatch.setattr(module, "_require_network_policy", lambda _context, _config: policy)
+    checked = DoctorResult(
+        checks=(
+            Check(
+                name="synthetic",
+                status="PASS",
+                required=True,
+                message="Synthetic composition gate",
+                fix="Fixture",
+            ),
+        )
+    )
+    async with AsyncExitStack() as resources:
+        runtime = await compose(context, MemorySecrets(), checked, resources=resources)
+        assert set(runtime.orchestrator.jobs) == set(JobName)
+        assert runtime.settings.execution_mode == "MANUAL" and runtime.settings.paper_trading
+        assert not runtime.orchestrator.scheduler.running
+        assert "backend.execution.alpaca_executor" not in sys.modules
+        with pytest.raises(ProviderError):
+            LedgerAccountContext(
+                context.state, "00000000-0000-0000-0000-000000000001", "PAPER"
+            ).read()
+        from types import MethodType
+
+        from backend.agents.jobs import DeskJobs
+        from backend.ops.desk_source import ConnectedDeskSource
+
+        body = runtime.orchestrator.jobs[JobName.DAILY_SCAN]
+        assert isinstance(body, MethodType)
+        jobs = body.__self__
+        assert isinstance(jobs, DeskJobs)
+        assert isinstance(jobs.source, ConnectedDeskSource)
+        with pytest.raises(ProviderError):
+            await jobs.source.scan()
+        with pytest.raises(ProviderError):
+            await jobs.source.refresh("NVDA")
+        from datetime import timedelta
+
+        from backend.data.data_layer import BatchBars, SymbolBars, _bars_digest
+        from backend.tests.test_peer_strength import inputs
+
+        bars, observed, registry, calendar = inputs()
+        batch = BatchBars(
+            as_of=observed,
+            through=bars[-1].session_date,
+            entries=tuple(
+                SymbolBars(
+                    symbol=symbol, adjustment="ALL", bars=bars, data_sha256=_bars_digest(bars)[0]
+                )
+                for symbol in ("NVDA", "XLK", "SPY")
+            ),
+        )
+
+        async def daily(_symbols: tuple[str, ...] = ()) -> BatchBars:
+            return batch
+
+        monkeypatch.setattr(jobs.source, "daily", daily)
+        facts = await jobs.source.get("NVDA", observed + timedelta(seconds=5))
+        assert facts.relative_spy_return == facts.relative_sector_return == 0
+        assert facts.as_of == observed + timedelta(seconds=5)
+        assert batch.as_of == observed  # stored fetch time is never rewritten
+        await runtime.close_resources()
+    context.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["", "doctor", "auto"])
+async def test_OPS_02_start_cli_refuses_unverified_and_handles_signal_with_host_lock(
+    context: module.SecurityContext, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    import signal
+    from shutil import copytree
+
+    from backend.ops.doctor import Check, DoctorResult
+    from backend.ops.process import ProcessBusyError, ProcessLock
+    from vws import runtime_cli
+
+    copytree(Path(__file__).resolve().parents[2] / "config", module.PROJECT / "config")
+    calls: list[str] = []
+    settings = (
+        context.settings
+        if fault != "auto"
+        else Settings(_env_file=None, broker_account_type="CASH", execution_mode="AUTO_PAPER")
+    )
+    monkeypatch.setattr(runtime_cli, "KeyringSecretStore", MemorySecrets)
+    monkeypatch.setattr(runtime_cli, "load_host_settings", lambda _project, _path, _store: settings)
+    monkeypatch.setattr(module, "open_context", lambda _path, **_kwargs: context)
+    monkeypatch.setattr(runtime_cli, "configure_logging", lambda **_kwargs: None)
+
+    async def doctor(_context: object, _store: object) -> DoctorResult:
+        calls.append("doctor")
+        return DoctorResult(
+            checks=(
+                Check(
+                    name="synthetic",
+                    required=True,
+                    status="UNVERIFIED" if fault == "doctor" else "PASS",
+                    message="Synthetic startup gate",
+                    fix="Fixture",
+                ),
+            )
+        )
+
+    class Runtime:
+        async def run(self, stop: asyncio.Event) -> None:
+            calls.append("run")
+            with pytest.raises(ProcessBusyError):
+                ProcessLock(module.PROJECT / "data/runtime.lock").__enter__()
+            handler = signal.getsignal(signal.SIGTERM)
+            assert callable(handler)
+            handler(signal.SIGTERM, None)
+            await asyncio.sleep(0)
+            assert stop.is_set()
+
+    async def compose(*_args: object, **_kwargs: object) -> Runtime:
+        calls.append("compose")
+        return Runtime()
+
+    monkeypatch.setattr(module, "doctor_result", doctor)
+    monkeypatch.setattr(runtime_cli, "compose", compose)
+    previous = signal.getsignal(signal.SIGTERM)
+    if fault:
+        with pytest.raises(ConfigurationError):
+            await runtime_cli.execute(None)
+        assert calls == (["doctor"] if fault == "doctor" else [])
+    else:
+        await runtime_cli.execute(None)
+        assert calls == ["doctor", "compose", "run"]
+    assert signal.getsignal(signal.SIGTERM) == previous
+    with ProcessLock(module.PROJECT / "data/runtime.lock"):
+        pass
+
+
 def test_PG_05_progress_never_constructs_settings_or_keyring(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -253,20 +475,30 @@ def test_SEC_73_cli_panic_still_persists_halt_with_a_corrupted_ledger(
 def make_pre_news_schema(engine: Engine) -> None:
     """SEC-73: synthetic prior schema, without changing an owner's database."""
     with engine.begin() as connection:
-        from backend.core.database import JobRun, TicketEvent
+        from backend.core.database import JobRun, SchemaVersion, TicketEvent
 
         JobRun.metadata.tables[JobRun.__tablename__].drop(connection)
         TicketEvent.metadata.tables[TicketEvent.__tablename__].drop(connection)
+        SchemaVersion.metadata.tables[SchemaVersion.__tablename__].drop(connection)
         NewsHeadlineRecord.metadata.tables[NewsHeadlineRecord.__tablename__].drop(connection)
         connection.execute(update(SchemaMeta).where(SchemaMeta.id == 1).values(version=2))
 
 
+@pytest.mark.parametrize("version", [2, 4])
 def test_SEC_73_old_schema_panic_halts_without_silent_migration(
     context: module.SecurityContext,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    version: int,
 ) -> None:
-    make_pre_news_schema(context.engine)
+    if version == 2:
+        make_pre_news_schema(context.engine)
+    else:
+        from backend.core.database import SchemaVersion
+
+        with context.engine.begin() as connection:
+            SchemaVersion.metadata.tables[SchemaVersion.__tablename__].drop(connection)
+            connection.execute(update(SchemaMeta).where(SchemaMeta.id == 1).values(version=4))
     with pytest.raises(DatabaseError, match="version"):
         create_schema(context.engine)
     monkeypatch.setenv("DB_URL", str(context.engine.url))
@@ -276,8 +508,8 @@ def test_SEC_73_old_schema_panic_halts_without_silent_migration(
     with transaction(context.engine) as session:
         control = session.get(SystemControl, 1)
         assert control is not None and control.state == SystemState.HALTED.value
-        assert session.scalar(select(SchemaMeta.version)) == 2
-    assert "news_headlines" not in inspect(context.engine).get_table_names()
+        assert session.scalar(select(SchemaMeta.version)) == version
+    assert ("news_headlines" in inspect(context.engine).get_table_names()) == (version == 4)
     assert events(context.engine, "PANIC")
     assert "Local state: HALTED" in capsys.readouterr().out
     with pytest.raises(ConfigurationError, match="verified ledger"):
@@ -524,7 +756,7 @@ def test_SEC_40_host_backup_and_restore_test_use_the_same_fake_keyring_only(
     monkeypatch.setattr(module, "open_context", lambda *_args, **_kwargs: context)
     context.ledger.append(SecurityEvent, kind="BACKUP_SYNTHETIC_FIXTURE", detail={"text": "source"})
     assert cli.main(["ops", "backup"]) == 0
-    saved = tuple((tmp_path / "backups").iterdir())
+    saved = tuple((tmp_path / "data/backups").iterdir())
     assert len(saved) == 1 and saved[0].suffix == ".vwsbak"
     assert b"SQLite format 3" not in saved[0].read_bytes()
     assert cli.main(["ops", "restore-test", "--file", str(saved[0])]) == 0

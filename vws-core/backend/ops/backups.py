@@ -183,7 +183,8 @@ class BackupService:
 
     def create(self) -> BackupResult:
         try:
-            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            directory = controlled_path(self.directory)
+            directory.mkdir(exist_ok=True, mode=0o700)
             name = f"vws-{ensure_utc(self.clock.now()).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex}.vwsbak"
             destination = controlled_path(self.directory / name)
             header, payload = self.encrypt_bytes(self.snapshot_bytes())
@@ -216,6 +217,9 @@ class BackupService:
                     handle.write(image)
                 restored = create_database(f"sqlite:///{database_path.as_posix()}")
                 try:
+                    from backend.ops.migrations import prepare_verification_copy
+
+                    prepare_verification_copy(restored)
                     ledger = Ledger(restored, self.clock)
                     ledger.verify_chain()
                     anchor = LedgerAnchors(ledger, self.clock).create()

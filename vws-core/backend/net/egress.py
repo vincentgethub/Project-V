@@ -31,6 +31,7 @@ _BASE_HOSTS = frozenset(
         "api.telegram.org",
         "www.sec.gov",
         "data.sec.gov",
+        "api.stlouisfed.org",
     }
 )
 _PLAID_HOSTS = {
@@ -237,6 +238,10 @@ class SDKSocketGuard:
             self.policy.deny(purpose="sdk", reason="inbound socket binds are prohibited")
         elif event == "socket.connect":
             endpoint = args[1] if len(args) > 1 else None
+            from backend.security.native_ipc import native_connection_allowed
+
+            if len(args) > 1 and native_connection_allowed(args[0], endpoint):
+                return
             if not isinstance(endpoint, tuple) or len(endpoint) < 2:
                 self.policy.deny(purpose="sdk", reason="unverifiable socket address")
             host, port = endpoint[:2]

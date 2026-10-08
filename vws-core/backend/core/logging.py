@@ -1,10 +1,11 @@
 """R-07: recursively redact credentials before structured log rendering."""
 
 import logging
+import os
 import re
 from collections.abc import Mapping, MutableMapping
-from datetime import date, timedelta
-from logging.handlers import TimedRotatingFileHandler
+from datetime import UTC, date, datetime, timedelta
+from logging.handlers import BaseRotatingHandler
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,7 @@ def configure_logging(
         root.addHandler(configure_daily_log(log_path, retention_days=retention_days, clock=clock))
     structlog.configure(
         processors=[
+            structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.format_exc_info,
             redact_processor,
@@ -124,8 +126,11 @@ class RedactingFormatter(logging.Formatter):
         return _redact_text(super().format(record))
 
 
-class DailyRedactingHandler(TimedRotatingFileHandler):
-    """SEC-14/SEC-75: UTC daily rotation, with age-based permanent expiry."""
+class DailyRedactingHandler(BaseRotatingHandler):
+    """OPS-08/SEC-75: UTC dates, 10 MiB chunks, five per day, age expiry."""
+
+    max_bytes = 10 * 1024 * 1024
+    backup_count = 5
 
     def __init__(self, path: Path, retention_days: int, clock: Clock) -> None:
         """SEC-75: enforce the documented retention range before opening logs."""
@@ -137,15 +142,54 @@ class DailyRedactingHandler(TimedRotatingFileHandler):
             raise ValueError("log retention must be between 7 and 365 days")
         self.retention_days = retention_days
         self.clock = clock
-        super().__init__(
-            path,
-            when="midnight",
-            interval=1,
-            backupCount=retention_days,
-            encoding="utf-8",
-            utc=True,
+        today = ensure_utc(clock.now()).date()
+        self.active_day = (
+            datetime.fromtimestamp(path.stat().st_mtime, UTC).date() if path.exists() else today
         )
+        if self.active_day > today:
+            raise ValueError("log file date is in the future")
+        super().__init__(path, mode="a", encoding="utf-8", delay=True)
         self.setFormatter(RedactingFormatter("%(message)s"))
+
+    def shouldRollover(self, record: logging.LogRecord) -> bool:
+        """Bound redacted bytes; a backward date refuses further writes."""
+        today = ensure_utc(self.clock.now()).date()
+        if today < self.active_day:
+            raise ValueError("log clock moved backward")
+        rendered = self.format(record) + os.linesep
+        if len(rendered.encode("utf-8")) > self.max_bytes:
+            raise ValueError("log record exceeds the file size bound")
+        path = Path(self.baseFilename)
+        return today != self.active_day or (
+            path.exists() and path.stat().st_size + len(rendered.encode("utf-8")) > self.max_bytes
+        )
+
+    def doRollover(self) -> None:
+        """Rotate only exact owned chunks, never overwrite an unrelated path."""
+        from backend.ops.anchors import controlled_path
+
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None
+        base = controlled_path(Path(self.baseFilename))
+        prefix = base.name + "." + self.active_day.isoformat()
+        targets = [
+            controlled_path(base.parent / (prefix if index == 1 else prefix + f".{index}"))
+            for index in range(1, self.backup_count + 1)
+        ]
+        # The entire inventory is verified before the first rename/deletion.
+        if any(path.exists() and not path.is_file() for path in targets):
+            raise ValueError("log chunk provenance is unavailable")
+        if targets[-1].exists():
+            targets[-1].unlink()
+        for source, destination in reversed(tuple(zip(targets[:-1], targets[1:], strict=True))):
+            if source.exists():
+                source.replace(destination)
+        if base.exists():
+            base.replace(targets[0])
+        self.active_day = ensure_utc(self.clock.now()).date()
+        for expired in self.getFilesToDelete():
+            controlled_path(Path(expired)).unlink()
 
     def getFilesToDelete(self) -> list[str]:
         """SEC-75: sparse logging still expires archives by age, not file count."""
@@ -154,11 +198,14 @@ class DailyRedactingHandler(TimedRotatingFileHandler):
         cutoff = ensure_utc(self.clock.now()).date() - timedelta(days=self.retention_days)
         result: list[str] = []
         prefix = path.name + "."
-        for archive in parent.glob(prefix + "????-??-??"):
+        for archive in parent.glob(prefix + "????-??-??*"):
             if archive.is_symlink() or not archive.resolve(strict=True).is_relative_to(parent):
                 raise ValueError("log archive provenance cannot be verified")
             try:
-                archive_day = date.fromisoformat(archive.name[len(prefix) :])
+                suffix = archive.name[len(prefix) :]
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:\.[2-5])?", suffix) is None:
+                    continue
+                archive_day = date.fromisoformat(suffix[:10])
             except ValueError:
                 continue
             if archive_day <= cutoff and archive.is_file():
@@ -180,8 +227,12 @@ def configure_daily_log(
     ):
         raise ValueError("log retention must be between 7 and 365 days")
     path = Path(path)
+    from backend.security.write_guard import protected_output_path
+
+    if protected_output_path(path.absolute().as_posix()):
+        raise ValueError("log output cannot overwrite source or settings")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if path.is_symlink():
+    if path.is_symlink() or path.parent.resolve(strict=True) != path.absolute().parent:
         raise ValueError("log path must not be a symbolic link")
     handler = DailyRedactingHandler(path, retention_days, SystemClock() if clock is None else clock)
     for expired in handler.getFilesToDelete():

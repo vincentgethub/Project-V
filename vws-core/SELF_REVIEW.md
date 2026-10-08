@@ -1,3 +1,42 @@
+# Stage H safety review - GREEN OFFLINE
+
+The final cumulative gate passed 4,080 cases with 46 unavailable service checks
+skipped. Required branch coverage, including the entire evaluation package,
+is 100% (4,168 statements / 1,346 branches). The fixed replay passed separately.
+All five local Git-root pre-commit hooks passed. Real deployment/services remain
+UNVERIFIED; the following review covers implemented offline boundaries.
+
+H's final regression is still running. No connected owner check is claimed.
+
+| Failure route | Applied protection | Evidence |
+| --- | --- | --- |
+| Setup saves an unchecked key after a skipped test | Skip unsets the credential and labels UNVERIFIED; final confirmation and reversible keyring/files apply | test_setup_wizard.py; test_host_config.py |
+| Cancellation deletes audit evidence | Settings/secret rollback leaves append-only events and records cancellation; later startup detects drift | test_setup_wizard.py; test_security_cli.py |
+| Two desktop/service processes operate one ledger | Actual OS-held byte/flock lock for the whole CLI lifecycle; release on exception/crash | test_process_health.py; test_security_cli.py |
+| A stale heartbeat pretends to prove service health | Exact bounded UTC schema, three-minute freshness, paper/scheduler flags and a held OS lock; no config/keyring/DB reads | test_process_health.py; test_security_cli.py |
+| Shutdown closes the DB before pending jobs audit their cancellations | Stop dispatch, await canceled jobs, drain admitted SDK threads, independently attempt polling/resources, durable failed-cleanup HALT | test_host_runtime.py; test_async_reader.py |
+| Restart silently clears a halt | State startup verifies projection/chain; initial notice includes saved state/reason, never resets it | test_host_runtime.py |
+| Urgent delivery disappears after a network error | Bounded thread-safe queue retains its head until confirmed, logs failure, HALTs and lets heartbeat expire | test_host_runtime.py |
+| Linux secret-store IPC bypasses general network policy | Thread-local synchronous store-only capability for exact owned Unix user bus; no other threads/families/endpoints/listeners | test_native_ipc.py; test_egress.py; test_secrets.py |
+| A saved empty history becomes a safe account assumption | Typed account/cohort-bound complete context; absent, stale, malformed or extra fields refuse | test_account_context.py; test_security_cli.py; J producer pending |
+| Long scans reuse stale portfolio/quote evidence | Per-proposal bound refresh repeats hunter before research; changed identity or snapshot refuses | test_desk_jobs.py; existing CRO/swarm fresh evidence tests |
+| A schema upgrade silently rewrites the past | Exact known layouts only; encrypted authenticated backup/scratch restore first; additive DDL and version evidence | test_migrations.py; test_ledger.py |
+| Backups/log cleanup deletes unrelated or corrupt files | Direct owned paths, authentication before backup pruning, exact log names and age/size bounds | test_backups.py; test_watchdog_maintenance.py; test_logging.py |
+| Old dependency success conceals a new lock or partial audit | Actual complete platform inventory and clean output; both lock hashes rechecked and bound in dated event; doctor compares current hashes | test_dependency_audit.py; actual 62/141-pin JSON audits |
+| A public SBOM is read as application configuration | Generated build/sbom output in the existing artifact directory; authored source/config scans unchanged | test_supply_chain_h.py; full source guard |
+| CI exists only in a nested folder GitHub cannot reach | Actual Git-root workflows and byte-identical project mirrors, SHA pins and read permissions | test_supply_chain_h.py |
+| Reports trust a valid row that violates portfolio conservation | Independent cash/held-share/split checks after outcome validation; 100% evaluation branch gate in both CI mirrors | test_evaluation_equity_guards.py; test_evaluation_replay_portfolio_guards.py; test_evaluation_remaining_proofs.py |
+| A forged publication changes counts, dates or accounting policy | Bind exact report membership, metric counts, source hashes, account/cohort, costs and earliest equity; typed refusal | test_evaluation_safety.py; test_evaluation_report_safety.py; test_evaluation_source_safety.py; test_evaluation_ledger_safety.py |
+
+Known limits: multiple configuration renames are reversible on caught faults,
+not power-loss atomic; native Windows/Linux owner checks and real Telegram remain
+unverified; optional PostgreSQL upgrade is refused. Restricted Docker lacks a
+native secret store and refuses connected startup. Systemd must preserve the
+read-only user bus and requires the user's unlocked Secret Service. Planned
+ticket stops are never called broker stop coverage. Weekly reports need current
+sealed history, and the H account reader cannot produce Stage J's history.
+No real credentials, bank operations, orders, deployment or source self-writes.
+
 # Stage G/G+ safety review
 
 This review covers the implemented offline boundary. The final cumulative gate

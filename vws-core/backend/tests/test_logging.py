@@ -3,7 +3,7 @@
 import io
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -219,6 +219,43 @@ def test_SEC_75_daily_log_retention_uses_injected_utc_clock(tmp_path: Path) -> N
         handler.flush()
         assert "access-sandbox-only-log-test" not in path.read_text(encoding="utf-8")
         assert REDACTED in path.read_text(encoding="utf-8")
+    finally:
+        handler.close()
+
+
+def test_OPS_08_size_chunks_and_utc_rollover_preserve_redaction_and_age_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.core import logging as module
+
+    # Other tests register synthetic repeated strings. Isolate this fixture's
+    # registry so its known redacted byte length reaches the rollover boundary.
+    monkeypatch.setattr(module, "_KNOWN_SECRETS", ())
+    secret = "TEST_ONLY_ROTATION_SECRET"
+    module.register_secrets(secret)
+    clock = FrozenClock(datetime(2026, 10, 5, 23, 59, tzinfo=UTC))
+    path = tmp_path / "vws.log"
+    handler = configure_daily_log(path, retention_days=7, clock=clock)
+    handler.max_bytes = 96
+    try:
+        for _index in range(9):
+            handler.emit(
+                logging.LogRecord(
+                    "test", logging.INFO, __file__, 1, "x" * 79 + "-" + secret, (), None
+                )
+            )
+        assert len(tuple(tmp_path.glob("vws.log.2026-10-05*"))) == 5
+        assert all(item.stat().st_size <= 96 for item in tmp_path.iterdir())
+        assert all(secret not in item.read_text() for item in tmp_path.iterdir())
+        handler.clock = FrozenClock(clock.now() + timedelta(minutes=2))
+        handler.emit(logging.LogRecord("test", logging.INFO, __file__, 1, "new day", (), None))
+        assert handler.active_day.isoformat() == "2026-10-06"
+        assert path.read_text(encoding="utf-8").strip() == "new day"
+        handler.clock = FrozenClock(handler.clock.now() + timedelta(days=7))
+        handler.emit(logging.LogRecord("test", logging.INFO, __file__, 1, "age boundary", (), None))
+        assert not tuple(tmp_path.glob("vws.log.2026-10-05*"))
+        assert not tuple(tmp_path.glob("vws.log.2026-10-06*"))
     finally:
         handler.close()
 

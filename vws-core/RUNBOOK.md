@@ -9,7 +9,8 @@ on Windows you can use `.venv\Scripts\python.exe`. Never paste secrets into chat
 
 1. Read `python -m vws progress`; preview `python scripts/dry_run.py --dry-run NVDA --offline`.
    The preview uses RAM and synthetic data and sends nothing.
-2. Connected startup awaits Stage H. Once configured, check `/status`, read the
+2. Run `python -m vws setup`, then `python -m vws doctor`, then `python -m vws start`.
+   Required unverified checks refuse startup. Check `/status`, read the
    full card and Details, then Approve or Reject. Approval first rechecks fresh
    evidence and creates manual instructions; it places no order.
 3. Place a paper LIMIT entry yourself in the broker dashboard. After filling,
@@ -19,17 +20,17 @@ on Windows you can use `.venv\Scripts\python.exe`. Never paste secrets into chat
    remain observed records. Inspect reconciliation warnings; never guess a stop.
 5. Use `/halt REASON` for urgent entry shutdown once the bot is connected.
    Valid held exits and stop protection remain your responsibility in MANUAL.
-   Ctrl-C stops the later host service; reset requires host investigation and RESET.
+   Ctrl-C stops the host service; reset requires host investigation and RESET.
 6. Rotate suspected secrets with the commands below, retain encrypted backups
    and compare ledger anchors. No current paper result authorizes live mode.
 
 ## Start, stop and current mode
 
-Read `python -m vws progress`. The service `setup` and `start` commands arrive in
-Stage H; private Telegram components are implemented in Stage F and tested
-against fake HTTP. Your bot is not connected or running here. Current behavior is MANUAL,
-paper by default, with no order executor. Ordinary stop uses Ctrl-C once the
-service exists. To stop entries during an incident, use panic below.
+Read `python -m vws progress`. The implemented `setup`, `doctor` and `start`
+commands passed the H offline acceptance gate; real services are unverified.
+Your bot is not connected or running here. Current behavior is MANUAL, paper by
+default, with no order executor. Ordinary stop uses Ctrl-C; the host drains
+admitted work and audits cleanup. To stop entries during an incident, use panic below.
 
 Future host upgrades use `ops resume-auto --operator NAME` and the exact phrase
 `RESUME`; live unlock uses `ops enable-live --operator NAME` and
@@ -138,8 +139,9 @@ Windows: dedicated standard user, BitLocker, Defender, automatic updates,
 firewall enabled, and screen lock at five minutes or less. Keep Credential
 Manager local-machine storage available. Doctor currently reads ACLs; broad
 Everyone/Users/Authenticated Users read rights WARN. A world-writable DB refuses.
-Disk-encryption, admin, Defender and firewall probes arrive in Stage H; unknown
-results never count as a pass. Account settings are dated owner attestations.
+Doctor probes disk encryption, admin status, Defender and firewall without
+changing them. Unknown results never count as a pass. Account settings are
+dated owner attestations; they cannot be inferred from a successful API read.
 
 VPS: dedicated vws user; SSH keys only; `PasswordAuthentication no` and
 `PermitRootLogin no`; deny inbound except SSH with ufw; unattended-upgrades and
@@ -168,7 +170,9 @@ restore test; missing evidence stays UNVERIFIED and the latest failure is kept. 
 messages later describe actions rather than request approval. Read `/pnl` with
 cash-flow-adjusted paper/live series kept separate; year end export, compare
 with authoritative 1099-B, then give both to your preparer. Reports are unfinished.
-Logs rotate daily with 30-day retention by default (7-365 allowed). Ledger, tax
+Logs use UTC daily dates, 10 MiB chunks and at most five archived chunks per day,
+plus the active file; retention defaults to 30 days (7-365 allowed). This combines
+OPS-08's size bound with later SEC-75's daily age retention. Ledger, tax
 and security evidence stay permanently, local plus encrypted backups. No telemetry.
 
 ## Reading the edge report and the verdict
@@ -220,3 +224,55 @@ or broker calls. A changed source under an existing indicator key is refused;
 use the selected snapshot's separate cache. Keep backups before host migrations.
 Use a cumulative report window from the first tracked alert when assembling the
 weekly history source, so alerts still open after their first week are included.
+
+## Host startup, health and schema upgrades
+
+Run setup, doctor, then start from the project folder. Startup reads the selected
+private `.env` explicitly, uses the native secret store, binds paper identity,
+verifies the ledger and sets SQLite WAL with a ten-second busy timeout. It holds
+an OS file lock for its entire life. A second process refuses. Saved HALTED and
+REDUCE_ONLY states persist; monitoring and held-exit warnings remain available.
+
+`python -m vws --healthcheck` reads only the bounded UTC heartbeat and tests that
+the OS lock is held. It never reads dotenv, keyring or the DB. Exit zero means a
+recent runtime loop with scheduler/ledger/clock checks and verified notification
+delivery, not a trading-readiness verdict. No inbound health server exists.
+Failed urgent delivery stays pending, latches HALTED and stops heartbeat renewal.
+An optional HTTPS dead-man URL is contacted only after successful jobs, through
+the guarded HTTP factory. Three job failures or a missed daily scan alert privately.
+
+For a known older SQLite schema, stop the runtime first and run:
+
+```powershell
+.venv\Scripts\python.exe -m vws ops migrate --operator "YOUR NAME"
+.venv\Scripts\python.exe -m vws doctor
+```
+
+The migration authenticates an encrypted online backup and its scratch restore
+before additive DDL. Existing ledger rows and hashes are retained. Unknown layouts
+or corrupt chains refuse. Do not manually alter `schema_meta` or delete rows.
+If migration is refused, preserve the DB and report the precise failure.
+Nightly backups restore into an isolated temporary directory to verify the chain;
+retention prunes only authenticated owned archives. Save the recovery key when
+setup displays it; a key lost with the machine prevents restores.
+
+After installing the development tools from their hash lock, run
+`python -m vws ops audit-dependencies --operator "YOUR NAME"` on the host. It
+audits both current lock files, refuses skipped/incomplete/vulnerable results and
+records only dated hashes, counts and the operator. Doctor compares those hashes
+to the current files; an old result or changed lock stays unverified for live
+prerequisites. This command is explicit maintenance, never a scheduler job.
+CI also audits both locks weekly and publishes public CycloneDX inventories.
+Dependabot proposes reviewed updates only; it never applies them to the host.
+
+PostgreSQL remains optional. Automated legacy PostgreSQL migration is refused;
+the CI trigger/concurrency suite uses only a disposable DB. Stop writers before
+a production schema change. `pg_dump --format=custom --no-password --dbname=service=vws`
+streams a consistent database dump to stdout. Route that stream directly into
+your verified encrypted backup tool, never a plaintext file; private libpq service
+configuration is an operator prerequisite, with no password in command arguments.
+Restore using `pg_restore --exit-on-error --no-owner --dbname=service=vws_restore`
+against an isolated empty restore database, then run the ledger verification smoke
+command in VERIFY.md with that explicit restore URL. Record dump/restore success
+only after the actual commands and chain verification pass. Neither production
+PostgreSQL backup nor migration has been certified on this machine.
