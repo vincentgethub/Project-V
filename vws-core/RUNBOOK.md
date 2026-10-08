@@ -26,6 +26,12 @@ on Windows you can use `.venv\Scripts\python.exe`. Never paste secrets into chat
 
 ## Start, stop and current mode
 
+The owner declined manual CSV on October 8 2026. BROKER_STATE_SOURCE must stay
+ALPACA. MANUAL_CSV refuses startup and doctor explains how to correct it.
+Manual funding/state components refuse direct use before any file access.
+The host evidence file was declined and not built. Amendment 02's manual-path
+acceptance is DEFERRED by this owner decision; final guard checks are underway.
+
 Read `python -m vws progress`. The implemented `setup`, `doctor` and `start`
 commands passed the H offline acceptance gate; real services are unverified.
 Your bot is not connected or running here. Current behavior is MANUAL, paper by
@@ -96,15 +102,15 @@ You may keep encrypted copies off-box; never copy a plaintext database as backup
 
 Stage D adds shared read budgets, completed daily-bar caching, public headlines,
 corporate-action evidence, earnings windows and manual CSV account reads.
-Manual CSV is available only in MANUAL; it also needs fresh prices and explicit
-account-restriction and pending-order evidence. Missing evidence refuses entries.
+Manual CSV broker state/funding is disabled by the latest owner decision,
+including MANUAL mode and direct component use. No manual file is read.
 Confirmed earnings near a proposal block entries; estimated or unknown dates
 show warnings. The account-type check halts on a reported CASH/MARGIN mismatch.
 
-The current fresh schema is version 4. Normal startup refuses a version-2 or
-version-3 database; never delete it or change its version number by hand. Stage H supplies
+The current fresh schema is version 6. Normal startup refuses older layouts;
+never delete the database or change its version number by hand. Stage H/J supply
 the explicit backup-first additive migration. Host `python -m vws ops panic --operator NAME --reason REASON` remains available for the exact compatible
-version-2/version-3 schemas and persists HALTED without upgrading them. It does not certify
+version-2 through version-5 schemas and persists HALTED without upgrading them. It does not certify
 old or damaged ledger chains. An incompatible control schema is refused.
 
 The real paper check is UNVERIFIED. After paper credentials exist, use
@@ -115,9 +121,10 @@ The integration reads an account and delayed SIP bars; it never submits orders.
 
 ## Independent ledger anchors and configuration drift
 
-The evening digest will send `Ledger anchor · seq N · HASH` and optionally append
-the full digest to ANCHOR_FILE_PATH on another device. Digest/weekly wiring is
-pending its stage. Anchors bind the ordered prefix across every immutable table.
+Evening maintenance sends `Ledger anchor · seq N · HASH` and optionally appends
+the full digest to ANCHOR_FILE_PATH on another device. Host wiring is tested
+offline; real private delivery remains UNVERIFIED. Anchors bind the ordered
+prefix across every immutable table.
 Each month compare an older saved Telegram/off-box anchor using
 `python -m vws --env-file .env ledger verify-anchor --seq N --hash HASH`,
 or `ledger verify-anchor --file PATH`. A mismatch is urgent; keep entries halted.
@@ -129,8 +136,8 @@ The effective non-secret config includes env policy and config.yaml,
 instruments.csv, macro_events.csv and accounts.yaml. Unacknowledged drift alerts
 urgently and pauses AUTO entries. A revert alone does not clear the pause.
 Investigate first, then use `ops ack-config --operator NAME` on the host.
-Connected monitor composition is pending Stage H; an unexplained broker identity change
-already has a tested persistent HALT service. Legitimate rotation needs matching
+Stage H supplies monitor composition; an unexplained broker identity change
+has a tested persistent HALT service. Real connections remain UNVERIFIED. Legitimate rotation needs matching
 SECRET_ROTATED evidence. Telegram cannot acknowledge config or upgrade a mode.
 
 ## Secure the host
@@ -248,8 +255,9 @@ For a known older SQLite schema, stop the runtime first and run:
 .venv\Scripts\python.exe -m vws doctor
 ```
 
-The migration authenticates an encrypted online backup and its scratch restore
-before additive DDL. Existing ledger rows and hashes are retained. Unknown layouts
+The current Stage J layout is version 6, adding cash-flow, daily-P&L and tax
+evidence tables. The migration authenticates an encrypted online backup and its
+scratch restore before additive DDL. Existing ledger rows and hashes are retained. Unknown layouts
 or corrupt chains refuse. Do not manually alter `schema_meta` or delete rows.
 If migration is refused, preserve the DB and report the precise failure.
 Nightly backups restore into an isolated temporary directory to verify the chain;
@@ -276,3 +284,91 @@ against an isolated empty restore database, then run the ledger verification smo
 command in VERIFY.md with that explicit restore URL. Record dump/restore success
 only after the actual commands and chain verification pass. Neither production
 PostgreSQL backup nor migration has been certified on this machine.
+
+## Account history and cash activity
+
+At startup and each monitor cycle, the Stage J service reads the selected bound
+account's activity history. Initial capture requires complete paginated history;
+later cycles resume from their checkpoint. Duplicate activity IDs are ignored
+only when their contents agree. External deposits/withdrawals/journals scale
+saved equity baselines atomically with their immutable activity evidence.
+Missing opening history or ambiguous prior scaling halts rather than assuming
+the current cash balance proves the past.
+
+An urgent withdrawal warning is attempted even when later reconciliation fails.
+Investigate any withdrawal you did not make through the broker's own support
+and account-security controls. vws detects funding; it cannot initiate it.
+Manual cash-flow files are not read. Do not use `data/manual_*.csv` to feed
+state or funding; that path is deliberately deferred. Separate explicit
+other-account tax imports remain supported and never initiate funding.
+
+If accounting fails, new entries remain blocked and the durable HALT stays
+latched. Existing held-position monitoring still attempts fresh quotes and
+capped exit warnings. In MANUAL, confirm actual broker stops and make valid
+held exits yourself. Do not clear a fault solely to obtain another ticket.
+
+## Tax evidence and exports
+
+Estimate and record-keeping aid, not tax advice. Your broker's 1099-B is the official record; consult a tax professional.
+
+Register only your own confirmed account IDs in `config/accounts.yaml`.
+Each entry has `id`, `name`, `tax_status` (TAXABLE, IRA or ROTH) and `source`
+(ALPACA or CSV). CSV entries require `fills_csv` and default to FIFO; Alpaca
+defaults to ALPACA_COMPRESSED_FIFO. Paths are direct, bounded owner files;
+symlinks or unresolved parent traversal are refused. No external account login
+is performed. A 401(k) lot can be marked for awareness without inventing its
+tax treatment.
+
+Fill CSV headers are `id,account_id,env,symbol,side,qty,price,fees,ts,is_drip`.
+Use stable fill IDs, PAPER or LIVE, BUY or SELL, positive whole shares, exact
+cent prices, nonnegative exact fees, UTC timestamps and `true` or `false`.
+Keep the complete corrected fill history: a new import manifest supersedes
+the projection without deleting old ledger evidence. Rerun a verified read-only
+accounting cycle before exporting after any fill correction.
+
+For owner-marked external lots, use exact CSV headers:
+
+```text
+lot_id,account_id,symbol,qty,cost_basis,acquired_at,funding_settlement_date,acquisition_trade_id,holding_period_start
+```
+
+`lot_id` is a stable UUID; `cost_basis` is per share, not total lot value.
+`acquired_at` and an optional tacked `holding_period_start` are UTC. Optional
+settlement date uses YYYY-MM-DD and acquisition ID uses a UUID. Keep unknown
+optional fields blank; do not guess them. Quantity must be positive whole
+shares. Import with `python -m vws tax import-lots --file PATH.csv` under the
+selected account environment. Same-ID corrections append new versions.
+The current marked-lot input has no removal/tombstone interface; omitting an
+earlier marked lot does not retire it. This limitation can overstate awareness
+and must be reviewed before treating a sale warning as complete evidence.
+
+Once successful bound reconciliation has been recorded:
+
+```text
+python -m vws tax report --year 2026 --simulate
+python -m vws tax report --year 2026 --account all
+python -m vws tax reconcile --year 2026 --1099b PATH.csv --mapping config/1099b_columns.yaml
+```
+
+Simulation selects PAPER only and labels every CSV header/row NOT FOR FILING.
+Without simulation, reporting and reconciliation require separate existing LIVE
+evidence; neither command starts a service or enables trading. Missing or
+changed checkpoints, account identity or book hashes refuse exports. The five
+tax files are immutable versions below `data/tax/YEAR/ENV/ACCOUNT_HASH/REPORT_HASH`.
+Unknown form boxes are UNVERIFIED. Future replacement buys within the wash
+window can change the current estimate; open lots use the evidence date.
+
+Map the broker's actual 1099-B export yourself. The sample mapping is only an
+example. It requires seven distinct columns for symbol, sale date, quantity,
+proceeds, basis, wash adjustment and term, plus explicit date/term labels.
+Differences over one cent, term differences and unmatched rows are listed with
+likely causes. The 1099-B wins; vws never alters it or files a return.
+Federal ST/LT rates remain unset until supplied in setup; Texas state and NIIT
+start at zero. `/tax` shows totals only until the rates are complete.
+
+`/pnl today|week|month|ytd` is account performance, not a tax total. Its TWR
+excludes external flows, keeps PAPER/LIVE separate and labels SPY price only.
+Daily records/corrections retain source evidence. Reconstructed historical
+cash and market value are COMPUTED; unknown sessions/fees refuse accounting.
+Actual fee attribution, corporate-action basis, the broker's real tax export
+and 2026 IRS form instructions remain UNVERIFIED on this machine.

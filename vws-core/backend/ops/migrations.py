@@ -23,11 +23,14 @@ from backend.core.database import (
     LEDGER_MODELS,
     SCHEMA_VERSION,
     Base,
+    CashFlow,
+    DailyPnL,
     JobRun,
     NewsHeadlineRecord,
     SchemaMeta,
     SchemaVersion,
     SecurityEvent,
+    TaxEvent,
     TicketEvent,
     create_database,
     create_schema,
@@ -51,9 +54,11 @@ class MigrationResult(FrozenModel):
 
 
 def _tables(version: int) -> set[str]:
-    if version not in {2, 3, 4, 5} or SCHEMA_VERSION != 5:
+    if version not in {2, 3, 4, 5, 6} or SCHEMA_VERSION != 6:
         raise DataIntegrityError("Unknown schema version; no migration is authorized")
     names = set(Base.metadata.tables)
+    if version < 6:
+        names -= {CashFlow.__tablename__, DailyPnL.__tablename__, TaxEvent.__tablename__}
     if version < 5:
         names.remove(SchemaVersion.__tablename__)
     if version < 4:

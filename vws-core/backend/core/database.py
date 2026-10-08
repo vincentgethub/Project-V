@@ -37,7 +37,7 @@ from backend.core.clock import ensure_utc
 from backend.core.errors import DatabaseError, LedgerIntegrityError, SafetyError
 from backend.core.money import money_to_scaled, scaled_to_money, validate_cent_price
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class MoneyType(TypeDecorator[Decimal]):
@@ -613,6 +613,71 @@ class SecurityEvent(LedgerRecord):
     ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
+class CashFlow(LedgerRecord):
+    """FN-02: one observed activity; no operation initiates a cash transfer."""
+
+    __tablename__ = "cash_flows"
+    __table_args__ = (
+        UniqueConstraint("account_id", "env", "activity_id", name="uq_cash_activity"),
+        CheckConstraint("env IN ('PAPER', 'LIVE')", name="ck_cash_env"),
+        CheckConstraint("baseline_effect IN ('SCALED', 'INCLUDED', 'NONE')", name="ck_cash_effect"),
+    )
+    account_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    env: Mapped[str] = mapped_column(String(8), nullable=False)
+    activity_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(MoneyType(), nullable=False)
+    date: Mapped[str] = mapped_column(String(10), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    baseline_effect: Mapped[str] = mapped_column(String(8), nullable=False)
+    portfolio_state_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("portfolio_state.id"), nullable=True
+    )
+
+
+class DailyPnL(LedgerRecord):
+    """PL-01: corrections append a new version of the same bound session."""
+
+    __tablename__ = "daily_pnl"
+    __table_args__ = (
+        CheckConstraint("env IN ('PAPER', 'LIVE')", name="ck_pnl_env"),
+        CheckConstraint("source IN ('BROKER', 'COMPUTED')", name="ck_pnl_source"),
+        CheckConstraint("equity > 0 AND cash >= 0 AND long_market_value >= 0", name="ck_pnl_long"),
+        UniqueConstraint("supersedes", name="uq_pnl_superseded_once"),
+    )
+    account_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    env: Mapped[str] = mapped_column(String(8), nullable=False)
+    session_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    equity: Mapped[Decimal] = mapped_column(MoneyType(), nullable=False)
+    cash: Mapped[Decimal] = mapped_column(MoneyType(), nullable=False)
+    long_market_value: Mapped[Decimal] = mapped_column(MoneyType(), nullable=False)
+    source: Mapped[str] = mapped_column(String(8), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    supersedes: Mapped[UUID | None] = mapped_column(ForeignKey("daily_pnl.id"), nullable=True)
+
+
+class TaxEvent(LedgerRecord):
+    """TX-10: exact imported/fill evidence; corrections never edit prior rows."""
+
+    __tablename__ = "tax_events"
+    __table_args__ = (
+        CheckConstraint("env IN ('PAPER', 'LIVE')", name="ck_tax_env"),
+        CheckConstraint(
+            "kind IN ('FILL', 'INCOME', 'IMPORT', 'MARKED_LOT', 'CORPORATE_ACTION')",
+            name="ck_tax_kind",
+        ),
+        UniqueConstraint("supersedes", name="uq_tax_superseded_once"),
+    )
+    account_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    env: Mapped[str] = mapped_column(String(8), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    supersedes: Mapped[UUID | None] = mapped_column(ForeignKey("tax_events.id"), nullable=True)
+
+
 class SchemaVersion(LedgerRecord):
     """OPS-05: immutable versioned migrations with the verified backup digest."""
 
@@ -692,6 +757,9 @@ LEDGER_MODELS: tuple[type[LedgerRecord], ...] = (
     LLMCall,
     SecurityEvent,
     SchemaVersion,
+    CashFlow,
+    DailyPnL,
+    TaxEvent,
 )
 
 
@@ -799,13 +867,15 @@ def prepare_panic_schema(engine: Engine) -> None:
         if "schema_meta" in existing:
             with engine.connect() as connection:
                 version = connection.scalar(select(SchemaMeta.version).where(SchemaMeta.id == 1))
-            if version in {2, 3, 4}:
+            if version in {2, 3, 4, 5}:
                 expected = {
                     name
                     for name in Base.metadata.tables
-                    if name != SchemaVersion.__tablename__
+                    if name
+                    not in {CashFlow.__tablename__, DailyPnL.__tablename__, TaxEvent.__tablename__}
+                    and (version == 5 or name != SchemaVersion.__tablename__)
                     and (
-                        version == 4
+                        version >= 4
                         or name not in {TicketEvent.__tablename__, JobRun.__tablename__}
                     )
                     and (version != 2 or name != NewsHeadlineRecord.__tablename__)

@@ -60,6 +60,7 @@ class TaxLot(FrozenModel):
     cost_basis: Money = Field(gt=Decimal(0))
     funding_settlement_date: SessionDate | None = None
     acquisition_trade_id: UUID | None = None
+
     holding_period_start: UTCDateTime | None = None
 
     @model_validator(mode="after")
@@ -95,6 +96,8 @@ class TradeRecord(FrozenModel):
     holding_period_start: UTCDateTime | None = None
     is_drip: bool = Field(default=False, strict=True)
     acquisition_trade_id: UUID | None = None
+    # TX-02: original-lot slices of one actual SELL must share its final inventory.
+    execution_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_loss(self) -> Self:
@@ -107,6 +110,8 @@ class TradeRecord(FrozenModel):
             raise ValueError("an acquisition reference belongs only to a SELL")
         if self.is_drip and self.side != Side.BUY:
             raise ValueError("a DRIP record must be a BUY")
+        if self.execution_id is not None and self.side != Side.SELL:
+            raise ValueError("a disposal execution reference belongs only to a SELL")
         return self
 
 

@@ -1,6 +1,7 @@
 """OPS-02: actual read-only sources for scans, reviews and held exit warnings."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -78,6 +79,8 @@ class ConnectedDeskSource:
         news_reader: NewsReader,
         account_context: AccountContextSource,
         sec: SecEdgarProvider | None,
+        *,
+        sync_account_context: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.settings, self.config = (
             Settings.validated_copy(settings),
@@ -108,6 +111,7 @@ class ConnectedDeskSource:
             news_reader,
         )
         self.account_context, self.sec = account_context, sec
+        self.sync_account_context = sync_account_context
         self._batch: BatchBars | None = None
         self._daily_lock = asyncio.Lock()
 
@@ -169,6 +173,8 @@ class ConnectedDeskSource:
 
     async def refresh(self, symbol: str) -> FreshInputs:
         # Unknown account history never becomes an empty, passing history.
+        if self.sync_account_context is not None:
+            await self.sync_account_context()
         context = await asyncio.to_thread(self.account_context.read)
         account = await self.boundary.portfolio_async(self.reader)
         quote = await self.quote(symbol)
@@ -188,6 +194,8 @@ class ConnectedDeskSource:
         )
 
     async def scan(self) -> ScanCycle:
+        if self.sync_account_context is not None:
+            await self.sync_account_context()
         context = await asyncio.to_thread(self.account_context.read)
         batch = await self.daily()
         requests: list[ResearchRequest] = []

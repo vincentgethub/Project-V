@@ -43,6 +43,10 @@ from backend.domain.tax_profile import (
 PAPER_BROKER_ENDPOINT = "https://paper-api.alpaca.markets"
 LIVE_BROKER_ENDPOINT = "https://api.alpaca.markets"
 LIVE_CONFIRMATION = "I_ACCEPT_REAL_MONEY_RISK"
+MANUAL_CSV_DISABLED_MESSAGE = (
+    "MANUAL_CSV is disabled by owner decision (Oct 8 2026); "
+    "set BROKER_STATE_SOURCE=ALPACA. Manual funding/state CSV files are not read."
+)
 YAML_INTEGER_BOUNDS: Mapping[str, tuple[int, int]] = MappingProxyType(
     {
         "monitor_interval_minutes": (1, 1440),

@@ -35,7 +35,7 @@ The audit-fixes gate passed 2,167 offline tests; the risk modules, tax contracts
 and persisted state have 100% statement and branch coverage. Stage D contains
 read-only market/broker/liquidity providers, shared asynchronous request budgets,
 incremental daily-bar caching, news and corporate-action evidence, earnings
-windows, manual CSV account evidence, indicators and a deterministic scanner.
+windows, indicators and a deterministic scanner. Manual CSV is now owner-deferred.
 Its final combined gate passed 2,901 tests, with one paper integration skipped;
 risk/state/contracts retain 100% statement and branch coverage. The older core/gate.py is not a
 certified human-approval boundary.
@@ -60,8 +60,18 @@ locks/heartbeat/watchdog, backed-up additive migration, encrypted maintenance,
 private logging and pinned CI/deployment configuration. Its final offline gate
 passed 4,080 tests, 46 service checks skipped, with complete required branch
 coverage including evaluation. The current fixed replay passed in 97.666 seconds.
-Actual account services, deployment and remote CI remain UNVERIFIED. J follows
-for account history, cash-flow, daily P&L and tax production; I then adds auto mode.
+Actual account services, deployment and remote CI remain UNVERIFIED.
+
+Stage J supplies account-history, cash-flow, daily P&L and tax reports, certified
+GREEN OFFLINE: 4,266 tests passed, 52 service checks skipped, with complete
+required branch coverage (5,244 statements / 1,684 branches). It shares the
+original compliance wash-sale matcher. The fixed replay passed in 75.600s with
+an unchanged proof hash. Exact amounts and append-only corrections remain.
+BROKER_STATE_SOURCE stays ALPACA. Any MANUAL_CSV setting refuses startup with a
+clear doctor fix; funding/state adapters cannot read `data/manual_*.csv`, even
+when used directly. The host evidence file was declined. Amendment 02 §11.2
+item 1's manual acceptance is DEFERRED (user decision, Oct 8 2026).
+Real account/platform checks remain UNVERIFIED. Stage I follows J's local commit.
 
 Stage S passed its offline gates on October 5, 2026. The encryption, anchor, drift and
 panic service suite passed 137 offline tests with complete statement and branch
@@ -115,10 +125,80 @@ FRED key and SEC name/email only there. Cancel restores prior configuration and
 secret entries; append-only audit records remain. Start currently accepts MANUAL
 with paper keys, preserves saved halts, and refuses failed required doctor checks.
 Optional unverified checks remain labeled. Review cards in your private chat;
-approval creates a manual ticket. Account-history production is still pending J,
-so missing history blocks tickets. No real connected operation is certified here.
+approval creates a manual ticket. Read-only account history must reconcile with
+the current bound account before tickets or tax exports are available; missing
+history blocks them. No real connected operation is certified here.
 The setup/start implementation passed the Stage H offline acceptance gate.
 For commands available at the current stage, see [RUNBOOK.md](RUNBOOK.md).
+
+## How to fund your account
+
+Use the broker's own dashboard. vws never initiates deposits, withdrawals,
+transfers or bank linking, and never requests bank routing/account details.
+Plaid reads balances solely for the checking-buffer gate.
+
+Paper uses virtual money. Review the [Alpaca paper-account instructions](https://docs.alpaca.markets/us/docs/paper-trading)
+before resetting or choosing a virtual balance. The current dashboard's exact
+reset steps and resulting credentials/account ID remain UNVERIFIED here. Rebind
+and verify the resulting paper identity through setup; a changed account ID
+starts a separate history and never inherits the old account's readiness.
+
+For an eventual live account, the owner links a bank and initiates ACH deposits
+in Alpaca's dashboard. This build has not enabled live mode. The read-only
+accounting cycle detects recorded cash activity, deduplicates it and scales the
+equity baselines; deposits are not trading gains. Withdrawals alert urgently.
+Unknown activity is recorded and reported without guessing its effect.
+
+## Tax records and account performance
+
+Estimate and record-keeping aid, not tax advice. Your broker's 1099-B is the official record; consult a tax professional.
+
+The guided setup starts with the owner's single/Texas profile: state rate zero,
+NIIT zero, federal short-/long-term rates unset. Until both federal rates are
+entered, tax replies show totals only. External IRA/Roth, Merrill and 401(k)
+awareness comes from owner-entered/imported evidence; vws never logs into those
+accounts. A recorded sale prompts review of the marked external lots.
+
+After a successful read-only accounting cycle, use:
+
+```powershell
+.venv\Scripts\python.exe -m vws tax report --year 2026 --simulate
+.venv\Scripts\python.exe -m vws tax report --year 2026 --account all
+.venv\Scripts\python.exe -m vws tax reconcile --year 2026 --1099b PATH_TO_1099B.csv --mapping config/1099b_columns.yaml
+.venv\Scripts\python.exe -m vws tax import-lots --file PATH_TO_MARKED_LOTS.csv
+```
+
+The first command uses PAPER evidence and labels every CSV header and row
+`SIMULATED - NOT FOR FILING`. The second and reconciliation command require
+separate LIVE evidence already captured and verified; they neither connect nor
+enable trading. A missing checkpoint, unreconciled account, changed import or
+wrong cohort refuses publication. Reports are write-once versions under
+`data/tax/YEAR/ENV/ACCOUNT_HASH/REPORT_HASH/` containing `form8949.csv`,
+`schedule_d_summary.csv`, `income.csv`, `lots_open.csv` and `README.txt`.
+Corrections create new evidence and versions; they never replace ledger rows.
+
+`config/accounts.yaml` lists owner-confirmed account IDs and tax status. CSV
+accounts additionally specify `fills_csv`; their default lot method is FIFO.
+Alpaca uses compressed FIFO. Whole-share fill CSV columns, in order, are
+`id,account_id,env,symbol,side,qty,price,fees,ts,is_drip`; `env` is PAPER or LIVE
+and `ts` is UTC. Marked-lot columns and operating steps are in RUNBOOK.md.
+The one shared wash-sale engine applies configured identity groups across the
+listed accounts, with tacking and permanent IRA/Roth loss flags.
+
+`/pnl today|week|month|ytd` and private digests use a separate account/env series
+and time-weighted returns that exclude external flows. SPY is labelled price
+only and unavailable benchmark history stays UNVERIFIED. Historical cash and
+market value reconstructed from account evidence are labelled COMPUTED.
+`/tax` and weekly summaries show realized short-/long-term results, wash losses,
+income and the rate-based estimated set-aside, with the disclaimer above.
+
+Real per-fill fee attribution, corporate-action basis transformations, actual
+1099-B columns/lot method and 2026 IRS form instructions remain UNVERIFIED.
+The sample mapping is not an assertion about the broker's export. Ambiguous
+fees or corporate actions block accounting rather than inventing tax basis.
+The required [2026 form instructions are not yet verified](https://www.irs.gov/instructions/i8949);
+unknown form boxes are explicitly marked UNVERIFIED. Open lots reflect the
+supplied evidence date; future wash replacements can still change a loss.
 
 ## Run it 24/7
 
@@ -163,7 +243,7 @@ python -m ruff check .
 python -m ruff format --check .
 python -m backend.core.check_stage_d
 python -m backend.core.source_guard .
-python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/security backend/net backend/ops backend/telegram backend/notifications backend/tax scripts vws -c pyproject.toml
+python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/security backend/net backend/ops backend/telegram backend/notifications backend/tax backend/funding backend/pnl backend/evaluation backend/indicators scripts vws -c pyproject.toml
 python -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off --timeout 15
 python -m pip_audit -r requirements-dev.lock --no-deps --disable-pip --progress-spinner off --timeout 15
 python -m detect_secrets scan --all-files --exclude-files '(^|[\\/])(\.venv|backend[\\/]tests|deliveries|\.git|\.mypy_cache|\.pytest_cache|\.ruff_cache|\.hypothesis|__pycache__|mutants|build|dist)[\\/]'
@@ -181,7 +261,8 @@ module exempt. The pre-commit configuration provides the same local source check
 
 See [technical status](docs/STATUS.md) for actual counts and
 [verification](VERIFY.md) for exact reproduction commands. The coverage gate
-includes risk, state, compliance contracts, fundamentals, notifications and tax.
+includes risk, state, compliance contracts, fundamentals, notifications, tax and
+evaluation. Security scans also cover the funding and P&L packages.
 Linux CI has separate mutation and disposable PostgreSQL jobs plus the container
 build. Remote CI, PostgreSQL runtime, Docker, mutation testing and real paper
 API integration remain UNVERIFIED until they run. No push is authorized here.

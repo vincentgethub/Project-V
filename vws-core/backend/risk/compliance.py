@@ -56,7 +56,7 @@ from backend.domain.models import (
     _canonical,
     snapshot_hash,
 )
-from backend.risk.wash_sales import WashSaleMatcher
+from backend.tax.lots import WashSaleMatcher
 
 _NEW_YORK = ZoneInfo("America/New_York")
 

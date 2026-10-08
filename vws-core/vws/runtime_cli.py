@@ -4,14 +4,13 @@ import asyncio
 import signal
 from collections.abc import Callable
 from contextlib import AsyncExitStack
-from datetime import date, timedelta
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from types import FrameType
 from typing import TypeVar
 
 from requests import Session as RequestsSession
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from backend.agents.briefing import DeskCommands
 from backend.agents.desk import Desk
@@ -22,8 +21,7 @@ from backend.agents.news_reader import NewsReader
 from backend.agents.orchestrator import JobCounts, Orchestrator
 from backend.agents.setup_hunter import SetupHunter
 from backend.agents.swarm_runner import SwarmRunner
-from backend.core.config import load_yaml_config
-from backend.core.database import SecurityEvent
+from backend.core.config import MANUAL_CSV_DISABLED_MESSAGE, load_yaml_config
 from backend.core.errors import ConfigurationError
 from backend.core.logging import configure_logging
 from backend.data.async_reader import AsyncAlpacaReader
@@ -34,7 +32,7 @@ from backend.data.corporate_actions import AlpacaCorporateActionsProvider
 from backend.data.data_layer import AsyncAlpacaMarketData, ResilientReader
 from backend.data.earnings import EarningsProvider
 from backend.data.fee_schedule import load_fee_schedule
-from backend.data.fill_polling import AlpacaFillSource, TicketFillMatcher
+from backend.data.fill_polling import TicketFillMatcher
 from backend.data.liquidity import BalanceReading, LiquidityGate, PlaidLiquiditySource
 from backend.data.market_calendar import MarketCalendar
 from backend.data.news import (
@@ -46,8 +44,10 @@ from backend.data.news import (
 )
 from backend.data.sec_edgar import SecEdgarProvider
 from backend.domain.instruments import InstrumentRegistry
+from backend.domain.models import PortfolioSnapshot
 from backend.evaluation.ledger_source import LedgerWeeklySource
 from backend.evaluation.publication import WeeklyPublisher
+from backend.funding.activities import AlpacaActivitiesSource
 from backend.notifications.callbacks import ApprovalGate
 from backend.notifications.telegram_bot import TelegramBot
 from backend.ops.account_context import LedgerAccountContext
@@ -59,12 +59,15 @@ from backend.ops.process import ProcessLock
 from backend.ops.read_checks import ReadChecksClient
 from backend.ops.runtime import HostRuntime
 from backend.ops.watchdog import Watchdog
+from backend.pnl.history import EquityHistory, read_history
+from backend.pnl.service import AccountingReports
 from backend.risk.boundary import RiskBoundary
 from backend.risk.compliance import ComplianceEngine
 from backend.risk.compliance_boundary import ComplianceBoundary
 from backend.risk.portfolio_marks import PersistedPortfolioMarks
 from backend.risk.risk_cro import ChiefRiskOfficer
 from backend.security.secrets import KeyringSecretStore, SecretStore
+from backend.tax.service import TaxService
 from vws import security_cli
 from vws.host_config import load_host_settings
 
@@ -99,6 +102,8 @@ async def compose(
     *,
     resources: AsyncExitStack,
 ) -> HostRuntime:
+    if context.settings.broker_state_source != "ALPACA":
+        raise ConfigurationError(MANUAL_CSV_DISABLED_MESSAGE)
     if (
         verified_doctor.exit_code != 0
         or context.settings.execution_mode != "MANUAL"
@@ -235,52 +240,58 @@ async def compose(
     gate = ApprovalGate(settings, config, state, risk, compliance, clock, source)
     commands = DeskCommands(state, settings, account_id, calendar, source)
     bot = TelegramBot(settings, state, clock, gate, policy, commands.handlers())
-    fill_source = AlpacaFillSource(settings, account_id, state, clock, reader, policy)
+    fill_source = AlpacaActivitiesSource(settings, account_id, state, clock, reader, policy)
     resources.push_async_callback(fill_source.close)
     matcher = TicketFillMatcher(settings, account_id, state, registry)
 
+    async def portfolio() -> PortfolioSnapshot:
+        return (await boundary.portfolio_async(reader)).snapshot
+
+    schedule = load_fee_schedule(project / "config/fees.yaml")
+
+    async def prepare_fills(symbols: tuple[str, ...]) -> None:
+        start = calendar.previous_sessions(calendar.last_completed_session(clock.now()), 280)[0]
+        for offset in range(0, len(symbols), 199):
+            await market.completed_daily_bars(symbols[offset : offset + 199], start)
+
+    tax = TaxService(
+        project,
+        state,
+        settings,
+        account_id,
+        registry,
+        fill_source,
+        portfolio,
+        bot.notify,
+        schedule,
+        buying_power=lambda: broker.last_buying_power,
+        observe_fill=matcher.record,
+        prepare_fills=prepare_fills,
+    )
+
+    async def history(start: date, end: date) -> EquityHistory:
+        return await read_history(fill_source, start, end, calendar)
+
+    async def spy_closes(start: date, end: date) -> tuple[tuple[date, Decimal], ...]:
+        batch = await market.completed_daily_bars(("SPY",), start, adjustment="RAW")
+        return tuple(
+            (bar.session_date, bar.close)
+            for bar in batch.for_symbol("SPY")
+            if bar.session_date <= end
+        )
+
+    accounting = AccountingReports(
+        tax, calendar, config.schedule.daily_scan_delay_minutes, history, spy_closes
+    )
+    bot.commands.update({"/pnl": accounting.pnl, "/tax": accounting.tax_summary})
+
+    async def sync_context() -> None:
+        await tax.sync()
+
+    source.sync_account_context = sync_context
+
     async def fill_poll() -> JobCounts:
-        def last_seen() -> object:
-            state.ledger.verify_chain()
-            with Session(state.engine) as session:
-                return session.scalar(
-                    select(SecurityEvent)
-                    .where(
-                        SecurityEvent.kind == "FILL_POLL_COMPLETED",
-                        SecurityEvent.detail["account_id"].as_string() == account_id,
-                        SecurityEvent.detail["cohort"].as_string() == "PAPER",
-                    )
-                    .order_by(SecurityEvent.seq.desc())
-                    .limit(1)
-                )
-
-        last = await asyncio.to_thread(last_seen)
-        now = clock.now()
-        from datetime import datetime
-
-        after = (
-            now - timedelta(days=61)
-            if not isinstance(last, SecurityEvent)
-            else datetime.fromisoformat(last.detail["until"]) - timedelta(seconds=1)
-        )
-        batch = await fill_source.read(after, now)
-        results = tuple([await asyncio.to_thread(matcher.record, row) for row in batch.fills])
-        state.ledger.append(
-            SecurityEvent,
-            kind="FILL_POLL_COMPLETED",
-            detail={
-                "account_id": account_id,
-                "cohort": "PAPER",
-                "until": now.isoformat(),
-                "fills_observed": len(results),
-            },
-        )
-        return JobCounts(
-            counts={
-                "fills_observed": len(results),
-                "fills_recorded": sum(row.status != "DUPLICATE" for row in results),
-            }
-        )
+        return await tax.sync(force=True)
 
     async def maintenance() -> JobCounts:
         result = await NightlyMaintenance(
@@ -290,7 +301,7 @@ async def compose(
         await bot.notify(anchor.message(), True)
         return result
 
-    weekly = WeeklyPublisher(
+    weekly_publisher = WeeklyPublisher(
         state,
         settings,
         config,
@@ -304,10 +315,17 @@ async def compose(
             account_id,
             calendar,
             source,
-            load_fee_schedule(project / "config/fees.yaml"),
+            schedule,
         ),
         bot.notify,
     )
+
+    async def weekly() -> JobCounts:
+        result = await weekly_publisher()
+        for page in await accounting.tax_summary():
+            await bot.notify(page, False)
+        return result
+
     jobs = DeskJobs(
         Desk(swarm),
         bot,
@@ -317,6 +335,8 @@ async def compose(
         maintenance,
         fill_poll,
         refresh_request=source.refresh_request,
+        accounting_capture=accounting.capture,
+        pnl_digest=accounting.digest_line,
     )
     watchdog = Watchdog(state, calendar, clock, lambda message: bot.notify(message, True))
     orchestrator = Orchestrator(
@@ -357,6 +377,7 @@ async def compose(
         doctor,
         close_resources=close_resources,
         verify_broker_time=verifier.verify,
+        initialize_account=fill_poll,
     )
 
 

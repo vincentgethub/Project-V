@@ -130,6 +130,7 @@ class AlpacaBrokerState:
     ) -> None:
         """R-06/R-08: verify the resolved endpoint before enabling reads."""
         self.last_flags: AccountFlags | None = None
+        self.last_buying_power: Decimal | None = None
         try:
             policy = config.model_dump(mode="python")
             if (
@@ -193,6 +194,7 @@ class AlpacaBrokerState:
         audits output freshness, financial limits, and account flags.
         """
         self.last_flags = None
+        self.last_buying_power = None
         try:
             instant = ensure_utc(now)
             local_start = ensure_utc(self._clock.now())
@@ -240,7 +242,7 @@ class AlpacaBrokerState:
             )
             equity = _money(account.get("equity"))
             cash = _money(account.get("cash"))
-            _money(account.get("buying_power"))
+            buying_power = _money(account.get("buying_power"))
             positions = self._positions(positions_raw)
             orders = self._orders(orders_raw)
             high_water_mark, day_start_equity = self._marks(equity, instant)
@@ -260,6 +262,7 @@ class AlpacaBrokerState:
                 }
             )
             self.last_flags = flags
+            self.last_buying_power = buying_power
             return snapshot
         except SafetyError as exc:
             raise exc from None

@@ -1,0 +1,12 @@
+# TX-09: example only. Actual Alpaca export columns remain UNVERIFIED.
+# Owner maps the actual broker CSV; code never guesses unknown columns.
+symbol: symbol
+date_sold: date_sold
+qty: qty
+proceeds: proceeds
+basis: basis
+wash: wash_adjustment
+term: term
+date_format: "%Y-%m-%d"
+short_term_label: ST
+long_term_label: LT

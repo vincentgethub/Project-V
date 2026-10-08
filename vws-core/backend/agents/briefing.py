@@ -286,7 +286,7 @@ class DeskCommands:
                 "UX: positions could not be verified; entries halted"
             ) from None
 
-    def save_digest(self, market_context: str) -> str:
+    def save_digest(self, market_context: str, *, pnl: str | None = None) -> str:
         """Counts are ledger observations; missing SPY evidence stays unavailable."""
         if market_context not in {
             "SPY above 200-day avg",
@@ -326,6 +326,12 @@ class DeskCommands:
             f"Pending: {counts['PENDING'] + counts['SENT']} · CRO-vetoed proposals: {vetoes}\n"
             f"{market_context}\nManual review only; weekly hypothetical outcomes are reported separately."
         )
+        if pnl is not None:
+            from backend.core.content import sanitize_text
+
+            if len(pnl) > 2000 or not pnl.strip():
+                raise DataIntegrityError("PL-05: bounded nonempty accounting digest required")
+            text += "\n" + sanitize_text(pnl)
         self.state.ledger.append(
             SecurityEvent, kind="DESK_DIGEST", detail={"day": day.isoformat(), "text": text}
         )
@@ -384,7 +390,7 @@ class DeskCommands:
 
     async def help(self, argument: str) -> tuple[str, ...]:
         return (
-            "/status · /positions · /digest · /report · /edge · /progress\n"
+            "/status · /positions · /digest · /report · /edge · /progress · /pnl · /tax\n"
             "/halt reason stops entries immediately. /pause allows reductions only.\n"
             "Approve creates a manual ticket after fresh checks. Details is read-only.\n"
             "I placed it records your action; broker fills are checked separately.\n"

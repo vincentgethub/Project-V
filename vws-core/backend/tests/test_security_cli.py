@@ -72,8 +72,8 @@ def no_native_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(asyncio, "run", run)
 
 
-@pytest.fixture
-def context(
+@pytest.fixture(name="context")
+def make_security_context(
     engine: Engine,
     clock: FrozenClock,
     tmp_path: Path,
@@ -184,11 +184,37 @@ async def test_OPS_02_composition_builds_six_real_jobs_without_orders_or_network
     from shutil import copytree
 
     from backend.agents.orchestrator import JobName
-    from backend.core.errors import ProviderError
+    from backend.core.clock import Clock
+    from backend.core.errors import DataIntegrityError, ProviderError
+    from backend.data.async_reader import AsyncAlpacaReader
+    from backend.funding.activities import AlpacaActivitiesSource
     from backend.ops.account_context import LedgerAccountContext
     from backend.ops.doctor import Check, DoctorResult
     from backend.ops.read_checks import PaperAccountCheck, ReadChecksClient
+    from vws import runtime_cli
     from vws.runtime_cli import compose
+
+    class OfflineActivities(AlpacaActivitiesSource):
+        def __init__(
+            self,
+            settings: Settings,
+            account_id: str,
+            state: SystemStateStore,
+            clock: Clock,
+            reader: AsyncAlpacaReader,
+            policy: EgressPolicy,
+        ) -> None:
+            super().__init__(
+                settings,
+                account_id,
+                state,
+                clock,
+                reader,
+                policy,
+                transport=httpx.MockTransport(lambda request: httpx.Response(503)),
+            )
+
+    monkeypatch.setattr(runtime_cli, "AlpacaActivitiesSource", OfflineActivities)
 
     original = Path(__file__).resolve().parents[2]
     copytree(original / "config", module.PROJECT / "config")
@@ -260,10 +286,11 @@ async def test_OPS_02_composition_builds_six_real_jobs_without_orders_or_network
         jobs = body.__self__
         assert isinstance(jobs, DeskJobs)
         assert isinstance(jobs.source, ConnectedDeskSource)
-        with pytest.raises(ProviderError):
+        with pytest.raises(DataIntegrityError):
             await jobs.source.scan()
-        with pytest.raises(ProviderError):
+        with pytest.raises(DataIntegrityError):
             await jobs.source.refresh("NVDA")
+        assert context.state.current() == SystemState.HALTED
         from datetime import timedelta
 
         from backend.data.data_layer import BatchBars, SymbolBars, _bars_digest
@@ -475,7 +502,17 @@ def test_SEC_73_cli_panic_still_persists_halt_with_a_corrupted_ledger(
 def make_pre_news_schema(engine: Engine) -> None:
     """SEC-73: synthetic prior schema, without changing an owner's database."""
     with engine.begin() as connection:
-        from backend.core.database import JobRun, SchemaVersion, TicketEvent
+        from backend.core.database import (
+            CashFlow,
+            DailyPnL,
+            JobRun,
+            SchemaVersion,
+            TaxEvent,
+            TicketEvent,
+        )
+
+        for model in (CashFlow, DailyPnL, TaxEvent):
+            model.metadata.tables[model.__tablename__].drop(connection)
 
         JobRun.metadata.tables[JobRun.__tablename__].drop(connection)
         TicketEvent.metadata.tables[TicketEvent.__tablename__].drop(connection)
@@ -484,7 +521,7 @@ def make_pre_news_schema(engine: Engine) -> None:
         connection.execute(update(SchemaMeta).where(SchemaMeta.id == 1).values(version=2))
 
 
-@pytest.mark.parametrize("version", [2, 4])
+@pytest.mark.parametrize("version", [2, 4, 5])
 def test_SEC_73_old_schema_panic_halts_without_silent_migration(
     context: module.SecurityContext,
     monkeypatch: pytest.MonkeyPatch,
@@ -494,11 +531,14 @@ def test_SEC_73_old_schema_panic_halts_without_silent_migration(
     if version == 2:
         make_pre_news_schema(context.engine)
     else:
-        from backend.core.database import SchemaVersion
+        from backend.core.database import CashFlow, DailyPnL, SchemaVersion, TaxEvent
 
         with context.engine.begin() as connection:
-            SchemaVersion.metadata.tables[SchemaVersion.__tablename__].drop(connection)
-            connection.execute(update(SchemaMeta).where(SchemaMeta.id == 1).values(version=4))
+            for model in (CashFlow, DailyPnL, TaxEvent):
+                model.metadata.tables[model.__tablename__].drop(connection)
+            if version == 4:
+                SchemaVersion.metadata.tables[SchemaVersion.__tablename__].drop(connection)
+            connection.execute(update(SchemaMeta).where(SchemaMeta.id == 1).values(version=version))
     with pytest.raises(DatabaseError, match="version"):
         create_schema(context.engine)
     monkeypatch.setenv("DB_URL", str(context.engine.url))
@@ -509,7 +549,7 @@ def test_SEC_73_old_schema_panic_halts_without_silent_migration(
         control = session.get(SystemControl, 1)
         assert control is not None and control.state == SystemState.HALTED.value
         assert session.scalar(select(SchemaMeta.version)) == version
-    assert ("news_headlines" in inspect(context.engine).get_table_names()) == (version == 4)
+    assert ("news_headlines" in inspect(context.engine).get_table_names()) == (version >= 4)
     assert events(context.engine, "PANIC")
     assert "Local state: HALTED" in capsys.readouterr().out
     with pytest.raises(ConfigurationError, match="verified ledger"):

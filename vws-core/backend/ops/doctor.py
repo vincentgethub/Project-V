@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.core.clock import Clock, ensure_utc
-from backend.core.config import Settings, YamlConfig
+from backend.core.config import MANUAL_CSV_DISABLED_MESSAGE, Settings, YamlConfig
 from backend.core.database import SecurityEvent, transaction
 from backend.core.errors import DataIntegrityError
 from backend.core.system_state import SystemStateStore
@@ -145,7 +145,11 @@ class Doctor:
             return self.python_version >= (3, 11)
 
         async def mode_check() -> bool:
-            return self.settings.paper_trading and self.settings.execution_mode == "MANUAL"
+            return (
+                self.settings.paper_trading
+                and self.settings.execution_mode == "MANUAL"
+                and self.settings.broker_state_source == "ALPACA"
+            )
 
         async def chain_check() -> bool:
             self.state.ledger.verify_chain()
@@ -189,8 +193,8 @@ class Doctor:
         )
         await test(
             "mode_endpoint",
-            "MANUAL paper mode is selected.",
-            "Use MANUAL paper; AUTO remains unavailable before Stage I.",
+            "MANUAL paper mode with the connected Alpaca state source is selected.",
+            MANUAL_CSV_DISABLED_MESSAGE + " AUTO awaits Stage I.",
             mode_check,
         )
         await test(

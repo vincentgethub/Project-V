@@ -36,6 +36,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     replay_command.add_argument("--initial-equity")
     replay_command.add_argument("--checking-balance")
     replay_command.add_argument("--workers", type=int)
+    tax = commands.add_parser("tax").add_subparsers(dest="tax_operation", required=True)
+    tax_report = tax.add_parser("report")
+    tax_report.add_argument("--year", type=int, required=True)
+    tax_report.add_argument("--account", default="all")
+    tax_report.add_argument("--simulate", action="store_true")
+    tax_lots = tax.add_parser("import-lots")
+    tax_lots.add_argument("--file", type=Path, required=True)
+    tax_reconcile = tax.add_parser("reconcile")
+    tax_reconcile.add_argument("--year", type=int, required=True)
+    tax_reconcile.add_argument("--1099b", dest="official", type=Path, required=True)
+    tax_reconcile.add_argument("--mapping", type=Path, default=Path("config/1099b_columns.yaml"))
     ops = commands.add_parser("ops").add_subparsers(dest="operation", required=True)
     attest = ops.add_parser("attest")
     attest.add_argument("item")
@@ -120,7 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Verified encrypted backup: {migration.backup_path}")
             return 0
         selected_env = args.env_file
-        if args.command == "doctor" and selected_env is None:
+        if args.command in {"doctor", "tax"} and selected_env is None:
             selected_env = security.PROJECT / ".env"
         context = security.open_context(
             selected_env,
@@ -128,7 +139,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             store=store,
         )
         try:
-            if args.command == "doctor":
+            if args.command == "tax":
+                from vws.tax_cli import reconcile_broker, report
+
+                if args.tax_operation == "import-lots":
+                    from backend.tax.imports import import_marked_lots
+                    from backend.tax.models import NOTICE
+
+                    lots = import_marked_lots(
+                        context.ledger,
+                        args.file,
+                        "PAPER" if context.settings.paper_trading else "LIVE",
+                    )
+                    print(f"Recorded {len(lots)} owner-marked external lots for sale review.")
+                    print(NOTICE)
+                elif args.tax_operation == "report":
+                    totals, directory = report(
+                        context, security.PROJECT, args.year, args.account, args.simulate
+                    )
+                    print(totals.notice)
+                    print(
+                        f"{'SIMULATED - NOT FOR FILING' if args.simulate else 'LIVE - ESTIMATE'}: {directory}"
+                    )
+                else:
+                    directory, text = reconcile_broker(
+                        context, security.PROJECT, args.year, args.official, args.mapping
+                    )
+                    print(text)
+                    print(f"1099-B reconciliation: {directory}")
+            elif args.command == "doctor":
                 result = asyncio.run(security.doctor_result(context, store))
                 for line in result.lines():
                     print(line)

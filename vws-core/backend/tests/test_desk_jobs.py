@@ -182,8 +182,10 @@ async def test_GD_04_premarket_unavailable_facts_annotate_then_suspect_closes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("accounting_fails", [False, True])
 async def test_R_09_monitor_body_sends_urgent_capped_exit_while_halted_and_deduplicates(
     harness: Harness,
+    accounting_fails: bool,
 ) -> None:
     h = harness
     jobs, source, api = composition(h)
@@ -201,11 +203,25 @@ async def test_R_09_monitor_body_sends_urgent_capped_exit_while_halted_and_dedup
         }
     )
     h.state.escalate(SystemState.HALTED, "test monitor after entry halt")
+    if accounting_fails:
+
+        async def failed_poll() -> JobCounts:
+            raise DataIntegrityError("Synthetic accounting failure")
+
+        jobs.fill_poll = failed_poll
     await jobs.bot.start()
     try:
-        assert (await jobs.position_monitor()).counts["exit_suggestions"] == 1
+        if accounting_fails:
+            with pytest.raises(DataIntegrityError, match="held exit warnings"):
+                await jobs.position_monitor()
+        else:
+            assert (await jobs.position_monitor()).counts["exit_suggestions"] == 1
         assert "Held cap 3 shares" in api.messages[-1] and "IEX" in api.messages[-1]
-        assert (await jobs.position_monitor()).counts["exit_suggestions"] == 0
+        if accounting_fails:
+            with pytest.raises(DataIntegrityError):
+                await jobs.position_monitor()
+        else:
+            assert (await jobs.position_monitor()).counts["exit_suggestions"] == 0
         assert "distance 0.00%" in "".join(await jobs.commands.positions(""))
         assert h.state.current() == SystemState.HALTED
     finally:

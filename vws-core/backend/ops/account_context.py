@@ -98,6 +98,8 @@ class LedgerAccountContext:
             for source in payload["history"]:
                 row = dict(source)
                 row["trade_id"] = UUID(row["trade_id"])
+                if row.get("execution_id") is not None:
+                    row["execution_id"] = UUID(row["execution_id"])
                 row["price"] = decimal_money(row["price"])
                 row["ts"] = datetime.fromisoformat(row["ts"])
                 row["acquisition_trade_id"] = (

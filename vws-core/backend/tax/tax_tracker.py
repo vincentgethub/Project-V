@@ -16,7 +16,7 @@ from backend.domain.compliance_models import TaxLot, TradeRecord
 from backend.domain.instruments import InstrumentRegistry
 from backend.domain.models import FrozenModel, Money
 from backend.domain.tax_profile import EXTERNAL_LOT_REMINDERS, TAX_ESTIMATE_NOTICE, TaxProfile
-from backend.risk.wash_sales import WashSaleMatcher
+from backend.tax.lots import WashSaleMatcher
 
 
 class SaleReview(FrozenModel):

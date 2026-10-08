@@ -239,3 +239,18 @@ async def test_OPS_01_local_failures_are_red(
     result = await service.run()
     assert result.exit_code == 1
     assert next(row for row in result.checks if row.name == name).status == "RED"
+
+
+@pytest.mark.asyncio
+async def test_DAT_12_native_manual_csv_never_uses_an_alpaca_account_instead(
+    engine: Engine, calendar: MarketCalendar, tmp_path: Path
+) -> None:
+    service = make(engine, calendar, tmp_path)
+    service.settings = Settings.validated_copy(
+        service.settings.model_copy(update={"broker_state_source": "MANUAL_CSV"})
+    )
+    result = await service.run()
+    check = next(row for row in result.checks if row.name == "mode_endpoint")
+    assert result.exit_code == 1 and check.status == "RED"
+    assert "MANUAL_CSV is disabled by owner decision (Oct 8 2026)" in check.fix
+    assert "BROKER_STATE_SOURCE=ALPACA" in check.fix

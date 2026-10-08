@@ -15,6 +15,86 @@ docs/FINAL_REPORT.md with per-stage gates, the final cumulative offline/replay
 result, every unverified prerequisite, unmet spec IDs, known risks and exact
 setup/doctor/paper-start commands; then stop. No AUTO_LIVE or live trading.
 
+## Stage J GREEN OFFLINE with owner deferral - October 8, 2026
+
+The final frozen-code cumulative gate passed **4,266 tests, 52 skipped, one
+perf deselected, two warnings, 1,114.23s**, exit zero. Complete required branch
+coverage is **100%: 5,244 statements / 1,684 branches, zero missing/partial**,
+including the entire tax and evaluation packages. The skips are 51 explicit
+PostgreSQL checks and one explicit-key paper integration; never passes. Warnings
+are pinned SDK deprecation and the deliberate blocked-socket positive control.
+The separate fixed 20-symbol/seven-year replay passed **one case, four
+deselected, 102.44s overall; timed replay 75.600s, 443 decisions**. Its SHA256
+remains `783fe52c18b79f3921628abed5dd05d3969af0549c15347e7a256a684ad1226d`.
+Distinct available passed cases including replay: **4,267**. Overlapping focused
+counts are not added. No parameters changed.
+
+Owner decision, Oct 8 2026: ALPACA primary state/funding only; no host evidence
+file. Amendment 02 §11.2 item 1's "MANUAL_CSV path works" acceptance is
+**DEFERRED (user decision, Oct 8 2026)**. DAT-12/FN-02 manual adapters refuse
+before filesystem access, including direct methods and constructor bypass.
+Startup and doctor clearly name the disabled setting and ALPACA fix. Accounting
+rejects non-Alpaca primary sources before config/history reads and cached returns.
+No `data/manual_*.csv` reader remains in funding/state code. Other-account tax
+imports remain explicit inputs. The deferral-focused union passed **468 tests,
+one SDK warning, 87.84s**, with **1,403 tax/contract statements / 440 branches,
+100%**. The preceding narrower 95-test selection missed two existing branches
+(98.61%) and was not green; the wider selection closed that coverage gap.
+
+Ruff/format (301 files), strict typing (283 sources), full AST positive controls,
+pip check and all five Git-root pre-commit hooks pass. Production Bandit has
+**zero findings/errors, 35,820 lines, 13 reviewed skips**. CI mirrors are identical;
+the six-case supply-chain regression passed. Authored-source secret findings:
+zero; owner dotenv/data/log/backup excluded and token verification disabled.
+Historical diagnostics: first full attempt stopped at 21% after static findings;
+next attempt **4,308 passed / three failed / 52 skipped**, failed coverage and
+source changed during it. Fixed legacy scratch-schema and injected-503 tests
+passed. The pre-deferral gate **4,321 passed / 52 skipped / 100% (5,243 statements,
+1,682 branches)** is historical, superseded by the current 4,266-case gate.
+An overly broad Windows Bandit scan included fixtures and hit cp1252 reporting;
+it is not a pass. The production JSON scan supersedes it.
+
+Real services, POSIX mutation, PostgreSQL, Docker, real paper integration and
+remote CI remain UNVERIFIED with reproduction commands in VERIFY.md. No owner
+DB, dotenv, keyring or broker was opened. Stage I follows the local J commit.
+
+| Requirement | Implementation | Offline evidence / remaining prerequisite |
+| --- | --- | --- |
+| FN-01/AX-13 | Read-only activities transport; funding observer only; original full AST positive controls retained | `test_accounting_service.py`, `test_funding_and_pnl.py`, source guard; no transfer, bank-link or order code |
+| FN-02 | `funding/activities.py`, `tracker.py`; complete Alpaca startup pagination, subsequent overlap, stable IDs, exact raw JSON money; `csv_source.py` disabled | Paging faults, repeated polls/restarts, disabled manual source/file-access probes; manual acceptance DEFERRED by owner Oct 8 2026; real account history UNVERIFIED |
+| FN-03/CRO-09 | Atomic cash activity + scaled PortfolioState in one serialized transaction; legacy baseline proof required | Deposit/withdrawal golden, rollback, tampered lineage, legacy missing/scaled proof; no baseline reset |
+| FN-04 | Persisted notification acknowledgements; verified withdrawals alert before later accounting failures | Urgent withdrawal despite missing lots/baseline; unknown activities recorded and announced only |
+| FN-05 | Exact income and corporate-action evidence; quantities compared with current broker holdings | Typed subtype, bound event and holding mismatch tests; unsupported corporate basis transformations fail closed rather than guessed |
+| FN-06 | README funding instructions are broker-dashboard actions by the owner | No funding API calls; real dashboard reset steps/account identity still UNVERIFIED |
+| PL-01/04 | `pnl/history.py`, `models.py`, `storage.py`, `service.py`; exact daily equity GET, COMPUTED cash backfill, append-only superseding corrections | Fresh verified close fallback; missing intervening closes halt; ordered/cohort-bound series and repeated-read deduplication; no invented opening return |
+| PL-02/03/06 | `pnl/stats.py`; Decimal external-flow math, TWR, full session windows, drawdown dates, explicit SPY price-only status | Hand-computed deposit/withdrawal, averages, signs and benchmark goldens; P&L separated from tax |
+| PL-05/TX-08 | Private `/pnl` and `/tax`, daily digest, weekly tax summary; TX defaults shared with setup | Actual producer/command fixtures; unset federal rates yield totals only, no invented tax rate |
+| TX-01/02 | `tax/models.py`, `imports.py`, `accounting.py`; one bound primary account, explicit external CSV accounts, FIFO/compressed FIFO, exact fees/basis | Owner CSV edits append versions/manifests, no external login; real 1099-B lot matching remains UNVERIFIED |
+| TX-03..05/CMP-01/02 | Sole matcher `tax/lots.py`; old risk import is compatibility only; actual SELL execution binds disposed slices | Existing wash/compliance tests unchanged; chains, leap anniversary, micro-unit fee/basis conservation, IRA/Roth permanence, capped convergence |
+| TAX_PROFILE | Recorded primary sales checked against marked IRA/Roth, Merrill and 401(k) lots through shared matcher | One alert per actual sale, all slices checked; 401(k) treatment not inferred; no other-account login |
+| TX-06 | Broker income subtype retained; qualified/exempt classification requires 1099-DIV evidence hash | Unclassified dividend estimates, interest and fees; real broker classification UNVERIFIED |
+| TX-07/10 | `tax/reports.py`, `vws/tax_cli.py`; five write-once files under year/environment/account/content hashes; exact disclaimer | Golden exports, every paper CSV header/row labelled SIMULATED, forged book rejected, corrupt retry refused; latest successful reconciliation/book hash required; no paper report without `--simulate` |
+| TX-09 | `tax/reconcile.py`, explicit `config/1099b_columns.yaml` | All mismatch/unmatched/ambiguous rows, strict >$0.01 comparison, term difference, mapping aliases/duplicates rejected; actual broker columns and current-year IRS instructions UNVERIFIED |
+| CM-04 | Modeled fill fees explicitly remain estimates; actual FEE cash counted once only with verified fill fee attribution | Golden actual charge, model/actual ambiguity, positive credit and conflicting fee total tests; unverified refunds are not expenses. Documented retail NTA schema supplies no per-fill fee association, so real attribution remains UNVERIFIED |
+| R-02/08/SEC-50 | Schema 6 adds cash_flows/daily_pnl/tax_events, exact ORM/trigger/payload/relationship guards; known legacy layouts only | SQLite immutability and migration union passed 221 cases; encrypted backup remains prerequisite to owner migration; no owner migration was run |
+| OPS-02/R-09 | Host startup captures complete account history; scan/approval refreshes context; accounting failure latches HALT but held exit warnings continue | Startup-fault lifecycle and urgent held-exit regression; default native MANUAL paper Alpaca path wired |
+| DAT-12/FN-02 / Amendment 02 §11.2 item 1 | Manual state/funding adapters are disabled compatibility boundaries; startup guard, doctor and accounting guards require ALPACA | **DEFERRED (user decision, Oct 8 2026)**. Direct constructors/methods, injected providers and cached history cannot enable manual CSV or read its files. Host evidence file declined; no safety rule weakened |
+
+The owner explicitly resolved the manual-path decision and authorized J completion
+with this acceptance deferred, then I/K/V/W. The fresh disabled-policy full gate
+must pass before J is committed and Stage I begins. The final build report waits
+until every remaining stage is actually complete and must retain this deferral.
+README/RUNBOOK now document funding detection, version-6 migration, explicit
+tax commands/import formats, the exact disclaimer and unresolved evidence.
+ASSUMPTIONS/SELF_REVIEW retain the deliberate manual deferral, ambiguous fee/corporate
+basis refusal, marked-lot retirement limitation and tied-fill ordering risk.
+No executor was created, no mode was upgraded, no live path was enabled and no
+remote was added or pushed in this work. An existing origin is retained unchanged.
+Repository identity is the requested vincentgethub/noreply pair; all 11 existing
+commits have different author and committer email, and none was rewritten.
+Approved Amendment 02 execution remains in scope
+for Stage I; the older master prohibition is not treated as permanent.
+
 ## Stage H GREEN OFFLINE - October 8
 
 The final cumulative offline gate passed **4,080 tests, 46 skipped, one perf

@@ -87,6 +87,7 @@ class HostRuntime:
         *,
         close_resources: Callable[[], Awaitable[None]],
         verify_broker_time: Callable[[], Awaitable[object]],
+        initialize_account: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         self.settings = Settings.validated_copy(settings)
         if (
@@ -106,6 +107,7 @@ class HostRuntime:
         )
         self.run_id = uuid4()
         self.verify_broker_time = verify_broker_time
+        self.initialize_account = initialize_account
         self.notifications = SafetyNotifications()
         self.state.notifier = DeduplicatingNotifier(self.notifications)
 
@@ -121,6 +123,13 @@ class HostRuntime:
             enable_sqlite_wal(self.state.engine)
             started_bot = True  # cleanup covers partial polling initialization
             await self.bot.start()
+            if self.initialize_account is not None:
+                try:
+                    await self.initialize_account()
+                except Exception as error:
+                    # A history fault stops entries, while polling and held exit
+                    # warnings remain available under the persisted halt.
+                    self.state.halt_for_error(error)
             self.orchestrator.start()
             self.state.ledger.append(
                 SecurityEvent,

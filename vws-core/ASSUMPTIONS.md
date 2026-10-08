@@ -377,3 +377,37 @@ delivery and in VERIFY.md.
     H gate now includes the whole evaluation package and both CI mirrors.
     Capacity constants retain their production values; tests use smaller
     restrictive bounds without creating oversized synthetic tapes.
+90. Owner decision Oct 8 2026 supersedes manual-state/funding requirements:
+    BROKER_STATE_SOURCE is ALPACA only. MANUAL_CSV refuses startup with a clear
+    doctor message; its component constructors/methods never read manual CSVs.
+    Amendment 02 §11.2 item 1's manual acceptance is DEFERRED by the owner.
+    The proposed host evidence file was declined and not built. Explicit
+    other-account tax imports are distinct from primary state/funding.
+91. Complete activity history and current holdings must reconcile before account
+    context or tax reports are published. Legacy external flows require proof
+    that equity marks already incorporate their scaling. Missing prior marks,
+    unknown corporate-action basis, ambiguous fees and cross-account/environment
+    evidence fail closed with durable HALT; current cash does not prove history.
+92. Historical portfolio-history responses supply equity, not historical cash
+    or long market value. The accounting service reconstructs those fields from
+    complete evidence and marks them COMPUTED. P&L return math is the specified
+    exact flow-adjusted identity, not a substituted broker-return series.
+93. Retail activity documentation does not establish per-fill FEE allocation.
+    Dated schedule fees remain estimates; ambiguous actual FEE versus modeled
+    fill fees refuse double-counting. Positive fee credits also refuse pending
+    verified refund semantics. Real REG/TAF attribution remains UNVERIFIED.
+94. Marked external lots are awareness evidence, not invented transaction fills.
+    Same-ID corrections are versioned, but omission does not retire an earlier
+    lot and no tombstone input exists. This may overstate replacement awareness.
+    External histories and identity groups are only as complete as owner inputs.
+95. Simultaneous opposite-side fills are refused when ordering is ambiguous.
+    Same-side timestamp ties are sorted by stable fill UUID, an explicit
+    deterministic tie-break that may differ from the broker's actual FIFO order.
+    Reconcile actual 1099-B lot ordering before asserting broker agreement.
+96. Report form boxes stay UNVERIFIED without broker evidence; 2026 IRS form
+    instructions are not verified. Loss deductions/carryovers are estimates of
+    maximum amounts and do not incorporate unknown prior-year carryovers or
+    taxable-income limits. The supplied 1099-B remains authoritative.
+97. Stage J schema 6 is additive. Panic retains exact recognized versions 2–5
+    and the current layout without rewriting older ledger hashes. All migration
+    development used temporary databases; the owner's DB was not opened.

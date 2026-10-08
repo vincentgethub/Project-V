@@ -75,6 +75,8 @@ class DeskJobs:
         *,
         refresh_request: Callable[[ResearchRequest], Awaitable[ResearchRequest | None]]
         | None = None,
+        accounting_capture: Callable[[], Awaitable[JobCounts]] | None = None,
+        pnl_digest: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         if bot.state is not desk.swarm.state or commands.state is not bot.state:
             raise ConfigurationError("GD-04: job bodies must share the defensive desk")
@@ -82,6 +84,7 @@ class DeskJobs:
         self.weekly_report, self.maintenance, self.fill_poll = weekly_report, maintenance, fill_poll
         self.state, self.clock = bot.state, bot.clock
         self.refresh_request = refresh_request
+        self.accounting_capture, self.pnl_digest = accounting_capture, pnl_digest
 
     def bodies(self) -> dict[JobName, JobBody]:
         return {
@@ -114,8 +117,11 @@ class DeskJobs:
             )
 
     async def daily_scan(self) -> JobCounts:
+        accounting = JobCounts(counts={})
+        if self.accounting_capture is not None:
+            accounting = JobCounts.model_validate(await self.accounting_capture())
         if self.state.current() != SystemState.RUNNING:
-            return JobCounts(counts={"entries_skipped": 1})
+            return JobCounts(counts={**accounting.counts, "entries_skipped": 1})
         expired = await self.bot.expire_alerts()
         cycle = ScanCycle.model_validate(await self.source.scan())
         now = ensure_utc(self.clock.now())
@@ -164,7 +170,9 @@ class DeskJobs:
             if cycle.spy_above_ema200 is None
             else "SPY " + ("above" if cycle.spy_above_ema200 else "below") + " 200-day avg"
         )
-        await self.bot.notify(self.commands.save_digest(context), False)
+        pnl = None if self.pnl_digest is None else await self.pnl_digest()
+        await self.bot.notify(self.commands.save_digest(context, pnl=pnl), False)
+        counts.update(accounting.counts)
         return JobCounts(counts=dict(counts))
 
     async def premarket_check(self) -> JobCounts:
@@ -270,7 +278,16 @@ class DeskJobs:
         return None
 
     async def position_monitor(self) -> JobCounts:
-        fills = JobCounts.model_validate(await self.fill_poll())
+        poll_failed = False
+        try:
+            fills = JobCounts.model_validate(await self.fill_poll())
+        except Exception:
+            self.state.escalate(
+                SystemState.HALTED,
+                "Account activity/history check failed; held exits still require review",
+            )
+            poll_failed = True
+            fills = JobCounts(counts={"account_activity_failures": 1})
         view = PositionView.model_validate(await self.source.positions())
         if view.portfolio.account_id != self.commands.account_id:
             raise DataIntegrityError("GD-04: monitored positions belong to another account")
@@ -321,6 +338,10 @@ class DeskJobs:
                         detail={"symbol": warning.symbol, "reason": warning.reason, "day": day},
                     )
                     count += 1
+        if poll_failed:
+            raise DataIntegrityError(
+                "Account activity check failed; held exit warnings were still evaluated"
+            )
         return JobCounts(counts={**fills.counts, "exit_suggestions": count})
 
     async def news_watch(self) -> JobCounts:

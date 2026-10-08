@@ -1,0 +1,6 @@
+# Owner-entered/imported accounts only. No external account login is supported.
+# Alpaca is bound to its actual account ID by setup/runtime, never a sample ID.
+# CSV accounts specify id, name, tax_status (TAXABLE|IRA|ROTH), source: CSV,
+# fills_csv, and optional lot_method: FIFO. Alpaca defaults to compressed FIFO.
+# 401(k) marked lots are reviewed for awareness; its tax treatment is not inferred.
+accounts: []

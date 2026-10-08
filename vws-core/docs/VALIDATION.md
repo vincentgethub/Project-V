@@ -11,8 +11,9 @@ Every result uses the same cost model: liquidity-floor or measured half-spread,
 trade-through limit entries, a volume cap, conservative stop-first exits and
 dated fees rounded up per component. Gaps and next-open exits can differ from
 the recorded levels. The first partial entry is not topped up. Fees before the
-first dated row use that row and are disclosed as estimates. Broker FEE activity
-ingestion arrives in Stage J; subscription and commission-plan facts are still
+first dated row use that row and are disclosed as estimates. Stage J's broker
+FEE ingestion passed offline checks; it does not rewrite recorded evaluation
+costs. Real fee allocation, subscription and commission-plan facts remain
 unverified. Signal prices use split adjustments, with native RAW fills and
 whole shares. A fractional or subcent split is unavailable, never a fabricated
 fill. The alert tracker ignores dividends. Replay uses adjacent ALL/SPLIT

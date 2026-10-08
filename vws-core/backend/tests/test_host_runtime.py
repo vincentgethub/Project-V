@@ -103,6 +103,23 @@ def make(
 
 
 @pytest.mark.asyncio
+async def test_TX_startup_fault_keeps_polling_and_held_monitor_available(
+    engine: Engine, clock: FrozenClock, tmp_path: Path
+) -> None:
+    runtime, stop, closed, bot = make(engine, clock, tmp_path)
+
+    async def unavailable() -> None:
+        assert bot.calls == ["start"]
+        raise DataIntegrityError("Synthetic missing tax history")
+
+    runtime.initialize_account = unavailable
+    await runtime.run(stop)
+    assert runtime.state.current() == SystemState.HALTED
+    assert bot.calls == ["start", "stop"] and closed == ["closed"]
+    runtime.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("halted", [False, True])
 async def test_OPS_02_start_stop_health_and_persisted_halt(
     engine: Engine, clock: FrozenClock, tmp_path: Path, halted: bool

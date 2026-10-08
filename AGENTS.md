@@ -14,6 +14,12 @@ Later amendments override conflicts in earlier specifications/addenda. The
 earlier LLM fundamental framework is superseded by Amendment 01 section 4.2.
 Amendment 04 was replaced verbatim by the owner's October 6 attachment; its
 revised wizard order, skip behavior and full private progress page now apply.
+Owner decision, October 8 2026: BROKER_STATE_SOURCE stays ALPACA only.
+MANUAL_CSV must refuse startup with a clear doctor message. Funding/state code
+must never read data/manual_*.csv. Amendment 02 section 11.2 item 1's manual
+CSV acceptance is DEFERRED by the owner; the host evidence file was declined.
+Keep disabled-path regression tests. Finish J with that recorded deferral,
+then continue I, K, V and W. This overrides the earlier manual CSV requirements.
 Build only specified features. Put optional ideas at the bottom of PROGRESS.md
 under Suggestions: purpose, benefit, risk, effort. Wait for the owner's plain-
 words approval before implementing them. Never suggest weakening safety.

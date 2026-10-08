@@ -251,6 +251,83 @@ def _all_records(ledger: Ledger, clock: FrozenClock) -> dict[type[LedgerRecord],
         telegram_user_id=999,
         detail={"reason": "fixture signature rejected"},
     )
+    from backend.core.database import CashFlow
+    from backend.domain.models import Side
+    from backend.funding.models import Activity
+    from backend.pnl.models import DayInput, build_day
+    from backend.pnl.storage import record_day
+    from backend.tax.models import TaxFill
+    from backend.tax.storage import append_evidence
+
+    activity = Activity(
+        account_id="paper-fixture",
+        env="PAPER",
+        activity_id="div-fixture",
+        type="DIV",
+        amount=Decimal(1),
+        date=clock.now().date(),
+        observed_at=clock.now(),
+        occurred_at=clock.now(),
+        source="BROKER",
+        payload_sha256="a" * 64,
+    )
+    ledger.append(
+        CashFlow,
+        account_id=activity.account_id,
+        env=activity.env,
+        activity_id=activity.activity_id,
+        type=activity.type,
+        amount=activity.amount,
+        date=activity.date.isoformat(),
+        payload_sha256=activity.payload_sha256,
+        payload=activity.model_dump(mode="json"),
+        baseline_effect="NONE",
+    )
+    record_day(
+        ledger,
+        build_day(
+            DayInput(
+                account_id="paper-fixture",
+                env="PAPER",
+                session=clock.now().date(),
+                as_of=clock.now(),
+                equity_start=Decimal(1000),
+                equity=Decimal(1000),
+                cash=Decimal(1000),
+                long_market_value=Decimal(0),
+                external_flows=Decimal(0),
+                realized=Decimal(0),
+                dividends=Decimal(0),
+                interest=Decimal(0),
+                fees=Decimal(0),
+                source="BROKER",
+                provenance_sha256="b" * 64,
+            )
+        ),
+    )
+    tax_fill = TaxFill(
+        fill_id=fill.id,
+        activity_id="fill-fixture",
+        account_id="paper-fixture",
+        env="PAPER",
+        symbol="AAPL",
+        side=Side.BUY,
+        qty=1,
+        price=Decimal("100.00"),
+        fees=Decimal(0),
+        ts=clock.now(),
+        fee_source="BROKER",
+        payload_sha256="c" * 64,
+    )
+    append_evidence(
+        ledger,
+        tax_fill.account_id,
+        tax_fill.env,
+        "FILL",
+        tax_fill.activity_id,
+        tax_fill.payload_sha256,
+        tax_fill.model_dump(mode="json"),
+    )
     assert fill.id is not None
     with Session(ledger.engine) as session:
         result: dict[type[LedgerRecord], LedgerRecord] = {}

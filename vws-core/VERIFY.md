@@ -1,3 +1,47 @@
+# Stage J GREEN OFFLINE with owner deferral - 2026-10-08
+
+Final frozen-code gate: **4,266 passed, 52 skipped, one perf deselected, two
+warnings, 1,114.23s**, exit zero. Required coverage: **100%, 5,244 statements /
+1,684 branches, zero missing/partial**. Skips are 51 explicit PostgreSQL checks
+and one explicit-key paper integration, never passes. Warnings: pinned SDK
+deprecation and deliberate blocked-socket positive control. Fixed replay:
+**one PASS, four deselected, 102.44s overall; 75.600s timed, 443 decisions**.
+SHA256: `783fe52c18b79f3921628abed5dd05d3969af0549c15347e7a256a684ad1226d`.
+Distinct available passes including replay: **4,267**, without adding focused
+counts. Focused deferral union: **468 PASS, 87.84s, 1,403 statements / 440 branches,
+100%**. Ruff/format (301), strict types (283), AST, pip check and all five local
+pre-commit hooks PASS. Production Bandit: zero findings/errors, 35,820 lines,
+13 reviewed skips. CI mirrors identical; six supply-chain cases PASS.
+
+Owner Oct 8 decision: ALPACA primary state/funding only. MANUAL_CSV refuses at
+startup, doctor, constructors and direct methods before filesystem/provider
+access; cached accounting contexts cannot bypass it. No host evidence file was
+built. Amendment 02 §11.2 item 1 / DAT-12 / FN-02 manual acceptance is **DEFERRED
+(user decision, Oct 8 2026)**, retained for FINAL_REPORT. Other-account tax CSV
+imports remain explicit inputs, never primary state/funding.
+
+Historical failed gates are retained in STATUS.md. The earlier 4,321-case gate
+predates the deferral and is superseded. The narrow 95-test selection passed
+cases but failed its 98.61% service coverage gate; the final wider selection
+includes the existing missing branches. No failed gate is called PASS.
+Owner DB, dotenv, keyring and account services were not opened. No order code
+exists before Stage I. Real services and platform checks remain UNVERIFIED.
+
+From the activated vws-core environment, reproduce:
+
+```text
+python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing -m "not perf"
+python -m pytest -q backend/tests/test_tax_accounting.py backend/tests/test_tax_reports.py backend/tests/test_wash_sales.py backend/tests/test_compliance.py backend/tests/test_tax_profile.py backend/tests/test_tax_tracker.py backend/tests/test_funding_and_pnl.py backend/tests/test_accounting_service.py backend/tests/test_tax_guards.py backend/tests/test_tax_cli.py backend/tests/test_manual_broker.py backend/tests/test_doctor.py --cov=backend.tax --cov=backend.domain.compliance_models --cov-branch --cov-fail-under=100 --cov-report=term-missing
+python -m pytest -q -s backend/tests/test_replay_cli.py -m perf
+python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/net backend/ops backend/security backend/telegram backend/notifications backend/tax backend/funding backend/pnl backend/evaluation backend/indicators scripts vws -c pyproject.toml -f json -o data/j-bandit-production.json
+```
+
+Temporary databases, fake transports and disabled sockets only; real dotenv is
+never selected implicitly. Mutation targets include shared tax/lots, holding
+period and netting in pyproject.toml. POSIX mutation, PostgreSQL, Docker, real
+paper integration and remote CI remain UNVERIFIED; exact platform reproduction
+commands are retained below. Stage I starts after J's local commit.
+
 # Stage H verified offline - 2026-10-08
 
 The final cumulative offline safety gate passed **4,080 tests, 46 skipped,

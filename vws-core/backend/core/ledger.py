@@ -17,7 +17,7 @@ from decimal import ROUND_CEILING, Decimal, localcontext
 from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Connection, Engine, select
 from sqlalchemy.orm import Session
 
 from backend.core.clock import Clock, ensure_utc
@@ -27,7 +27,9 @@ from backend.core.database import (
     AlertEvent,
     AppendControl,
     ApprovalEvent,
+    CashFlow,
     ConfigSnapshot,
+    DailyPnL,
     Fill,
     JobRun,
     LedgerRecord,
@@ -42,6 +44,7 @@ from backend.core.database import (
     Signal,
     SystemControl,
     SystemEvent,
+    TaxEvent,
     TicketEvent,
     TradeTicket,
     UTCDateTime,
@@ -306,6 +309,11 @@ class Ledger:
 
     def _validate_record(self, session: Session, record: LedgerRecord) -> None:
         self._validate_common(record)
+        if isinstance(record, (CashFlow, DailyPnL, TaxEvent)):
+            from backend.tax.storage import validate_record
+
+            self._reject_secret_fields(record.payload)
+            validate_record(session, record)
         if isinstance(record, SystemEvent):
             prior = session.scalar(select(SystemEvent).order_by(SystemEvent.seq.desc()).limit(1))
             prior_state = "RUNNING" if prior is None else prior.state
@@ -456,6 +464,7 @@ class Ledger:
                 "stable_id",
                 "headline_sha256",
                 "backup_sha256",
+                "payload_sha256",
             }:
                 if not isinstance(value, str) or len(value) != 64:
                     raise DataIntegrityError(
@@ -915,6 +924,10 @@ class Ledger:
     @staticmethod
     def _verify_relationships(session: Session, records: list[LedgerRecord]) -> None:
         for record in records:
+            if isinstance(record, (CashFlow, DailyPnL, TaxEvent)):
+                from backend.tax.storage import validate_record
+
+                validate_record(session, record)
             for column in record.__table__.columns:
                 value = record.__dict__[column.name]
                 if value is None and not column.nullable:
@@ -1218,62 +1231,9 @@ class Ledger:
         an exact previous equity, and positive marked equity are mandatory.
         """
         try:
-            if not isinstance(amount, Decimal) or not isinstance(equity_before, Decimal):
-                raise DataIntegrityError("Cash flow requires exact Decimal inputs")
-            money_to_scaled(amount)
-            money_to_scaled(equity_before)
-            instant = ensure_utc(ts)
-            if instant > ensure_utc(self.clock.now()):
-                raise ReconciliationError("Cash flow timestamp is in the future")
             with transaction(self.engine) as session:
-                prior = session.scalar(
-                    select(PortfolioState)
-                    .where(PortfolioState.account_id == account_id)
-                    .order_by(PortfolioState.seq.desc())
-                    .limit(1)
-                )
-                if prior is None or equity_before <= 0 or prior.equity != equity_before:
-                    raise ReconciliationError(
-                        "Cash flow cannot resolve its prior managed-account equity"
-                    )
-                if (
-                    instant < prior.as_of
-                    or prior.high_water_mark <= 0
-                    or prior.day_start_equity <= 0
-                ):
-                    raise ReconciliationError(
-                        "Cash flow cannot verify its timestamp or loss baselines"
-                    )
-                with localcontext() as context:
-                    context.prec = 80
-                    equity_after = equity_before + amount
-                    cash_after = prior.cash + amount
-                    if equity_after <= 0 or cash_after < 0:
-                        raise ReconciliationError(
-                            "Cash flow would make equity nonpositive or require borrowing"
-                        )
-                    quantum = Decimal("0.000001")
-                    high_water = (prior.high_water_mark * equity_after / equity_before).quantize(
-                        quantum, rounding=ROUND_CEILING
-                    )
-                    day_start = (prior.day_start_equity * equity_after / equity_before).quantize(
-                        quantum, rounding=ROUND_CEILING
-                    )
-                settled = max(Decimal(0), prior.settled_cash + min(Decimal(0), amount))
-                return self.append_in_session(
-                    session,
-                    PortfolioState,
-                    account_id=account_id,
-                    account_type=prior.account_type,
-                    as_of=instant,
-                    equity=equity_after,
-                    cash=cash_after,
-                    settled_cash=settled,
-                    positions=prior.positions,
-                    high_water_mark=high_water,
-                    day_start_equity=day_start,
-                    cash_flow_amount=amount,
-                    cash_flow_at=instant,
+                return self.record_cash_flow_in_session(
+                    session, account_id, amount, ts, equity_before
                 )
         except Exception as exc:
             try:
@@ -1283,3 +1243,71 @@ class Ledger:
                     "Cash flow failed and durable halt is unconfirmed"
                 ) from halt_error
             raise ReconciliationError("Cash flow rejected; system is HALTED") from exc
+
+    def record_cash_flow_in_session(
+        self,
+        session: Session,
+        account_id: str,
+        amount: Decimal,
+        ts: datetime,
+        equity_before: Decimal,
+    ) -> PortfolioState:
+        """FN-03: same CRO-09 operation in the activity deduplication transaction.
+
+        The caller must roll back first and persist HALT on any reconciliation fault.
+        """
+        bind = session.get_bind()
+        if (
+            not isinstance(bind, Connection)
+            or bind.engine is not self.engine
+            or not bind.in_transaction()
+        ):
+            raise ReconciliationError("Cash flow requires the bound serialized transaction")
+        if not isinstance(amount, Decimal) or not isinstance(equity_before, Decimal):
+            raise DataIntegrityError("Cash flow requires exact Decimal inputs")
+        money_to_scaled(amount)
+        money_to_scaled(equity_before)
+        instant = ensure_utc(ts)
+        if instant > ensure_utc(self.clock.now()):
+            raise ReconciliationError("Cash flow timestamp is in the future")
+        prior = session.scalar(
+            select(PortfolioState)
+            .where(PortfolioState.account_id == account_id)
+            .order_by(PortfolioState.seq.desc())
+            .limit(1)
+        )
+        if prior is None or equity_before <= 0 or prior.equity != equity_before:
+            raise ReconciliationError("Cash flow cannot resolve its prior managed-account equity")
+        if instant < prior.as_of or prior.high_water_mark <= 0 or prior.day_start_equity <= 0:
+            raise ReconciliationError("Cash flow cannot verify its timestamp or loss baselines")
+        with localcontext() as context:
+            context.prec = 80
+            equity_after = equity_before + amount
+            cash_after = prior.cash + amount
+            if equity_after <= 0 or cash_after < 0:
+                raise ReconciliationError(
+                    "Cash flow would make equity nonpositive or require borrowing"
+                )
+            quantum = Decimal("0.000001")
+            high_water = (prior.high_water_mark * equity_after / equity_before).quantize(
+                quantum, rounding=ROUND_CEILING
+            )
+            day_start = (prior.day_start_equity * equity_after / equity_before).quantize(
+                quantum, rounding=ROUND_CEILING
+            )
+        settled = max(Decimal(0), prior.settled_cash + min(Decimal(0), amount))
+        return self.append_in_session(
+            session,
+            PortfolioState,
+            account_id=account_id,
+            account_type=prior.account_type,
+            as_of=instant,
+            equity=equity_after,
+            cash=cash_after,
+            settled_cash=settled,
+            positions=prior.positions,
+            high_water_mark=high_water,
+            day_start_equity=day_start,
+            cash_flow_amount=amount,
+            cash_flow_at=instant,
+        )

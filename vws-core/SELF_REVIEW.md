@@ -1,3 +1,38 @@
+# Stage J safety review - GREEN OFFLINE with owner deferral
+
+Final cumulative gate: 4,266 passes, 52 unavailable service checks skipped,
+100% required branch coverage (5,244 statements / 1,684 branches). The fixed
+replay passed in 75.600s with 443 decisions and unchanged H proof hash. All five
+local pre-commit hooks pass. Real services/platform integrations stay UNVERIFIED.
+Owner declined manual CSV and the host evidence file on Oct 8 2026. Primary
+state/funding stay ALPACA only; MANUAL_CSV refuses before files, provider calls
+or cached returns. Its Amendment 02 acceptance is DEFERRED by owner decision.
+No extra input feature was built. Stage I follows the local green commit.
+
+| Failure route | Applied protection | Evidence |
+| --- | --- | --- |
+| A disabled manual source accesses a file or cached context | Explicit ALPACA guards, unconditional disabled adapter boundaries; no manual file-read implementation | test_manual_broker.py; test_accounting_service.py; test_doctor.py; test_tax_cli.py |
+| Current cash hides missing opening transactions | Complete bound activities, current holdings reconciliation and verified book hash before publishing | test_accounting_service.py; test_tax_cli.py |
+| Duplicate activity scales risk baselines twice | Stable IDs/content checks and atomic ledger/state transaction; restart dedupe | test_funding_and_pnl.py; test_accounting_service.py |
+| A failed book suppresses an urgent withdrawal warning | Attempt the withdrawal notice before later reconciliation; durable acknowledgement | test_accounting_service.py |
+| Faulted accounting traps held-position warnings | Monitor catches accounting failure, persists HALT and still checks held quotes/capped exits | test_desk_jobs.py; test_host_runtime.py |
+| Deposits appear to be profitable trades | Exact external-flow subtraction, specified return denominator, separate cohort/account TWR | test_funding_and_pnl.py |
+| A report invents historic cash or a missing session | Evidence-based COMPUTED reconstruction; no unknown close/fee substitution | test_accounting_service.py |
+| Compliance and tax use conflicting wash rules | One matcher in tax/lots.py; risk compatibility import only | unchanged test_wash_sales.py; test_tax_guards.py |
+| Sold slices replace their own wash loss | Final inventory excludes sold siblings, shared replacement capacity, chained basis/tacking | test_tax_accounting.py; test_wash_sales.py |
+| Actual FEE activity gets charged again as modeled fees | Exact attribution/conservation checks; typed refusal for ambiguity or unverified credits | test_accounting_service.py; test_tax_reports.py |
+| Paper or another account enters a real return | Account/env binding in history, events, book, manifests and exports | test_tax_cli.py; test_tax_reports.py; test_tax_guards.py |
+| Forged accounting evidence renders a plausible CSV | Rebuild the book, compare its hash and require latest successful reconciliation after checkpoint | test_tax_reports.py; test_tax_cli.py |
+| Corrected imports erase original evidence | Append-only correction versions/manifests; write-once content-addressed outputs | test_tax_accounting.py; test_tax_cli.py; test_ledger.py |
+| Untrusted mapping instantiates objects or aliases | Restricted SafeLoader, explicit bounded distinct columns, alias/depth refusal | test_tax_reports.py; reviewed B506 skip |
+| Migration destroys old audit history | Exact v2–6 inventories, encrypted verified backup, additive tables and retained chain | test_migrations.py; test_security_cli.py; test_ledger.py |
+
+Known limitations: native manual input is DEFERRED by owner; missing marked-lot
+retirement can overstate wash awareness; tied same-side fills use a UUID ordering
+that needs actual broker reconciliation; real fee allocation, corporate-action
+basis, 1099-B format/lot method and 2026 IRS forms are UNVERIFIED. No claim of
+tax-filing readiness, real trading edge or completed host deployment is made.
+
 # Stage H safety review - GREEN OFFLINE
 
 The final cumulative gate passed 4,080 cases with 46 unavailable service checks
@@ -6,7 +41,7 @@ is 100% (4,168 statements / 1,346 branches). The fixed replay passed separately.
 All five local Git-root pre-commit hooks passed. Real deployment/services remain
 UNVERIFIED; the following review covers implemented offline boundaries.
 
-H's final regression is still running. No connected owner check is claimed.
+H's final regression passed. No connected owner check is claimed.
 
 | Failure route | Applied protection | Evidence |
 | --- | --- | --- |
@@ -34,7 +69,7 @@ unverified; optional PostgreSQL upgrade is refused. Restricted Docker lacks a
 native secret store and refuses connected startup. Systemd must preserve the
 read-only user bus and requires the user's unlocked Secret Service. Planned
 ticket stops are never called broker stop coverage. Weekly reports need current
-sealed history, and the H account reader cannot produce Stage J's history.
+sealed history; J's later history producer still needs real-service verification.
 No real credentials, bank operations, orders, deployment or source self-writes.
 
 # Stage G/G+ safety review
@@ -95,8 +130,7 @@ the applied Stage G protections.
 | Scheduled jobs overlap or a failure disappears | Single-instance locks and six bounded jobs; append PASS/FAIL/SKIPPED JobRun evidence | test_scheduler.py; test_desk_jobs.py |
 | A future code change opens an order or funding route | Full AST negative and positive controls over all authored Python; no executor exists | test_no_order_exec.py and core/source_guard.py |
 
-Connected orchestration still needs Stage H's host startup, live history-source
-composition, notifier wiring, encrypted scheduled maintenance and watchdog.
-The Stage G ledger source and publisher exist; fake test providers do not certify
-real connections. Actual account/tax activities remain J, emergency drills K,
-registered validation V and realtime feed health W.
+Stage H now supplies host startup, notifier wiring, encrypted scheduled
+maintenance and watchdog. J supplies the later history composition under final
+checks; fake providers do not certify real connections. Emergency drills remain
+K, registered validation V and realtime feed health W.
