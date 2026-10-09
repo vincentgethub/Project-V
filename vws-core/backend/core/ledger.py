@@ -14,7 +14,7 @@ import unicodedata
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from decimal import ROUND_CEILING, Decimal, localcontext
-from typing import Any, TypeVar
+from typing import Any, TypeVar, overload
 from uuid import UUID, uuid4
 
 from sqlalchemy import Connection, Engine, select
@@ -27,9 +27,12 @@ from backend.core.database import (
     AlertEvent,
     AppendControl,
     ApprovalEvent,
+    AutoJobRun,
     CashFlow,
     ConfigSnapshot,
     DailyPnL,
+    ExecutionFillRecord,
+    ExecutionOrderRecord,
     Fill,
     JobRun,
     LedgerRecord,
@@ -284,6 +287,22 @@ class Ledger:
                     reason="observed fill recorded",
                     broker_order_id=None,
                 )
+            elif isinstance(record, ExecutionFillRecord):
+                from backend.execution.storage import filled_quantity
+
+                instruction = session.get(ExecutionOrderRecord, record.execution_order_id)
+                if instruction is None:
+                    raise LedgerIntegrityError("Execution fill instruction is missing")
+                if instruction.role == "ENTRY":
+                    total = filled_quantity(session, instruction.id)
+                    self.append_in_session(
+                        session,
+                        OrderEvent,
+                        order_id=instruction.order_id,
+                        state="FILLED" if total == instruction.qty else "PARTIALLY_FILLED",
+                        reason="observed auto entry fill recorded",
+                        broker_order_id=None,
+                    )
             elif isinstance(record, Alert):
                 self.append_in_session(
                     session,
@@ -309,6 +328,25 @@ class Ledger:
 
     def _validate_record(self, session: Session, record: LedgerRecord) -> None:
         self._validate_common(record)
+        if isinstance(record, SecurityEvent):
+            from backend.execution.control_evidence import CONTROL_EVENTS, validate_control
+
+            if record.kind in CONTROL_EVENTS:
+                validate_control(session, record)
+        if isinstance(record, (ExecutionOrderRecord, ExecutionFillRecord)) or (
+            isinstance(record, SecurityEvent)
+            and record.kind
+            in {
+                "EXECUTION_ORDER_OBSERVED",
+                "AUTO_ENTRY_APPROVAL",
+                "EXECUTION_SUBMIT_OUTCOME",
+                "AUTO_EXIT_CYCLE",
+                "AUTO_EXIT_APPROVAL",
+            }
+        ):
+            from backend.execution.storage import validate_record as validate_execution_record
+
+            validate_execution_record(session, record)
         if isinstance(record, (CashFlow, DailyPnL, TaxEvent)):
             from backend.tax.storage import validate_record
 
@@ -355,11 +393,22 @@ class Ledger:
                 fill.qty
                 for fill in session.scalars(select(Fill).where(Fill.order_id == record.order_id))
             )
-            if record.state == "FILLED" and total != order.qty:
+            from backend.execution.storage import entry_quantity, filled_quantity
+
+            execution = session.scalar(
+                select(ExecutionOrderRecord).where(
+                    ExecutionOrderRecord.order_id == order.id,
+                    ExecutionOrderRecord.role == "ENTRY",
+                )
+            )
+            expected_qty = entry_quantity(session, order.id) or order.qty
+            if execution is not None:
+                total += filled_quantity(session, execution.id)
+            if record.state == "FILLED" and total != expected_qty:
                 raise LedgerIntegrityError(
                     "FILLED event requires the complete observed fill quantity"
                 )
-            if record.state == "PARTIALLY_FILLED" and not 0 < total < order.qty:
+            if record.state == "PARTIALLY_FILLED" and not 0 < total < expected_qty:
                 raise LedgerIntegrityError("Partial event requires observed partial fills")
         if isinstance(record, Fill):
             self._validate_fill(session, record)
@@ -400,7 +449,7 @@ class Ledger:
                 raise LedgerIntegrityError(
                     "GD-06: ticket follow-up lacks single-use approved provenance"
                 )
-        if isinstance(record, JobRun):
+        if isinstance(record, (JobRun, AutoJobRun)):
             if (
                 record.finished_at < record.started_at
                 or record.finished_at > record.created_at
@@ -411,7 +460,7 @@ class Ledger:
 
     def _validate_common(self, record: LedgerRecord, *, verifying: bool = False) -> None:
         """R-02/R-04/R-05/R-13: exact field boundaries also apply during verification."""
-        if isinstance(record, JobRun):
+        if isinstance(record, (JobRun, AutoJobRun)):
             self._validate_job_run(record)
         for column in record.__table__.columns:
             if column.name in {"row_hash", "ticket_sha256"} and not verifying:
@@ -482,10 +531,23 @@ class Ledger:
             self._reject_secret_fields(record.settings)
 
     @staticmethod
-    def _validate_job_run(record: JobRun) -> None:
-        if (
-            record.job
-            not in {
+    def _validate_job_run(record: JobRun | AutoJobRun) -> None:
+        if isinstance(record, AutoJobRun) and (
+            not isinstance(record.account_id, str)
+            or not 1 <= len(record.account_id) <= 128
+            or record.account_id != record.account_id.strip()
+            or not record.account_id.isprintable()
+            or record.environment not in {"PAPER", "LIVE"}
+            or not isinstance(record.config_hash, str)
+            or re.fullmatch(r"[a-f0-9]{64}", record.config_hash) is None
+        ):
+            raise LedgerIntegrityError(
+                "AX-44: auto job account/environment/configuration is invalid"
+            )
+        allowed = (
+            {"auto_entry", "auto_poll"}
+            if isinstance(record, AutoJobRun)
+            else {
                 "daily_scan",
                 "premarket_check",
                 "position_monitor",
@@ -493,6 +555,9 @@ class Ledger:
                 "weekly_report",
                 "housekeeping",
             }
+        )
+        if (
+            record.job not in allowed
             or record.outcome not in {"PASS", "FAIL", "SKIPPED"}
             or record.finished_at < record.started_at
             or record.finished_at > record.created_at
@@ -598,6 +663,15 @@ class Ledger:
         target = _APPROVAL_STATES.get(record.action)
         if alert is None or prior is None or target is None:
             raise LedgerIntegrityError("Approval event has no known alert or action")
+        if (
+            session.scalar(
+                select(ExecutionOrderRecord)
+                .join(Order)
+                .where(Order.proposal_id == alert.proposal_id, ExecutionOrderRecord.role == "ENTRY")
+            )
+            is not None
+        ):
+            raise LedgerIntegrityError("Alert was already consumed by an auto entry")
         if target not in _ALERT_TRANSITIONS.get(prior.state, frozenset()):
             raise LedgerIntegrityError("Alert is already handled or not delivered")
         if (
@@ -713,6 +787,18 @@ class Ledger:
                 current = self._latest_alert_event(session, alert_id)
                 if alert is None or current is None:
                     raise LedgerIntegrityError("Alert status cannot be resolved")
+                if (
+                    session.scalar(
+                        select(ExecutionOrderRecord)
+                        .join(Order)
+                        .where(
+                            Order.proposal_id == alert.proposal_id,
+                            ExecutionOrderRecord.role == "ENTRY",
+                        )
+                    )
+                    is not None
+                ):
+                    return "AUTO_APPROVED"
                 return current.state
         except SafetyError:
             raise
@@ -727,6 +813,17 @@ class Ledger:
             current = self._latest_alert_event(session, alert_id)
             if alert is None or current is None:
                 raise LedgerIntegrityError("Alert actionability cannot be resolved")
+            if (
+                session.scalar(
+                    select(ExecutionOrderRecord)
+                    .join(Order)
+                    .where(
+                        Order.proposal_id == alert.proposal_id, ExecutionOrderRecord.role == "ENTRY"
+                    )
+                )
+                is not None
+            ):
+                return False
             return current.state == "SENT" and ensure_utc(self.clock.now()) < alert.expires_at
 
     def record_trade_ticket(
@@ -799,6 +896,15 @@ class Ledger:
         order = session.get(Order, fill.order_id)
         if order is None:
             raise LedgerIntegrityError("Observed fill has no local order")
+        if (
+            session.scalar(
+                select(ExecutionOrderRecord).where(
+                    ExecutionOrderRecord.order_id == fill.order_id,
+                )
+            )
+            is not None
+        ):
+            raise LedgerIntegrityError("Auto fills require their exact execution instruction")
         latest = session.scalar(
             select(OrderEvent)
             .where(OrderEvent.order_id == order.id)
@@ -924,6 +1030,25 @@ class Ledger:
     @staticmethod
     def _verify_relationships(session: Session, records: list[LedgerRecord]) -> None:
         for record in records:
+            if isinstance(record, SecurityEvent):
+                from backend.execution.control_evidence import CONTROL_EVENTS, validate_control
+
+                if record.kind in CONTROL_EVENTS:
+                    validate_control(session, record)
+            if isinstance(record, (ExecutionOrderRecord, ExecutionFillRecord)) or (
+                isinstance(record, SecurityEvent)
+                and record.kind
+                in {
+                    "EXECUTION_ORDER_OBSERVED",
+                    "AUTO_ENTRY_APPROVAL",
+                    "EXECUTION_SUBMIT_OUTCOME",
+                    "AUTO_EXIT_CYCLE",
+                    "AUTO_EXIT_APPROVAL",
+                }
+            ):
+                from backend.execution.storage import validate_record as validate_execution_record
+
+                validate_execution_record(session, record)
             if isinstance(record, (CashFlow, DailyPnL, TaxEvent)):
                 from backend.tax.storage import validate_record
 
@@ -943,6 +1068,12 @@ class Ledger:
     def _verify_lifecycle(self, records: list[LedgerRecord]) -> None:
         orders = {record.id: record for record in records if isinstance(record, Order)}
         signals = {record.id: record for record in records if isinstance(record, Signal)}
+        executions = {
+            record.id: record for record in records if isinstance(record, ExecutionOrderRecord)
+        }
+        execution_quantities = {
+            record.order_id: record.qty for record in executions.values() if record.role == "ENTRY"
+        }
         for original_order in orders.values():
             signal = signals.get(original_order.signal_id)
             if (
@@ -956,7 +1087,19 @@ class Ledger:
         states: dict[UUID, str] = {}
         totals: dict[UUID, int] = {}
         for record in sorted(records, key=lambda row: row.seq):
+            if isinstance(record, ExecutionFillRecord):
+                instruction = executions.get(record.execution_order_id)
+                if instruction is None:
+                    raise LedgerIntegrityError("Auto fill instruction cannot be resolved")
+                if instruction.role == "ENTRY":
+                    if states.get(instruction.order_id) not in {"SUBMITTED", "PARTIALLY_FILLED"}:
+                        raise LedgerIntegrityError("Auto fill was recorded outside an active entry")
+                    totals[instruction.order_id] = totals.get(instruction.order_id, 0) + record.qty
             if isinstance(record, Fill):
+                if record.order_id in execution_quantities:
+                    raise LedgerIntegrityError(
+                        "Legacy fill cannot overwrite an auto execution instruction"
+                    )
                 order = orders.get(record.order_id)
                 if order is None or states.get(record.order_id) not in {
                     "SUBMITTED",
@@ -980,13 +1123,14 @@ class Ledger:
                 order = orders.get(record.order_id)
                 if order is None:
                     raise LedgerIntegrityError("Order event has no matching order")
-                if record.state == "FILLED" and totals.get(record.order_id, 0) != order.qty:
+                expected_qty = execution_quantities.get(record.order_id, order.qty)
+                if record.state == "FILLED" and totals.get(record.order_id, 0) != expected_qty:
                     raise LedgerIntegrityError(
                         "FILLED lifecycle does not match observed fill quantity"
                     )
                 if (
                     record.state == "PARTIALLY_FILLED"
-                    and not 0 < totals.get(record.order_id, 0) < order.qty
+                    and not 0 < totals.get(record.order_id, 0) < expected_qty
                 ):
                     raise LedgerIntegrityError(
                         "Partial lifecycle does not match observed fill quantity"
@@ -1152,6 +1296,7 @@ class Ledger:
                 "Every manual approval requires exactly one atomic trade ticket"
             )
 
+    @overload
     def record_fill(
         self,
         order_id: UUID,
@@ -1161,9 +1306,59 @@ class Ledger:
         price: Decimal,
         filled_at: datetime,
         session: Session | None = None,
-    ) -> Fill:
+        execution_order_id: None = None,
+    ) -> Fill: ...
+
+    @overload
+    def record_fill(
+        self,
+        order_id: UUID,
+        *,
+        broker_fill_id: str,
+        qty: int,
+        price: Decimal,
+        filled_at: datetime,
+        session: Session | None = None,
+        execution_order_id: UUID,
+    ) -> ExecutionFillRecord: ...
+
+    def record_fill(
+        self,
+        order_id: UUID,
+        *,
+        broker_fill_id: str,
+        qty: int,
+        price: Decimal,
+        filled_at: datetime,
+        session: Session | None = None,
+        execution_order_id: UUID | None = None,
+    ) -> Fill | ExecutionFillRecord:
         """R-08: record a broker-observed fill locally; mismatch latches HALTED."""
         try:
+            if execution_order_id is not None:
+                if session is None:
+                    with transaction(self.engine) as owned:
+                        return self.record_fill(
+                            order_id,
+                            broker_fill_id=broker_fill_id,
+                            qty=qty,
+                            price=price,
+                            filled_at=filled_at,
+                            session=owned,
+                            execution_order_id=execution_order_id,
+                        )
+                instruction = session.get(ExecutionOrderRecord, execution_order_id)
+                if instruction is None or instruction.order_id != order_id:
+                    raise LedgerIntegrityError("Fill execution binding differs from its proposal")
+                return self.append_in_session(
+                    session,
+                    ExecutionFillRecord,
+                    execution_order_id=execution_order_id,
+                    broker_fill_id=broker_fill_id,
+                    qty=qty,
+                    price=price,
+                    filled_at=filled_at,
+                )
             if session is not None:
                 # The owner of the serialized transaction rolls back and halts
                 # on failure; a nested writer cannot safely perform that halt.

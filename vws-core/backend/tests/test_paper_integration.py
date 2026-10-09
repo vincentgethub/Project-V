@@ -10,7 +10,6 @@ from alpaca.trading.models import TradeAccount
 from sqlalchemy import Engine
 
 from backend.core.clock import SystemClock
-from backend.core.config import load_settings
 from backend.core.ledger import Ledger
 from backend.core.notifier import ConsoleNotifier
 from backend.core.system_state import SystemStateStore
@@ -20,6 +19,8 @@ from backend.data.data_layer import AsyncAlpacaMarketData
 from backend.data.market_calendar import MarketCalendar
 from backend.net.egress import EgressPolicy, SDKSocketGuard, build_allowlist
 from backend.net.http import configure_network
+from backend.security.secrets import KeyringSecretStore
+from vws.host_config import load_host_settings
 
 
 @pytest.mark.integration
@@ -31,12 +32,16 @@ async def test_DAT_paper_SIP_daily_bars_and_current_account(
     selected = request.config.getoption("--paper-integration-env-file")
     if selected is None:
         pytest.skip("UNVERIFIED: explicit paper integration credentials not supplied")
-    config = load_settings(env_file=Path(selected))
+    config = load_host_settings(
+        Path(__file__).resolve().parents[2], Path(selected), KeyringSecretStore()
+    )
     if (
         not config.broker_api_key.get_secret_value()
         or not config.broker_secret_key.get_secret_value()
     ):
-        pytest.skip("UNVERIFIED: paper keys absent from the explicitly selected configuration")
+        pytest.skip(
+            "UNVERIFIED: paper keys absent from the native keyring for this explicit configuration"
+        )
     assert config.paper_trading and config.execution_mode == "MANUAL"
     clock = SystemClock()
     ledger = Ledger(engine, clock)

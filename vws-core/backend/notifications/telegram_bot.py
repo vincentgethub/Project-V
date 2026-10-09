@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -131,6 +131,15 @@ class TelegramBot:
             ]
         )
 
+    def _auto_eligible(self, alert: Alert) -> bool:
+        modes = self.gate.modes
+        return (
+            modes is not None
+            and modes.effective != "MANUAL"
+            and modes.entries_enabled
+            and alert.score >= self.settings.auto_min_score
+        )
+
     async def deliver(self, alert_id: UUID, chat_id: int) -> bool:
         from uuid import uuid4
 
@@ -162,7 +171,11 @@ class TelegramBot:
                     chat_id,
                     self._updated_card(alert),
                     parse_mode="HTML",
-                    reply_markup=self.keyboard(alert.proposal_id, chat_id),
+                    reply_markup=(
+                        None
+                        if self._auto_eligible(alert)
+                        else self.keyboard(alert.proposal_id, chat_id)
+                    ),
                 )
                 self.state.ledger.append(
                     AlertEvent,
@@ -200,6 +213,14 @@ class TelegramBot:
             if note is None
             else alert.card_text + "\nUpdate: " + escape(note.detail["note"])
         )
+        if self.gate.modes is not None and self.gate.modes.effective != "MANUAL":
+            cohort = "PAPER" if self.settings.paper_trading else "LIVE"
+            text = f"{cohort} · " + text
+            text += (
+                f"\n🤖 {cohort} · Planned for the next entry window; fresh checks decide."
+                if self._auto_eligible(alert)
+                else f"\nApprove = places the order now ({cohort}), after fresh checks."
+            )
         if len(text.encode("utf-16-le")) // 2 > 4096:
             raise DataIntegrityError("GD-05: annotated card exceeds message boundary")
         return text
@@ -267,8 +288,15 @@ class TelegramBot:
             chat_id=chat,
             message_id=message,
             parse_mode="HTML",
-            reply_markup=None if proposal_id is None else self.keyboard(proposal_id, chat),
+            reply_markup=None
+            if proposal_id is None or await self._proposal_is_auto(proposal_id)
+            else self.keyboard(proposal_id, chat),
         )
+
+    async def _proposal_is_auto(self, proposal_id: UUID) -> bool:
+        with Session(self.state.engine) as session:
+            alert = session.scalar(select(Alert).where(Alert.proposal_id == proposal_id))
+        return alert is not None and self._auto_eligible(alert)
 
     async def flush_annotations(self) -> None:
         if quiet_hours(self.clock.now()):
@@ -339,6 +367,8 @@ class TelegramBot:
                     )
                 )
             for alert in alerts:
+                if self.state.ledger.current_alert_status(alert.id) not in {"PENDING", "SENT"}:
+                    continue
                 with transaction(self.state.engine) as session:
                     latest = self.state.ledger._latest_alert_event(session, alert.id)
                     if latest is None or latest.state not in {"PENDING", "SENT"}:
@@ -482,7 +512,8 @@ class TelegramBot:
         proposal_id = UUID(query.data.split(":")[2])
         markup = (
             self.keyboard(proposal_id, chat.id, ticket=result.status == "TICKET")
-            if result.status in {"TICKET", "DETAILS"}
+            if result.status == "TICKET"
+            or (result.status == "DETAILS" and not await self._proposal_is_auto(proposal_id))
             else None
         )
         await query.edit_message_text(
@@ -505,21 +536,38 @@ class TelegramBot:
             return
         command, _, argument = text.partition(" ")
         command = command.split("@", 1)[0]
-        if command in {"/halt", "/pause"}:
+        if command in {"/halt", "/pause", "/manual"}:
             from backend.core.content import sanitize_text
 
-            self.state.escalate(
-                SystemState.HALTED if command == "/halt" else SystemState.REDUCE_ONLY,
-                "Telegram operator " + command + ": " + sanitize_text(argument)[:280],
-            )
+            if self.gate.modes is not None:
+                action: Literal["HALT", "PAUSE", "MANUAL"] = (
+                    "HALT" if command == "/halt" else "PAUSE" if command == "/pause" else "MANUAL"
+                )
+                self.gate.modes.downgrade(action, actor=f"Telegram user {user.id}")
+                if self.gate.executor is not None:
+                    await self.gate.executor.monitor()
+            elif command != "/manual":
+                self.state.escalate(
+                    SystemState.HALTED if command == "/halt" else SystemState.REDUCE_ONLY,
+                    "Telegram operator " + command + ": " + sanitize_text(argument)[:280],
+                )
             self.state.ledger.append(
                 SecurityEvent,
-                kind="TELEGRAM_HALT" if command == "/halt" else "TELEGRAM_PAUSE",
+                kind=(
+                    "TELEGRAM_HALT"
+                    if command == "/halt"
+                    else "TELEGRAM_PAUSE"
+                    if command == "/pause"
+                    else "TELEGRAM_MANUAL"
+                ),
                 telegram_user_id=user.id,
                 detail={},
             )
             await self.reply(
-                chat.id, "Entries stopped. Held exits and protection remain available."
+                chat.id,
+                "Entries stopped. Held exits and protection remain available. "
+                "On the host: python -m vws ops resume-auto --operator NAME (type RESUME); "
+                "a halted account also requires the audited host reset first.",
             )
         elif command in self.commands:
             for page in await self.commands[command](argument):

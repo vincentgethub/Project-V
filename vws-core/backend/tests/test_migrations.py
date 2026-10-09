@@ -38,7 +38,9 @@ def legacy(
             for model in LEDGER_MODELS
             for row in session.scalars(select(model))
         }
-    missing = {"cash_flows", "daily_pnl", "tax_events"}
+    missing = {"execution_orders", "execution_fills", "auto_job_runs"}
+    if version < 6:
+        missing |= {"cash_flows", "daily_pnl", "tax_events"}
     if version < 5:
         missing.add("schema_version")
     if version < 4:
@@ -52,7 +54,7 @@ def legacy(
     return original, MemorySecrets()
 
 
-@pytest.mark.parametrize("version", [2, 3, 4, 5])
+@pytest.mark.parametrize("version", [2, 3, 4, 5, 6])
 def test_OPS_05_additive_migration_keeps_all_original_hashes_and_verifies_legacy_backup(
     engine: Engine, clock: FrozenClock, tmp_path: Path, version: int
 ) -> None:

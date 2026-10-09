@@ -64,6 +64,9 @@ class DoctorResult(FrozenModel):
 
 class DoctorReads(Protocol):
     async def paper_account(self, key: SecretStr, secret: SecretStr) -> PaperAccountCheck: ...
+    async def account(
+        self, settings: Settings, key: SecretStr, secret: SecretStr
+    ) -> PaperAccountCheck: ...
     async def telegram(
         self,
         token: SecretStr,
@@ -101,6 +104,7 @@ class Doctor:
             raise DataIntegrityError("Doctor must share the bound ledger clock")
         self.state, self.calendar, self.clock = state, calendar, clock
         self.store, self.reads, self.project = store, reads, project
+        self.account_id: str | None = None
         self.host_findings, self.disk_free, self.python_version = (
             host_findings,
             disk_free,
@@ -145,11 +149,12 @@ class Doctor:
             return self.python_version >= (3, 11)
 
         async def mode_check() -> bool:
-            return (
-                self.settings.paper_trading
-                and self.settings.execution_mode == "MANUAL"
-                and self.settings.broker_state_source == "ALPACA"
-            )
+            from backend.execution.modes import assert_auto_binding
+
+            if self.settings.broker_state_source != "ALPACA":
+                return False
+            assert_auto_binding(self.settings, self.store)
+            return self.settings.paper_trading or self.settings.execution_mode == "AUTO_LIVE"
 
         async def chain_check() -> bool:
             self.state.ledger.verify_chain()
@@ -193,8 +198,8 @@ class Doctor:
         )
         await test(
             "mode_endpoint",
-            "MANUAL paper mode with the connected Alpaca state source is selected.",
-            MANUAL_CSV_DISABLED_MESSAGE + " AUTO awaits Stage I.",
+            "Execution mode, matching key pair and Alpaca endpoint agree.",
+            MANUAL_CSV_DISABLED_MESSAGE + " Use only the matching keyring pair and endpoint.",
             mode_check,
         )
         await test(
@@ -223,15 +228,21 @@ class Doctor:
         )
 
         try:
-            key = self.store.get("ALPACA_PAPER_KEY_ID")
-            secret = self.store.get("ALPACA_PAPER_SECRET")
+            prefix = "ALPACA_PAPER" if self.settings.paper_trading else "ALPACA_LIVE"
+            key = self.store.get(prefix + "_KEY_ID")
+            secret = self.store.get(prefix + "_SECRET")
         except Exception:
             key = secret = None
 
         async def account_check() -> bool:
-            if key is None or secret is None or not self.settings.paper_trading:
+            if key is None or secret is None:
                 return False
-            account = PaperAccountCheck.model_validate(await self.reads.paper_account(key, secret))
+            account = PaperAccountCheck.model_validate(
+                await self.reads.paper_account(key, secret)
+                if self.settings.paper_trading
+                else await self.reads.account(self.settings, key, secret)
+            )
+            self.account_id = str(account.account_id)
             if account.status.value != "ACTIVE" or any(
                 (account.account_blocked, account.trading_blocked, account.trade_suspended_by_user)
             ):
@@ -245,15 +256,18 @@ class Doctor:
             )
             changed = False
             for name, value in (
-                ("ALPACA_PAPER_KEY_ID", key),
-                ("ALPACA_PAPER_SECRET", secret),
-                ("PAPER_ACCOUNT_ID", SecretStr(str(account.account_id))),
+                (prefix + "_KEY_ID", key),
+                (prefix + "_SECRET", secret),
+                (
+                    ("PAPER" if self.settings.paper_trading else "LIVE") + "_ACCOUNT_ID",
+                    SecretStr(str(account.account_id)),
+                ),
             ):
                 changed = ops.observe_identity(name, rotation.fingerprint(name, value)) or changed
             return not changed
 
         async def time_check() -> bool:
-            if key is None or secret is None or not self.settings.paper_trading:
+            if key is None or secret is None:
                 return False
 
             async def clock_read() -> object:
@@ -268,8 +282,8 @@ class Doctor:
             return True
 
         await test(
-            "paper_account",
-            "Read-only paper account is active and unrestricted.",
+            "paper_account" if self.settings.paper_trading else "live_account",
+            "Read-only account for the selected cohort is active and unrestricted.",
             "Rerun setup --section alpaca with the matching paper pair; resolve broker restrictions.",
             account_check,
         )

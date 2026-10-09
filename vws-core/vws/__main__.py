@@ -56,6 +56,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     panic.add_argument("--reason", default="Operator emergency halt")
     for operation in ("apply-config", "ack-config"):
         ops.add_parser(operation).add_argument("--operator", required=True)
+    for operation in ("resume-auto", "enable-live", "disable-live"):
+        ops.add_parser(operation).add_argument("--operator", required=True)
     ops.add_parser("backup")
     ops.add_parser("migrate").add_argument("--operator", required=True)
     ops.add_parser("audit-dependencies").add_argument("--operator", required=True)
@@ -116,10 +118,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
         # Progress never imports network/keyring service composition.
-        from backend.security.secrets import KeyringSecretStore
+        from backend.security.secrets import KeyringSecretStore, SecretStore
         from vws import security_cli as security
+        from vws.host_config import LocalLedgerLocator
 
-        store = KeyringSecretStore()
+        store: SecretStore
+        try:
+            store = KeyringSecretStore()
+        except Exception:
+            if args.command != "ops" or args.operation not in {"panic", "disable-live"}:
+                raise
+            store = LocalLedgerLocator()
         if args.command == "ops" and args.operation == "migrate":
             from vws.migrate_cli import execute as migrate_execute
 
@@ -131,11 +140,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Verified encrypted backup: {migration.backup_path}")
             return 0
         selected_env = args.env_file
-        if args.command in {"doctor", "tax"} and selected_env is None:
+        if (
+            selected_env is None
+            and args.command == "ops"
+            and args.operation == "panic"
+            and (security.PROJECT / ".env").is_file()
+        ):
+            selected_env = security.PROJECT / ".env"
+        if selected_env is None and (
+            args.command in {"doctor", "tax"}
+            or (
+                args.command == "ops"
+                and args.operation in {"resume-auto", "enable-live", "disable-live"}
+            )
+        ):
             selected_env = security.PROJECT / ".env"
         context = security.open_context(
             selected_env,
             for_panic=args.command == "ops" and args.operation == "panic",
+            for_downgrade=args.command == "ops" and args.operation == "disable-live",
             store=store,
         )
         try:
@@ -182,12 +205,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(context.anchors.verify(args.seq, args.hash).message())
                 else:
                     raise SafetyError("Anchor verification requires --file or --seq and --hash")
+            elif args.operation in {"resume-auto", "enable-live", "disable-live"}:
+                from vws.execution_cli import execute as mode_execute
+
+                asyncio.run(mode_execute(context, store, args.operation, args.operator))
             elif args.operation == "attest":
                 attestation = context.ops.attest(security.attest_item(args.item), args.operator)
                 print(f"{attestation.status}: {attestation.item} {attestation.recorded_at}")
             elif args.operation == "panic":
+                from vws.execution_cli import panic_cancel
+
+                mode = context.emergency_mode or context.settings.execution_mode
                 panic_result = context.ops.panic(
-                    args.operator, args.reason, mode=context.settings.execution_mode
+                    args.operator,
+                    args.reason,
+                    mode=mode,
+                    cancel_unfilled=(lambda: asyncio.run(panic_cancel(context, store)))
+                    if mode in {"AUTO_PAPER", "AUTO_LIVE"}
+                    else None,
+                    notify=lambda text: asyncio.run(security.panic_notify(context, store, text)),
+                    read_activities=lambda since: asyncio.run(
+                        security.panic_activities(context, store, since)
+                    ),
                 )
                 print(f"Local state: {panic_result.state}")
                 for activity in panic_result.recent_activity:

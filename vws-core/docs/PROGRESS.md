@@ -1,8 +1,8 @@
 # Project V progress
-Last updated: October 8, 2026 - account and tax stage complete; manual CSV deferred
+Last updated: October 9, 2026 - paper auto passed offline; manual CSV deferred
 
 ## Where things stand
-Research, tickets, host checks and reports pass their offline safety tests.
+Research, tickets, isolated paper auto and reports pass their offline safety tests.
 Account and tax stage passed offline; the manual CSV connection stays disabled.
 
 ## What works now
@@ -15,7 +15,7 @@ Preview/replay leave your DB closed. Setup confirms saves; AI starts off.
 Tax defaults are single, Texas state zero and NIIT zero; federal rates are unset.
 
 ## What's being built next
-Paper auto trading comes next, followed by emergency drills,
+Emergency drills, the journal and remaining extras come next, followed by
 validation and the learning loop, in that order.
 
 ## Waiting on you
@@ -32,10 +32,10 @@ Do not paste secrets; setup stores keys in the computer's secret store.
 
 ## Not checked yet
 Real broker, bank, Telegram, FRED and SEC checks need setup.
-The latest full safety run passed 4,266 tests; 52 service checks were skipped.
+The auto safety evidence has 4,512 distinct passes; 58 checks were skipped.
 Amendment 02 "MANUAL_CSV path works": DEFERRED (user decision, Oct 8 2026).
-The seven-year, 20-stock fake replay passed in 75.6 seconds, with identical results.
-All required safety and report coverage is 100%; missing history blocks tickets.
+The seven-year, 20-stock fake replay passed in 86.479 seconds, with identical results.
+Required coverage is 100%; the full run and later affected checks are recorded separately.
 Skipped checks are not passes. Code-changing tests, the optional database,
 container build/runtime and remote CI have not run here; commands are supplied.
 Your secret storage, protections and actual backup remain unchecked.
@@ -47,7 +47,7 @@ After setup: `.venv\Scripts\python.exe -m vws doctor`, then `-m vws start`.
 Start requires verified checks and MANUAL paper. Fake preview/replay remains safe.
 
 ## Safety status
-MANUAL paper defaults; no order calls or running process; live stays locked.
+MANUAL paper defaults. Isolated auto passed offline checks; live stays locked.
 Live still needs paper history/report, account/tax completion, an emergency
 drill, explicit host unlock, small limits, account protections, a readiness
 verdict and five healthy feed sessions. Last drill: not built or run.

@@ -77,6 +77,7 @@ class DeskJobs:
         | None = None,
         accounting_capture: Callable[[], Awaitable[JobCounts]] | None = None,
         pnl_digest: Callable[[], Awaitable[str]] | None = None,
+        auto_summary: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         if bot.state is not desk.swarm.state or commands.state is not bot.state:
             raise ConfigurationError("GD-04: job bodies must share the defensive desk")
@@ -85,6 +86,7 @@ class DeskJobs:
         self.state, self.clock = bot.state, bot.clock
         self.refresh_request = refresh_request
         self.accounting_capture, self.pnl_digest = accounting_capture, pnl_digest
+        self.auto_summary = auto_summary
 
     def bodies(self) -> dict[JobName, JobBody]:
         return {
@@ -99,7 +101,7 @@ class DeskJobs:
     def pending(self) -> tuple[Alert, ...]:
         self.state.ledger.verify_chain()
         with Session(self.state.engine) as session:
-            return tuple(
+            found = tuple(
                 session.scalars(
                     select(Alert)
                     .where(
@@ -115,6 +117,12 @@ class DeskJobs:
                     .order_by(Alert.seq)
                 )
             )
+
+        return tuple(
+            row
+            for row in found
+            if self.state.ledger.current_alert_status(row.id) in {"PENDING", "SENT"}
+        )
 
     async def daily_scan(self) -> JobCounts:
         accounting = JobCounts(counts={})
@@ -171,7 +179,8 @@ class DeskJobs:
             else "SPY " + ("above" if cycle.spy_above_ema200 else "below") + " 200-day avg"
         )
         pnl = None if self.pnl_digest is None else await self.pnl_digest()
-        await self.bot.notify(self.commands.save_digest(context, pnl=pnl), False)
+        auto = None if self.auto_summary is None else await self.auto_summary()
+        await self.bot.notify(self.commands.save_digest(context, pnl=pnl, auto_summary=auto), False)
         counts.update(accounting.counts)
         return JobCounts(counts=dict(counts))
 

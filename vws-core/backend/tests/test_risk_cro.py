@@ -33,6 +33,7 @@ from backend.domain.models import (
     PortfolioSnapshot,
     Position,
     ProposalSource,
+    ProtectiveStop,
     RuleResult,
     Severity,
     Side,
@@ -1398,7 +1399,7 @@ def test_CRO_04_batch_approved_but_unsubmitted_stop_risk_is_reserved(
     assert Decimal(risk.observed) == Decimal("101.00")
 
 
-@pytest.mark.parametrize("unknown_inventory", ["zero_position", "pending_sell"])
+@pytest.mark.parametrize("unknown_inventory", ["zero_position", "pending_sell", "protective_stop"])
 def test_R_02_CRO_02_unknown_inventory_is_not_ignored_for_new_entries(
     clock: FrozenClock,
     risk_calendar: MarketCalendar,
@@ -1407,6 +1408,10 @@ def test_R_02_CRO_02_unknown_inventory_is_not_ignored_for_new_entries(
     changes: dict[str, Any] = (
         {"positions": {"UNKNOWN": _position(0)}}
         if unknown_inventory == "zero_position"
+        else {
+            "protective_stops": (ProtectiveStop(symbol="UNKNOWN", qty=1, stop_price=Decimal("95")),)
+        }
+        if unknown_inventory == "protective_stop"
         else {
             "open_orders": (
                 OpenOrder(symbol="UNKNOWN", side=Side.SELL, qty=1, limit_price=Decimal("100")),
@@ -1429,3 +1434,15 @@ def test_R_02_CRO_02_unknown_inventory_is_not_ignored_for_new_entries(
     )
     assert verdict.decision == Decision.VETOED
     assert verdict.recommended_state == SystemState.HALTED
+
+
+def test_CRO_02_registered_protective_inventory_keeps_other_entries_available(
+    clock: FrozenClock, risk_calendar: MarketCalendar
+) -> None:
+    cro = ChiefRiskOfficer(Settings(broker_account_type="CASH"), _registry(), risk_calendar)
+    snapshot = _snapshot(
+        clock,
+        positions={"MSFT": _position(1)},
+        protective_stops=(ProtectiveStop(symbol="MSFT", qty=1, stop_price=Decimal("95")),),
+    )
+    assert _rule(cro, clock, "CRO-02", snapshot=snapshot).passed

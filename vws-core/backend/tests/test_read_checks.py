@@ -301,3 +301,33 @@ async def test_RT_07_fred_rate_reservations_are_atomic_failures_consume_and_rese
     moving.current -= timedelta(seconds=1)
     with pytest.raises(DataIntegrityError, match="backward"):
         await source.fred(key)
+
+
+@pytest.mark.asyncio
+async def test_SEC_73_open_order_report_uses_bound_read_only_finite_request(
+    engine: Engine, clock: FrozenClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET" and request.url.host == "paper-api.alpaca.markets"
+        assert request.url.path.endswith("/orders")
+        assert dict(request.url.params) == {"status": "open", "limit": "500", "nested": "true"}
+        return httpx.Response(200, json=[])
+
+    source = client(engine, clock, monkeypatch, handler)
+    settings = Settings(
+        _env_file=None,
+        broker_account_type="CASH",
+        broker_api_key=SecretStr("TEST_ONLY_PAPER"),
+        broker_secret_key=SecretStr("TEST_ONLY_SECRET"),
+    )
+    assert await source.open_orders(settings) == []
+    with pytest.raises(ConfigurationError, match="Live order reads"):
+        await source.open_orders(
+            settings.model_copy(
+                update={
+                    "paper_trading": False,
+                    "live_trading_enabled": True,
+                    "live_trading_confirm": "I_ACCEPT_REAL_MONEY_RISK",
+                }
+            )
+        )

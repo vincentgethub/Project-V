@@ -16,8 +16,26 @@ BANNED_ORDER_REQUESTS: Final[frozenset[str]] = frozenset(
         "TrailingStopOrderRequest",
         "ReplaceOrderRequest",
         "ClosePositionRequest",
+        "TakeProfitRequest",
+        "StopLossRequest",
     }
 )
+
+# AX-12/14: only these SDK members may occur in the exact isolated executor.
+# Money movement and every other prohibited request remain banned everywhere.
+EXECUTOR_RELATIVE_PATH: Final[str] = "backend/execution/alpaca_executor.py"
+ALLOWED_EXECUTOR_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "LimitOrderRequest",
+        "StopOrderRequest",
+        "TakeProfitRequest",
+        "StopLossRequest",
+        "submit_order",
+        "cancel_order_by_id",
+    }
+)
+ORDER_HTTP_PATH: Final[str] = "/v2/orders"
+ORDER_HTTP_FACTORY_NAMES: Final[frozenset[str]] = frozenset({"make_order_session", "OrderSession"})
 
 BANNED_EXECUTION_METHODS: Final[frozenset[str]] = frozenset(
     {

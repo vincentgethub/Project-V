@@ -15,6 +15,87 @@ docs/FINAL_REPORT.md with per-stage gates, the final cumulative offline/replay
 result, every unverified prerequisite, unmet spec IDs, known risks and exact
 setup/doctor/paper-start commands; then stop. No AUTO_LIVE or live trading.
 
+## Stage I GREEN OFFLINE - October 9, 2026
+
+J is committed locally as `5ff2ee7`. Stage I's cumulative offline evidence is
+**4,512 distinct passing safety cases**, plus one fixed replay. The full run
+passed **4,503 / 58 skipped / one perf deselected / two warnings, 1,102.35s**.
+After that run, three reporting/notification files changed: automatic approvals
+now retain their submitted quantity in the hypothetical tracker, and automatic
+cards no longer claim manual review. All affected gates were rerun: **314 PASS,
+one warning, 438.53s**, including nine new tracker cases. This is a documented
+union, not a claim that the full run used the later three-file revision. No real credential,
+owner database, dotenv, keyring, service, broker order or live mode was used.
+The first cumulative attempt was stopped after a security scan found a swallowed
+backup-check exception. It has no certified result; the fix records a bounded
+audit event and retains RED. The next gate uses the fixed, frozen source.
+
+The first completed instrumented run had **4,494 passed, one failed, 58 skipped,
+one perf deselected, two warnings, 1,533.97s**. Its obsolete pre-auto heartbeat
+assertion rejected a legal MANUAL live-read liveness label. The replacement
+checks stopped schedulers, every AUTO mode/cohort mismatch, and OS-held locks;
+heartbeat health never authorizes trading. Two uncovered safety paths now have
+regressions: unknown broker protective inventory halts through CRO-02, and an
+expired alert cannot consume an existing broker intent. The 19-case correction
+run passed; cumulative coverage on identical production source is **100%:
+5,294 statements / 1,710 branches, zero missing/partial**. This is an explicit
+coverage union, not a claimed passing full instrumented run. Coverage for the
+three subsequently changed files was purged and rebuilt by the 314-case affected
+gate. Final required coverage is **100%: 5,302 statements / 1,714 branches, zero
+missing/partial**. JUnit files record the full and affected gates separately.
+The fixed 20-symbol/seven-year replay passed: **one PASS / four deselected,
+86.479s timed (115.72s whole test), 443 decisions**, deterministic SHA-256
+`afd483fb56e8a20e07d0b61cbe917d9d15307116ecede1c4f645d2918d09354e`.
+
+Development evidence (overlapping unions, never added to a final gate count):
+449 executor/exit/ledger/migration/broker cases and 243 host/Telegram/doctor
+cases passed in the previous development run. This run passed an 87-case
+AUTO/safety/security/supply-chain union (69.44s), a 63-case reporting/tax/host
+union (34.92s), 61 read-check/executor/exit cases (78.90s), 11 exact admission
+boundaries (16.59s), nine panic callback cases (4.44s), nine scratch live-unlock
+proofs and 21 Telegram mode-fuzz cases. The shared tax-service golden compares
+complete manual/AUTO books and every rendered export byte, including repeat
+polls, split replacement lots, actual stop-gap fills and wash disallowance.
+The suspended panic fixture run had three fixture failures; its 11-hour wall
+clock is unusable as performance evidence. Correct typed fields passed on rerun.
+Earlier development execution coverage was 67%; no 100% execution-package claim.
+The spec's required state/risk/compliance/fundamental/card/tax/evaluation coverage
+remains a separate 100% gate. Strict typing passes 315 source files; Ruff formats
+333 files and the full authored-source AST guard passes. Bandit reports zero
+findings. Both pinned dependency inventories audited clean; both SBOMs and the
+wheel build passed.
+
+| Requirement | Implementation | Offline evidence / pending certification |
+|---|---|---|
+| AX-01..06/15/52/53 | config; execution/modes.py; host_config.py; Telegram authenticated command/callback wiring | Bound native pairs and endpoints, durable downgrade/resume, all-mode fuzz, private hybrid wording; MANUAL_CSV disabled |
+| AX-10..16/GD-07 v2 | sole execution/alpaca_executor.py; exact SDK Decimal shims; net/http.py; source guard | Planted positive controls, fresh-process MANUAL import test, one physical SDK attempt, accepted-timeout lookup/deduplication |
+| AX-20..26 | Recorded CRO/compliance proof, shared account lock, fresh final checks, serialized approval/intent, final physical guard | Duplicate/hybrid/settled-cash/PDT guards, market hours/DST/early close, bound ENTRY/TARGET/STOP rows; repeated physical fill IDs deduplicate |
+| AX-24/27/30/31 | Confirm cancellation, exact held/broker sell cap, immutable order/fill evidence, schema 7 | Partial fills, gaps, failed/ambiguous attempts, foreign holdings/orders, qty faults; known holdings retain stop repair after unrelated mismatch |
+| AX-29/30 | Fixed TIME/EARNINGS/SUSPECT DAY-limit cycles and original-stop restoration; each verified position checked even if another fails | Fixed reasons, capped shares, confirmed cancel, three reprices, failed-exit stop restoration, halt/pause/manual recovery |
+| AX-28/43 | Bound trade stream, canonical activities, 60-second polling; current doctor/clock/Telegram and authenticated encrypted backup proof | Stream canonical-ID dedupe and three auth failures, REST continues; stale proof blocks entries without trapping held protection |
+| AX-40/41/44; SEC live additions | live_guard.py/live_security.py; typed control_evidence.py; host accounting preflight, pure fill_capture.py; local disable | Scratch history/report/J/drill/security/phrase/hash controls; global LIVE_DISABLED survives restart. Real evidence UNVERIFIED; V/W callbacks still lock production live |
+| AX-50/51 | reporting.py; actual fill publisher; daily digest; observed broker stops in positions | Actual prices/qty, costs, stop coverage and CT goldens; masked amounts, quiet notice queue, no approvable auto FYI; no false broker-stop claim after close |
+| SEC-43/73 | Durable configuration drift pause; emergency local-ledger loader; panic callbacks after local HALT | Keyring construction outage/invalid AUTO settings cannot prevent explicit local HALT; private bot/chat checks; bounded read-only reports; cancellation never requests discretionary exits or flattens |
+| Amendment 02 acceptance 13 | TaxService + record_fill + single shared tax/wash engine | Manual/AUTO lots, wash flags, tax book and all 8949/report bytes identical for the physical tape; repeat polling adds no fills |
+| Amendment 02 acceptance 16 | pyproject mutmut targets and selections; both CI mirrors; execution included in Bandit | Checklist/modes/ceilings scheduled on Linux CI; local mutation and actual remote execution remain UNVERIFIED; exact commands in VERIFY |
+
+Implementation interpretations preserving safety: Alpaca-generated child IDs
+are accepted only under immutable nested-parent proof; unrecognized orders halt.
+Configured MANUAL never imports the concrete executor. An AUTO configuration
+persisted down to MANUAL can recover existing protection through a service that
+permanently refuses entries; RESUME plus restart replaces it. Panic deliberately
+bypasses entry prerequisites only after durable HALT, for verified cancellation
+and stop protection. It cannot start a host, enter, or flatten a holding.
+
+Schema 7 is additive and original job constraints remain intact; no owner DB was
+migrated. Manual CSV acceptance remains DEFERRED by the October 8 owner decision.
+Real paper bracket integration, PostgreSQL, Docker, owner security/service proofs,
+POSIX mutation and remote CI remain UNVERIFIED. No push or remote change occurred;
+Git author remains the requested noreply identity, with 11 older different-email
+commits unchanged. The local Stage I commit precedes K/V/W. The wheel currently
+includes test modules under the existing package discovery policy; it is not
+evidence of a connected deployment. No real trading readiness is claimed.
+
 ## Stage J GREEN OFFLINE with owner deferral - October 8, 2026
 
 The final frozen-code cumulative gate passed **4,266 tests, 52 skipped, one

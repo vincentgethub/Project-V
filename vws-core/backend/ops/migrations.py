@@ -22,9 +22,12 @@ from backend.core.clock import Clock, ensure_utc
 from backend.core.database import (
     LEDGER_MODELS,
     SCHEMA_VERSION,
+    AutoJobRun,
     Base,
     CashFlow,
     DailyPnL,
+    ExecutionFillRecord,
+    ExecutionOrderRecord,
     JobRun,
     NewsHeadlineRecord,
     SchemaMeta,
@@ -54,9 +57,15 @@ class MigrationResult(FrozenModel):
 
 
 def _tables(version: int) -> set[str]:
-    if version not in {2, 3, 4, 5, 6} or SCHEMA_VERSION != 6:
+    if version not in {2, 3, 4, 5, 6, 7} or SCHEMA_VERSION != 7:
         raise DataIntegrityError("Unknown schema version; no migration is authorized")
     names = set(Base.metadata.tables)
+    if version < 7:
+        names -= {
+            ExecutionOrderRecord.__tablename__,
+            ExecutionFillRecord.__tablename__,
+            AutoJobRun.__tablename__,
+        }
     if version < 6:
         names -= {CashFlow.__tablename__, DailyPnL.__tablename__, TaxEvent.__tablename__}
     if version < 5:

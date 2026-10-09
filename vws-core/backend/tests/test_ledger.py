@@ -329,6 +329,9 @@ def _all_records(ledger: Ledger, clock: FrozenClock) -> dict[type[LedgerRecord],
         tax_fill.model_dump(mode="json"),
     )
     assert fill.id is not None
+    from backend.tests.test_execution_storage import append_execution_fixture
+
+    append_execution_fixture(ledger, clock)
     with Session(ledger.engine) as session:
         result: dict[type[LedgerRecord], LedgerRecord] = {}
         for model in LEDGER_MODELS:
@@ -353,7 +356,7 @@ def test_R_02_R_04_R_05_all_tables_roundtrip_and_global_chain(
         assert order.created_at.tzinfo is not None
     with engine.connect() as connection:
         stored = connection.execute(
-            text("SELECT limit_price, typeof(limit_price) FROM orders")
+            text("SELECT limit_price, typeof(limit_price) FROM orders ORDER BY seq LIMIT 1")
         ).one()
         assert stored == (100_000_000, "integer")
 

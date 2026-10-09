@@ -140,6 +140,39 @@ def active_account() -> dict[str, object]:
     }
 
 
+def test_AX_41_disable_live_is_local_despite_invalid_trading_config_and_keyring_outage(
+    context: module.SecurityContext,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class OfflineStore(MemorySecrets):
+        def get(self, name: str) -> SecretStr | None:
+            assert name == "DB_URL", "Emergency disable must never retrieve broker credentials"
+            raise RuntimeError("synthetic keyring outage")
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Emergency disable must never probe a service")
+
+    env = tmp_path / "selected.env"
+    env.write_text(
+        "EXECUTION_MODE=AUTO_LIVE\nPAPER_TRADING=false\n"
+        "LIVE_MAX_ORDER_NOTIONAL=invalid\nBROKER_STATE_SOURCE=MANUAL_CSV\n"
+        f"DB_URL={context.engine.url}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EXECUTION_MODE", "AUTO_LIVE")
+    monkeypatch.setattr(secret_module, "KeyringSecretStore", OfflineStore)
+    monkeypatch.setattr(module, "configure_egress", forbidden)
+    monkeypatch.setattr(module, "doctor_result", forbidden)
+    monkeypatch.setattr(module, "check_permissions", lambda **kwargs: ())
+    monkeypatch.setattr(module, "SystemClock", lambda: context.ledger.clock)
+    assert cli.main(["--env-file", str(env), "ops", "disable-live", "--operator", "Owner"]) == 0
+    assert events(context.engine, "LIVE_DISABLED") == [{"operator": "Owner"}]
+    assert "disabled locally" in capsys.readouterr().out
+    context.ledger.verify_chain()
+
+
 def test_OPS_02_healthcheck_reads_no_configuration_or_secrets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -266,12 +299,13 @@ async def test_OPS_02_composition_builds_six_real_jobs_without_orders_or_network
             ),
         )
     )
+    executor_before = sys.modules.get("backend.execution.alpaca_executor")
     async with AsyncExitStack() as resources:
         runtime = await compose(context, MemorySecrets(), checked, resources=resources)
         assert set(runtime.orchestrator.jobs) == set(JobName)
         assert runtime.settings.execution_mode == "MANUAL" and runtime.settings.paper_trading
         assert not runtime.orchestrator.scheduler.running
-        assert "backend.execution.alpaca_executor" not in sys.modules
+        assert sys.modules.get("backend.execution.alpaca_executor") is executor_before
         with pytest.raises(ProviderError):
             LedgerAccountContext(
                 context.state, "00000000-0000-0000-0000-000000000001", "PAPER"
@@ -499,19 +533,60 @@ def test_SEC_73_cli_panic_still_persists_halt_with_a_corrupted_ledger(
         context.ledger.verify_chain()
 
 
+def test_SEC_73_native_keyring_constructor_failure_does_not_prevent_local_halt(
+    context: module.SecurityContext,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def unavailable() -> MemorySecrets:
+        raise ConfigurationError("Synthetic unavailable native store")
+
+    monkeypatch.setattr(secret_module, "KeyringSecretStore", unavailable)
+    monkeypatch.setenv("DB_URL", str(context.engine.url))
+    monkeypatch.setenv("EXECUTION_MODE", "AUTO_LIVE")
+    monkeypatch.setenv("AUTO_MAX_DAILY_ORDERS", "malformed")
+    monkeypatch.setattr(module, "check_permissions", lambda **kwargs: ())
+    monkeypatch.setattr(module, "SystemClock", lambda: context.ledger.clock)
+    assert cli.main(["ops", "panic", "--operator", "Owner"]) == 0
+    assert context.state.current() == SystemState.HALTED
+    assert "UNVERIFIED emergency step: cancel unfilled entries" in capsys.readouterr().out
+    context.ledger.verify_chain()
+
+
+def test_SEC_73_missing_explicit_database_with_keyring_failure_cannot_guess_a_ledger(
+    context: module.SecurityContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vws.host_config import LocalLedgerLocator, load_downgrade_settings
+
+    monkeypatch.delenv("DB_URL", raising=False)
+    with pytest.raises(ConfigurationError, match="explicit local DB_URL"):
+        load_downgrade_settings(module.PROJECT, None, LocalLedgerLocator())
+    assert context.state.current() == SystemState.RUNNING
+
+
 def make_pre_news_schema(engine: Engine) -> None:
     """SEC-73: synthetic prior schema, without changing an owner's database."""
     with engine.begin() as connection:
         from backend.core.database import (
+            AutoJobRun,
             CashFlow,
             DailyPnL,
+            ExecutionFillRecord,
+            ExecutionOrderRecord,
             JobRun,
             SchemaVersion,
             TaxEvent,
             TicketEvent,
         )
 
-        for model in (CashFlow, DailyPnL, TaxEvent):
+        for model in (
+            ExecutionFillRecord,
+            ExecutionOrderRecord,
+            AutoJobRun,
+            CashFlow,
+            DailyPnL,
+            TaxEvent,
+        ):
             model.metadata.tables[model.__tablename__].drop(connection)
 
         JobRun.metadata.tables[JobRun.__tablename__].drop(connection)
@@ -521,7 +596,7 @@ def make_pre_news_schema(engine: Engine) -> None:
         connection.execute(update(SchemaMeta).where(SchemaMeta.id == 1).values(version=2))
 
 
-@pytest.mark.parametrize("version", [2, 4, 5])
+@pytest.mark.parametrize("version", [2, 4, 5, 6])
 def test_SEC_73_old_schema_panic_halts_without_silent_migration(
     context: module.SecurityContext,
     monkeypatch: pytest.MonkeyPatch,
@@ -531,11 +606,24 @@ def test_SEC_73_old_schema_panic_halts_without_silent_migration(
     if version == 2:
         make_pre_news_schema(context.engine)
     else:
-        from backend.core.database import CashFlow, DailyPnL, SchemaVersion, TaxEvent
+        from backend.core.database import (
+            AutoJobRun,
+            CashFlow,
+            DailyPnL,
+            ExecutionFillRecord,
+            ExecutionOrderRecord,
+            SchemaVersion,
+            TaxEvent,
+        )
 
         with context.engine.begin() as connection:
-            for model in (CashFlow, DailyPnL, TaxEvent):
+            for model in (ExecutionFillRecord, ExecutionOrderRecord, AutoJobRun):
                 model.metadata.tables[model.__tablename__].drop(connection)
+            if version < 6:
+                for accounting_model in (CashFlow, DailyPnL, TaxEvent):
+                    accounting_model.metadata.tables[accounting_model.__tablename__].drop(
+                        connection
+                    )
             if version == 4:
                 SchemaVersion.metadata.tables[SchemaVersion.__tablename__].drop(connection)
             connection.execute(update(SchemaMeta).where(SchemaMeta.id == 1).values(version=version))

@@ -74,7 +74,7 @@ class ProcessLock:
 class Heartbeat(FrozenModel):
     run_id: UUID
     updated_at: UTCDateTime
-    mode: str = Field(pattern=r"^MANUAL$")
+    mode: str = Field(pattern=r"^(MANUAL|AUTO_PAPER|AUTO_LIVE)$")
     paper: bool = Field(strict=True)
     scheduler_running: bool = Field(strict=True)
 
@@ -85,7 +85,11 @@ class ProcessBusyError(ConfigurationError):
 
 def write_heartbeat(path: Path, heartbeat: Heartbeat) -> None:
     checked = Heartbeat.model_validate(heartbeat)
-    if not checked.paper or not checked.scheduler_running:
+    if (
+        not checked.scheduler_running
+        or (checked.mode == "AUTO_PAPER" and not checked.paper)
+        or (checked.mode == "AUTO_LIVE" and checked.paper)
+    ):
         raise DataIntegrityError("A stopped or unbound runtime cannot certify its heartbeat")
     destination = controlled_path(path)
     fd, name = tempfile.mkstemp(prefix=".heartbeat-", dir=destination.parent)
@@ -121,8 +125,9 @@ def heartbeat_is_fresh(path: Path, lock_path: Path, clock: Clock) -> bool:
         checked = Heartbeat.model_validate(payload)
         now = ensure_utc(clock.now())
         if (
-            not checked.paper
-            or not checked.scheduler_running
+            not checked.scheduler_running
+            or (checked.mode == "AUTO_PAPER" and not checked.paper)
+            or (checked.mode == "AUTO_LIVE" and checked.paper)
             or not timedelta(0) <= now - checked.updated_at <= timedelta(seconds=180)
         ):
             return False

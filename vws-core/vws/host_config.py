@@ -12,6 +12,63 @@ from backend.core.errors import ConfigurationError
 from backend.security.secrets import SecretStore, assert_secret_sources
 
 
+class LocalLedgerLocator:
+    """Emergency-only refusal adapter; it cannot retrieve or store credentials."""
+
+    def get(self, name: str) -> SecretStr | None:
+        raise ConfigurationError("Native keyring unavailable; name the local DB_URL explicitly")
+
+    def set(self, name: str, value: SecretStr) -> None:
+        raise ConfigurationError("Emergency ledger locator cannot store secrets")
+
+    def delete(self, name: str) -> None:
+        raise ConfigurationError("Emergency ledger locator cannot delete secrets")
+
+
+def emergency_mode(env_file: Path | None) -> str:
+    """Read only the label for cancellation reporting, never activate a mode."""
+    values = {} if env_file is None else dotenv_values(env_file, interpolate=False)
+    value = os.environ.get("EXECUTION_MODE", values.get("EXECUTION_MODE") or "MANUAL")
+    return value if value in {"MANUAL", "AUTO_PAPER", "AUTO_LIVE"} else "MANUAL"
+
+
+def load_downgrade_settings(project: Path, env_file: Path | None, store: SecretStore) -> Settings:
+    """AX-41: resolve only the existing local ledger for an emergency disable.
+
+    This snapshot cannot start a host or admit orders. Broker credentials,
+    network readiness and malformed trading settings cannot prevent downgrade.
+    """
+    if env_file is not None and (
+        not env_file.is_file() or env_file.is_symlink() or env_file.stat().st_size > 1_048_576
+    ):
+        raise ConfigurationError("Emergency disable needs its explicit local configuration")
+    values = {} if env_file is None else dotenv_values(env_file, interpolate=False)
+    configured = os.environ.get("DB_URL", values.get("DB_URL"))
+    try:
+        stored = store.get("DB_URL")
+    except Exception:
+        if configured is None:
+            raise ConfigurationError(
+                "Emergency HALT needs explicit local DB_URL when the keyring is unavailable"
+            ) from None
+        stored = None
+    database = stored or SecretStr(configured or "sqlite:///vws-core.sqlite3")
+    url = make_url(database.get_secret_value())
+    if url.get_backend_name() != "sqlite" or url.database in {None, "", ":memory:"}:
+        raise ConfigurationError("Emergency disable requires the existing local SQLite ledger")
+    path = Path(str(url.database))
+    if not path.is_absolute():
+        path = project / path
+    if not path.is_file() or path.is_symlink():
+        raise ConfigurationError("Emergency disable ledger is missing or is a link")
+    database = SecretStr(
+        url.set(database=str(path.resolve())).render_as_string(hide_password=False)
+    )
+    return Settings.validated_copy(
+        Settings.model_construct(db_url=database, broker_account_type="CASH")
+    )
+
+
 def load_host_settings(project: Path, env_file: Path | None, store: SecretStore) -> Settings:
     """Read a dotenv only when named; presence never certifies credentials."""
     if env_file is not None and (not env_file.is_file() or env_file.stat().st_size > 1_048_576):
@@ -49,6 +106,10 @@ def load_host_settings(project: Path, env_file: Path | None, store: SecretStore)
         raise ConfigurationError(
             "Broker pair changed during configuration loading; retry after rotation"
         )
+    if settings.execution_mode != "MANUAL":
+        from backend.execution.modes import assert_auto_binding
+
+        assert_auto_binding(settings, store)
     url = make_url(settings.db_url.get_secret_value())
     if url.get_backend_name() == "sqlite" and url.database not in {None, "", ":memory:"}:
         path = Path(str(url.database))

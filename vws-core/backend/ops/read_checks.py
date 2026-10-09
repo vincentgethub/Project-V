@@ -164,10 +164,43 @@ class ReadChecksClient:
         }
 
     async def paper_account(self, key: SecretStr, secret: SecretStr) -> PaperAccountCheck:
+        return await self._account(PAPER_BROKER_ENDPOINT, key, secret)
+
+    async def open_orders(self, settings: Settings) -> object:
+        """SEC-73: GET only, finite nested inventory for the panic report.
+
+        VERIFY: https://docs.alpaca.markets/reference/getallorders-1
+        A full 500-row page is not evidence of completeness.
+        """
+        settings = Settings.validated_copy(settings)
+        if not settings.paper_trading and settings.execution_mode != "AUTO_LIVE":
+            raise ConfigurationError(
+                "Live order reads require the explicitly bound live configuration"
+            )
+        return await self._get(
+            "alpaca",
+            settings.broker_endpoint + "/v2/orders",
+            headers=self.broker_headers(settings.broker_api_key, settings.broker_secret_key),
+            params={"status": "open", "limit": "500", "nested": "true"},
+        )
+
+    async def account(
+        self, settings: Settings, key: SecretStr, secret: SecretStr
+    ) -> PaperAccountCheck:
+        settings = Settings.validated_copy(settings)
+        if settings.paper_trading:
+            return await self.paper_account(key, secret)
+        if not settings.paper_trading and settings.execution_mode != "AUTO_LIVE":
+            raise ConfigurationError(
+                "Live account reads require the explicitly bound live configuration"
+            )
+        return await self._account(settings.broker_endpoint, key, secret)
+
+    async def _account(self, endpoint: str, key: SecretStr, secret: SecretStr) -> PaperAccountCheck:
         # VERIFY: https://alpaca.markets/sdks/python/api_reference/trading/account.html
         result = await self._get(
             "alpaca",
-            PAPER_BROKER_ENDPOINT + "/v2/account",
+            endpoint + "/v2/account",
             headers=self.broker_headers(key, secret),
         )
         if not isinstance(result, dict):
@@ -213,8 +246,10 @@ class ReadChecksClient:
     async def broker_clock(self, settings: Settings, key: SecretStr, secret: SecretStr) -> object:
         # VERIFY: https://alpaca.markets/sdks/python/api_reference/trading/clock.html
         settings = Settings.validated_copy(settings)
-        if not settings.paper_trading or settings.broker_endpoint != PAPER_BROKER_ENDPOINT:
-            raise ConfigurationError("Setup/doctor reads require the matching paper endpoint")
+        if not settings.paper_trading and settings.execution_mode != "AUTO_LIVE":
+            raise ConfigurationError(
+                "Doctor reads require the matching explicitly configured endpoint"
+            )
         return await self._get(
             "alpaca",
             settings.broker_endpoint + "/v2/clock",
@@ -226,8 +261,10 @@ class ReadChecksClient:
     ) -> object:
         # VERIFY: https://alpaca.markets/sdks/python/api_reference/trading/calendar.html
         settings = Settings.validated_copy(settings)
-        if not settings.paper_trading or settings.broker_endpoint != PAPER_BROKER_ENDPOINT:
-            raise ConfigurationError("Setup/doctor reads require the matching paper endpoint")
+        if not settings.paper_trading and settings.execution_mode != "AUTO_LIVE":
+            raise ConfigurationError(
+                "Doctor reads require the matching explicitly configured endpoint"
+            )
         if type(start) is date and type(end) is date and 0 <= (end - start).days <= 31:
             return await self._get(
                 "alpaca",

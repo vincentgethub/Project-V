@@ -35,13 +35,14 @@ acceptance is DEFERRED by this owner decision; final guard checks are underway.
 Read `python -m vws progress`. The implemented `setup`, `doctor` and `start`
 commands passed the H offline acceptance gate; real services are unverified.
 Your bot is not connected or running here. Current behavior is MANUAL, paper by
-default, with no order executor. Ordinary stop uses Ctrl-C; the host drains
+default. Stage I's isolated AUTO executor is under final offline verification.
+Ordinary stop uses Ctrl-C; the host drains
 admitted work and audits cleanup. To stop entries during an incident, use panic below.
 
-Future host upgrades use `ops resume-auto --operator NAME` and the exact phrase
+Host AUTO resumes use `ops resume-auto --operator NAME` and the exact phrase
 `RESUME`; live unlock uses `ops enable-live --operator NAME` and
-`I UNDERSTAND THIS TRADES REAL MONEY`. These commands are Stage I work and are
-not available now. Setup never upgrades modes. Telegram can only downgrade:
+`I UNDERSTAND THIS TRADES REAL MONEY`. Live remains locked until all K/V/W
+prerequisites and recorded evidence pass. Setup never upgrades modes. Telegram can only downgrade:
 `/manual`, `/pause`, `/halt`; it never resets a halt or enables auto/live.
 
 ## Halt, panic and recovery
@@ -49,8 +50,11 @@ not available now. Setup never upgrades modes. Telegram can only downgrade:
 Run `python -m vws --env-file .env ops panic --operator NAME --reason "suspected compromise"`.
 HALTED is saved locally before external callbacks. Panic works with the network
 down and prints the revoke checklist. MANUAL has no cancellation or executor
-import. Future AUTO wiring cancels only unfilled entries, keeps stop/target legs,
-and lists 30 days of non-FILL activity and orders without a `vws-` client ID.
+import. AUTO panic cancels only verified unfilled entries, keeps stop/target legs,
+and attempts a private notice and 30-day non-FILL/unrecognized-order report.
+Unavailable keyring, configuration or network steps are printed as UNVERIFIED;
+the persisted local HALT remains. Unknown same-symbol orders or uncaptured fills
+prevent overlapping sells. Inspect protection urgently in the broker dashboard.
 Panic never flattens holdings; inspect and decide that in the broker dashboard.
 
 Explain the cause and verify current data, the ledger and old anchors before
@@ -169,7 +173,9 @@ Live security requires keyring-only secrets; live key age within the maximum;
 items 1-7 attested within 365 days; private permissions; restore success within
 30 days; anchor verify within 31 days; clean pip-audit within 7 days; empty
 webhook and safe getMe group flags; a non-admin/non-root user; and active egress
-guard. These unlock checks are future Stage I composition, not certified now.
+guard. Stage I wires these named checks; actual owner/service evidence is still
+UNVERIFIED. Stage V must also supply a recent READY verdict and W must supply at
+least five healthy required-feed sessions. No CLI can silently waive a check.
 
 Monthly `ops drill` remains pending K. The weekly report now has event counts,
 new numeric IDs, secret ages and the last drill, anchor verify, pip-audit and

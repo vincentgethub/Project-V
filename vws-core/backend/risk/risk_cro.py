@@ -293,11 +293,7 @@ class ChiefRiskOfficer:
         )
         held = snapshot.positions.get(proposal.symbol)
         if not _entry(proposal):
-            reserved = sum(
-                order.qty
-                for order in snapshot.open_orders
-                if order.symbol == proposal.symbol and order.side == Side.SELL
-            )
+            reserved = snapshot.reserved_sell_shares(proposal.symbol)
             available = 0 if held is None else max(0, held.qty - reserved)
             return _result(
                 "CRO-02",
@@ -312,6 +308,8 @@ class ChiefRiskOfficer:
             self.registry.get(symbol)
         for order in snapshot.open_orders:
             self.registry.get(order.symbol)
+        for protective in snapshot.protective_stops:
+            self.registry.get(protective.symbol)
         pending_qty = sum(
             order.qty
             for order in snapshot.open_orders

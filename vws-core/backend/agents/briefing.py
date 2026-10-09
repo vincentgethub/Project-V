@@ -38,6 +38,7 @@ from backend.domain.models import (
     Symbol,
     UTCDateTime,
 )
+from backend.execution.modes import ModeStore
 from backend.notifications.card_formatter import display_time
 
 _NY = ZoneInfo("America/New_York")
@@ -150,6 +151,7 @@ class PositionView(FrozenModel):
     portfolio: PortfolioSnapshot
     quotes: tuple[SymbolQuote, ...] = Field(max_length=2000)
     protections: tuple[Protection, ...] = Field(max_length=2000)
+    protections_at_broker: bool = Field(default=False, strict=True)
 
     @model_validator(mode="after")
     def unique(self) -> "PositionView":
@@ -159,6 +161,24 @@ class PositionView(FrozenModel):
             or any(row.kind != "HELD" for row in self.protections)
         ):
             raise ValueError("positions require unique held protection and explicit IEX quotes")
+        if self.protections_at_broker:
+            for protection in self.protections:
+                held = self.portfolio.positions.get(protection.symbol)
+                stops = tuple(
+                    row
+                    for row in self.portfolio.protective_stops
+                    if row.symbol == protection.symbol
+                )
+                if (
+                    held is None
+                    or not stops
+                    or protection.qty != held.qty
+                    or sum(row.qty for row in stops) != held.qty
+                    or protection.stop != min(row.stop_price for row in stops)
+                ):
+                    raise ValueError(
+                        "Observed broker protection requires exact snapshot stop coverage"
+                    )
         return self
 
 
@@ -177,6 +197,8 @@ class DeskCommands:
         account_id: str,
         calendar: MarketCalendar,
         positions: PositionsSource,
+        *,
+        modes: ModeStore | None = None,
     ) -> None:
         if not account_id:
             raise ConfigurationError("UX: private desk commands need an account binding")
@@ -186,6 +208,7 @@ class DeskCommands:
             account_id,
         )
         self.calendar, self.position_source = calendar, positions
+        self.modes = modes
 
     def handlers(self) -> dict[str, CommandBody]:
         return {
@@ -213,7 +236,7 @@ class DeskCommands:
         return pages(
             "\n".join(
                 [
-                    f"State: {snapshot.state} · Mode: {self.settings.execution_mode}",
+                    f"State: {snapshot.state} · Mode: {self.settings.execution_mode if self.modes is None else self.modes.effective}",
                     "Account: " + ("paper" if self.settings.paper_trading else "live"),
                     f"Pending alerts: {snapshot.pending_alerts} · Open tickets: {snapshot.open_tickets}",
                     f"Latest stored public data: {public} (daily history; fresh IEX checked on approval)",
@@ -245,7 +268,11 @@ class DeskCommands:
                 {row.symbol: row for row in view.quotes},
                 {row.symbol: row for row in view.protections},
             )
-            lines = ["Held positions · planned stop levels; verify broker protection separately"]
+            lines = [
+                "Held positions · observed broker stop coverage"
+                if view.protections_at_broker
+                else "Held positions · planned stop levels; verify broker protection separately"
+            ]
             for symbol, held in sorted(view.portfolio.positions.items()):
                 qty = "$•••" if self.settings.telegram_mask_amounts else str(held.qty)
                 quote, stop = quotes.get(symbol), protection.get(symbol)
@@ -275,7 +302,9 @@ class DeskCommands:
                         calendar=self.calendar,
                     )
                     lines.append(
-                        f"{symbol}: {qty} shares · IEX ${quote.market.last_price:.2f} · planned stop ${stop.stop:.2f} · distance {distance_to_stop(quote.market.last_price, stop.stop):.2f}%"
+                        f"{symbol}: {qty} shares · IEX ${quote.market.last_price:.2f} · "
+                        f"{'broker' if view.protections_at_broker else 'planned'} stop ${stop.stop:.2f} · "
+                        f"distance {distance_to_stop(quote.market.last_price, stop.stop):.2f}%"
                     )
             if not view.portfolio.positions:
                 lines.append("No holdings observed.")
@@ -286,7 +315,9 @@ class DeskCommands:
                 "UX: positions could not be verified; entries halted"
             ) from None
 
-    def save_digest(self, market_context: str, *, pnl: str | None = None) -> str:
+    def save_digest(
+        self, market_context: str, *, pnl: str | None = None, auto_summary: str | None = None
+    ) -> str:
         """Counts are ledger observations; missing SPY evidence stays unavailable."""
         if market_context not in {
             "SPY above 200-day avg",
@@ -321,10 +352,15 @@ class DeskCommands:
         )
         text = (
             f"Evening digest · {display_time(now, self.settings)}\n"
-            f"Setups saved: {len(alerts)} · Approved: {counts['APPROVED']} · Rejected: {counts['REJECTED']}\n"
+            f"Setups saved: {len(alerts)} · Approved: {counts['APPROVED'] + counts['AUTO_APPROVED']} · Rejected: {counts['REJECTED']}\n"
             f"Expired: {counts['EXPIRED']} · Fresh checks failed: {counts['REVALIDATION_FAILED']}\n"
             f"Pending: {counts['PENDING'] + counts['SENT']} · CRO-vetoed proposals: {vetoes}\n"
-            f"{market_context}\nManual review only; weekly hypothetical outcomes are reported separately."
+            f"{market_context}\n"
+            + (
+                "Automatic fills and weekly hypothetical outcomes are reported separately."
+                if self.modes is not None and self.modes.effective != "MANUAL"
+                else "Manual review only; weekly hypothetical outcomes are reported separately."
+            )
         )
         if pnl is not None:
             from backend.core.content import sanitize_text
@@ -332,6 +368,10 @@ class DeskCommands:
             if len(pnl) > 2000 or not pnl.strip():
                 raise DataIntegrityError("PL-05: bounded nonempty accounting digest required")
             text += "\n" + sanitize_text(pnl)
+        if auto_summary is not None:
+            if self.modes is None or not auto_summary.strip() or len(auto_summary) > 2000:
+                raise DataIntegrityError("AX-51: bounded account-bound auto summary required")
+            text += "\n" + auto_summary
         self.state.ledger.append(
             SecurityEvent, kind="DESK_DIGEST", detail={"day": day.isoformat(), "text": text}
         )
@@ -389,6 +429,13 @@ class DeskCommands:
         return await self.report(argument)
 
     async def help(self, argument: str) -> tuple[str, ...]:
+        if self.modes is not None:
+            return (
+                "/status · /positions · /digest · /report · /edge · /progress · /pnl · /tax\n"
+                "/halt, /pause and /manual stop automatic entries; held exits and broker stops continue.\n"
+                "In an automatic mode, Approve places the order now after fresh checks.\n"
+                "Resume only on the host: python -m vws ops resume-auto --operator NAME (type RESUME).",
+            )
         return (
             "/status · /positions · /digest · /report · /edge · /progress · /pnl · /tax\n"
             "/halt reason stops entries immediately. /pause allows reductions only.\n"

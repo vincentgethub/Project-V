@@ -15,6 +15,7 @@ from backend.core.config import Settings
 from backend.core.database import (
     Alert,
     AlertEvent,
+    ExecutionOrderRecord,
     Order,
     ResearchReport,
     RiskDecision,
@@ -119,6 +120,7 @@ def collect_tracked_setups(
                     )
                 alert = session.scalar(select(Alert).where(Alert.proposal_id == order.proposal_id))
                 status: Disposition
+                approved_qty = order.qty
                 fundamental = FrameworkStatus.INCOMPLETE
                 if alert is not None:
                     if (
@@ -145,6 +147,30 @@ def collect_tracked_setups(
                         "REVALIDATION_FAILED": "REVALIDATION_FAILED",
                     }
                     status = mapping[event.state]
+                    automatic = session.scalar(
+                        select(ExecutionOrderRecord).where(
+                            ExecutionOrderRecord.order_id == order.id,
+                            ExecutionOrderRecord.role == "ENTRY",
+                        )
+                    )
+                    if automatic is not None:
+                        if (
+                            automatic.account_id != scope.account_id
+                            or automatic.environment != scope.cohort
+                            or automatic.config_hash != provenance.settings_hash
+                            or automatic.created_at > now
+                            or type(automatic.qty) is not int
+                            or not 1 <= automatic.qty <= order.qty
+                            or (automatic.limit_price, automatic.stop_price, automatic.target_price)
+                            != (order.limit_price, order.stop_price, order.target_price)
+                        ):
+                            raise ValueError(
+                                "auto tracker intent has unbound account, mode, quantity or levels"
+                            )
+                        # This is approval of the hypothetical setup, never a
+                        # claim that its broker order actually filled.
+                        status = "APPROVED"
+                        approved_qty = automatic.qty
                     fact = session.scalar(
                         select(ResearchReport)
                         .where(
@@ -190,7 +216,7 @@ def collect_tracked_setups(
                             disposition=status,
                             fundamentals_status=fundamental,
                             score=candidate.score,
-                            qty=order.qty,
+                            qty=approved_qty,
                             limit=order.limit_price,
                             stop=cast(Decimal, order.stop_price),
                             target=cast(Decimal, order.target_price),

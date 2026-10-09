@@ -13,6 +13,32 @@ I → K → V → W after each green gate and local commit. It stops only for th
 unresolved gate, required credential/decision, STOP-class finding, or safety
 weakening. Nothing is pushed without the owner's instruction.
 
+## Auto modes
+
+> **Auto mode places real orders without asking you each time.** In AUTO_LIVE it trades your real money, and you can lose money, including more than a stop-loss suggests (gaps, halts, outages). Nothing in this software predicts or guarantees profits; paper results don't predict live results. Auto mode works only with Alpaca. Start with AUTO_PAPER, keep live limits small, and use `/halt` or `/manual` any time to stop new trades.
+
+MANUAL with paper accounts remains the default. Stage I passed its offline
+safety gates; no real broker order integration is certified. Setup saves native
+keyring secrets and cannot enable AUTO. An explicitly configured AUTO_PAPER host
+must pass the full doctor, watchdog, private Telegram, clock and encrypted-backup
+checks before starting. Unverified checks block startup. The sole SDK order
+module is `backend/execution/alpaca_executor.py`; MANUAL does not import it.
+
+AUTO uses whole-share GTC bracket BUY LIMITs, verified broker stops and bounded
+DAY LIMIT exits. FYI notices identify PAPER/LIVE, actual fills, protective levels
+and CT times. Lower-scoring hybrid cards explicitly say Approve places the order.
+Halts, `/pause` and `/manual` cancel unfilled entries and retain held protection.
+Host `ops resume-auto --operator NAME` needs the exact `RESUME` phrase and doctor
+checks; it cannot reset a HALT or acknowledge configuration drift.
+
+AUTO_LIVE remains locked pending K/V/W, paper history, reports, Stage J evidence,
+the drill, security evidence, six explicit ceilings, and the host unlock phrase.
+`ops disable-live --operator NAME` is a local downgrade requiring no broker
+connection. During an incident, `ops panic` commits local HALT first, then makes
+bounded cancellation/reporting attempts and prints every unavailable step.
+Use the [runbook](RUNBOOK.md) for recovery; never place manual trades in the
+dedicated AUTO account. Money movement is never available.
+
 Read-only defensive infrastructure for long-only, whole-share research and human
 trade tickets. Stage A supplies configuration guards, exact money/cent-price
 helpers, UTC clocks, redacted logging, deduplicated notifications, XNYS sessions,
@@ -44,8 +70,8 @@ Stage F supplies the swarm, private Telegram approval boundary, six scheduled
 job bodies, manual tickets and read-only fill matching. Its offline gate passed
 3,366 tests with 44 unverified checks skipped and complete required branch coverage;
 connected host composition is supplied by Stage H. The project is not
-finished, and no broker order execution path currently exists. Stage I alone
-may add the specified isolated order executor; money movement remains banned.
+finished. Stage I's isolated order executor passed its offline safety gates;
+MANUAL remains the default, and money movement remains banned.
 
 Stage G/G+ supplies recorded hypothetical outcomes, original cost evidence,
 private weekly edge/security reports with individual proofs, sealed local

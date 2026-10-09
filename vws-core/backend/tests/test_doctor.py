@@ -68,6 +68,11 @@ class ProbeReads:
             trade_suspended_by_user=False,
         )
 
+    async def account(
+        self, settings: Settings, key: SecretStr, secret: SecretStr
+    ) -> PaperAccountCheck:
+        raise AssertionError("This doctor fixture is paper only")
+
     async def telegram(
         self,
         token: SecretStr,

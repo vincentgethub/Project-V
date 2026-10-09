@@ -391,6 +391,27 @@ class ConnectedDeskSource:
     async def positions(self) -> PositionView:
         account = await self.boundary.portfolio_async(self.reader)
         quotes = tuple([await self.quote(symbol) for symbol in sorted(account.snapshot.positions)])
+        if self.settings.execution_mode != "MANUAL":
+            observed = []
+            for symbol, broker_held in account.snapshot.positions.items():
+                stops = tuple(
+                    row for row in account.snapshot.protective_stops if row.symbol == symbol
+                )
+                if stops and sum(row.qty for row in stops) == broker_held.qty:
+                    observed.append(
+                        Protection(
+                            symbol=symbol,
+                            qty=broker_held.qty,
+                            stop=min(row.stop_price for row in stops),
+                            kind="HELD",
+                        )
+                    )
+            return PositionView(
+                portfolio=account.snapshot,
+                quotes=quotes,
+                protections=tuple(observed),
+                protections_at_broker=True,
+            )
         planned: dict[str, Protection] = {}
         for ticket, filled in await self._tickets():
             held = account.snapshot.positions.get(ticket.symbol)

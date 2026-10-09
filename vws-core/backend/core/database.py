@@ -37,7 +37,7 @@ from backend.core.clock import ensure_utc
 from backend.core.errors import DatabaseError, LedgerIntegrityError, SafetyError
 from backend.core.money import money_to_scaled, scaled_to_money, validate_cent_price
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class MoneyType(TypeDecorator[Decimal]):
@@ -257,6 +257,88 @@ class Fill(LedgerRecord):
     qty: Mapped[int] = mapped_column(Integer, nullable=False)
     price: Mapped[Decimal] = mapped_column(PriceType(), nullable=False)
     filled_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ExecutionOrderRecord(LedgerRecord):
+    """AX-16/26: durable order intent, including truthful STOP child instructions."""
+
+    __tablename__ = "execution_orders"
+    __table_args__ = (
+        CheckConstraint("qty > 0 AND qty = CAST(qty AS BIGINT)", name="ck_execution_qty"),
+        CheckConstraint("environment IN ('PAPER', 'LIVE')", name="ck_execution_environment"),
+        CheckConstraint(
+            "role IN ('ENTRY', 'TARGET', 'STOP', 'EXIT', 'REPAIR')", name="ck_execution_role"
+        ),
+        CheckConstraint("side IN ('BUY', 'SELL')", name="ck_execution_side"),
+        CheckConstraint("order_type IN ('LIMIT', 'STOP')", name="ck_execution_type"),
+        CheckConstraint(
+            "(role = 'ENTRY' AND side = 'BUY' AND order_type = 'LIMIT') OR (role != 'ENTRY' AND side = 'SELL')",
+            name="ck_execution_direction",
+        ),
+        CheckConstraint(
+            "(order_type = 'LIMIT' AND limit_price IS NOT NULL AND limit_price > 0 AND limit_price % 10000 = 0) OR (order_type = 'STOP' AND limit_price IS NULL AND stop_price IS NOT NULL AND stop_price > 0 AND stop_price % 10000 = 0)",
+            name="ck_execution_price",
+        ),
+        CheckConstraint("time_in_force IN ('DAY', 'GTC')", name="ck_execution_tif"),
+    )
+    order_id: Mapped[UUID] = mapped_column(ForeignKey("orders.id"), nullable=False, index=True)
+    parent_execution_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("execution_orders.id"), nullable=True
+    )
+    client_order_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    account_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    environment: Mapped[str] = mapped_column(String(5), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    role: Mapped[str] = mapped_column(String(6), nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    order_type: Mapped[str] = mapped_column(String(5), nullable=False)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    limit_price: Mapped[Decimal | None] = mapped_column(PriceType(), nullable=True)
+    stop_price: Mapped[Decimal | None] = mapped_column(PriceType(), nullable=True)
+    target_price: Mapped[Decimal | None] = mapped_column(PriceType(), nullable=True)
+    time_in_force: Mapped[str] = mapped_column(String(3), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    valid_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class ExecutionFillRecord(LedgerRecord):
+    """AX-26: exact fills through record_fill, without relabeling stops as limits."""
+
+    __tablename__ = "execution_fills"
+    __table_args__ = (
+        CheckConstraint("qty > 0 AND qty = CAST(qty AS BIGINT)", name="ck_execution_fill_qty"),
+        CheckConstraint("price > 0 AND price % 10000 = 0", name="ck_execution_fill_price"),
+    )
+    execution_order_id: Mapped[UUID] = mapped_column(
+        ForeignKey("execution_orders.id"), nullable=False, index=True
+    )
+    broker_fill_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    price: Mapped[Decimal] = mapped_column(PriceType(), nullable=False)
+    filled_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AutoJobRun(LedgerRecord):
+    """AX-22/28/40: additive auto jobs, preserving the original job constraints."""
+
+    __tablename__ = "auto_job_runs"
+    __table_args__ = (
+        CheckConstraint("job IN ('auto_entry', 'auto_poll')", name="ck_auto_job_name"),
+        CheckConstraint("outcome IN ('PASS', 'FAIL', 'SKIPPED')", name="ck_auto_job_outcome"),
+        CheckConstraint(
+            "finished_at >= started_at AND duration_ms >= 0", name="ck_auto_job_interval"
+        ),
+        CheckConstraint("environment IN ('PAPER', 'LIVE')", name="ck_auto_job_environment"),
+    )
+    job: Mapped[str] = mapped_column(String(32), nullable=False)
+    account_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    environment: Mapped[str] = mapped_column(String(5), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(8), nullable=False)
+    counts: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 class RiskDecision(LedgerRecord):
@@ -760,6 +842,9 @@ LEDGER_MODELS: tuple[type[LedgerRecord], ...] = (
     CashFlow,
     DailyPnL,
     TaxEvent,
+    ExecutionOrderRecord,
+    ExecutionFillRecord,
+    AutoJobRun,
 )
 
 
@@ -867,13 +952,26 @@ def prepare_panic_schema(engine: Engine) -> None:
         if "schema_meta" in existing:
             with engine.connect() as connection:
                 version = connection.scalar(select(SchemaMeta.version).where(SchemaMeta.id == 1))
-            if version in {2, 3, 4, 5}:
+            if version in {2, 3, 4, 5, 6}:
                 expected = {
                     name
                     for name in Base.metadata.tables
                     if name
-                    not in {CashFlow.__tablename__, DailyPnL.__tablename__, TaxEvent.__tablename__}
-                    and (version == 5 or name != SchemaVersion.__tablename__)
+                    not in {
+                        ExecutionOrderRecord.__tablename__,
+                        ExecutionFillRecord.__tablename__,
+                        AutoJobRun.__tablename__,
+                    }
+                    and (
+                        version >= 6
+                        or name
+                        not in {
+                            CashFlow.__tablename__,
+                            DailyPnL.__tablename__,
+                            TaxEvent.__tablename__,
+                        }
+                    )
+                    and (version >= 5 or name != SchemaVersion.__tablename__)
                     and (
                         version >= 4
                         or name not in {TicketEvent.__tablename__, JobRun.__tablename__}

@@ -1,3 +1,51 @@
+# Stage I GREEN OFFLINE - 2026-10-09
+
+The full offline run passed 4,503 cases, skipped 58, deselected one perf case
+and emitted two warnings in 1,102.35s. A later three-file reporting/notification
+fix passed all 314 affected cases (438.53s), including nine new cases:
+4,512 distinct safety passes plus the fixed replay. Required coverage was rebuilt
+for those changed files and is 100% (5,302 statements / 1,714 branches). This is
+an explicit evidence union; the full run predates that small fix. The fixed
+20-symbol/seven-year replay passed in 86.479s timed, with 443 identical decisions.
+Ruff, strict typing, the whole AST guard, Bandit, pinned dependency audits, SBOMs
+and wheel build passed. Execution is restricted to the sole
+Alpaca executor; MANUAL defaults to paper and never imports it. No real service,
+secret, owner database or actual order was used. Real integration remains
+UNVERIFIED, including Amendment 02 acceptance 11.1 item 15's one-share far-price
+paper bracket submit/cancel, leg verification and reconciliation. The existing
+opt-in paper test verifies read-only account/SIP data; it does not certify orders.
+The specified integration item explicitly permits UNVERIFIED when unavailable.
+
+From vws-core (PowerShell), final offline/replay commands:
+```powershell
+.venv\Scripts\python.exe -m pytest -q -m 'not perf' --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing
+.venv\Scripts\python.exe -m pytest backend/tests/test_replay_cli.py -q -m perf
+.venv\Scripts\python.exe -m backend.core.check_stage_d
+.venv\Scripts\python.exe -m backend.core.source_guard .
+.venv\Scripts\python.exe -m vws setup
+.venv\Scripts\python.exe -m vws doctor
+```
+Only an explicit integration configuration can open native paper credentials:
+```powershell
+.venv\Scripts\python.exe -m pytest backend/tests/test_paper_integration.py -q -m integration --paper-integration-env-file C:\PRIVATE\paper.env
+```
+That file contains public MANUAL/paper settings, never keys. Set paper secrets
+only through setup/native keyring. This read-only command is not the unverified
+order probe. No real order probe was run; AUTO_LIVE remains locked.
+
+Linux CI mutation reproduction (new targets include executor, modes, ceilings):
+```sh
+python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+python -m pip install --no-deps --no-build-isolation -e .
+python -m mutmut run
+python -m mutmut results --all > /tmp/vws-mutants.txt
+python -m scripts.check_mutations /tmp/vws-mutants.txt
+```
+Windows lacks mutmut's POSIX fork; no score is claimed. Root/project CI mirrors
+include these targets and execution security scanning. Remote CI has not run;
+the owner forbids a push. Existing PostgreSQL/Docker reproduction commands below
+remain applicable, without implying a pass or access to owner resources.
+
 # Stage J GREEN OFFLINE with owner deferral - 2026-10-08
 
 Final frozen-code gate: **4,266 passed, 52 skipped, one perf deselected, two

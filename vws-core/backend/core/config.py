@@ -183,6 +183,8 @@ class Settings(BaseSettings):
             "min_margin_equity": (Decimal("2000"), Decimal("1000000000")),
             "min_setup_score": (Decimal("6.0"), Decimal("10.0")),
             "llm_daily_budget_usd": (Decimal("0"), Decimal("20")),
+            "auto_min_score": (Decimal("6.0"), Decimal("10.0")),
+            "auto_exit_limit_offset": (Decimal("0"), Decimal("0.01")),
         }
     )
     INTEGER_BOUNDS: ClassVar[Mapping[str, tuple[int, int]]] = MappingProxyType(
@@ -202,6 +204,11 @@ class Settings(BaseSettings):
             "tg_rate_per_min": (1, 20),
             "tg_heavy_rate_per_min": (1, 5),
             "backup_retention_days": (1, 365),
+            "auto_no_trade_open_minutes": (5, 60),
+            "auto_no_trade_close_minutes": (10, 60),
+            "auto_max_entries_per_day": (1, 10),
+            "auto_max_consecutive_order_failures": (1, 3),
+            "auto_live_min_paper_sessions": (20, 10000),
         }
     )
     SECRET_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -255,6 +262,21 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     live_trading_confirm: str = ""
     execution_mode: Literal["MANUAL", "AUTO_PAPER", "AUTO_LIVE"] = "MANUAL"
+    auto_min_score: Decimal = Decimal("8.5")
+    auto_no_trade_open_minutes: int = 15
+    auto_no_trade_close_minutes: int = 15
+    auto_max_entries_per_day: int = 5
+    auto_max_consecutive_order_failures: int = 3
+    auto_live_min_paper_sessions: int = 20
+    auto_exits: bool = True
+    auto_exit_before_earnings: bool = True
+    auto_exit_limit_offset: Decimal = Decimal("0.01")
+    live_max_order_notional: Decimal | None = None
+    live_max_daily_orders: int | None = None
+    live_max_open_positions: int | None = None
+    live_max_gross_exposure_pct: Decimal | None = None
+    live_max_risk_per_trade: Decimal | None = None
+    live_daily_loss_limit: Decimal | None = None
     broker_api_key: SecretStr = Field(
         default=SecretStr(""),
         repr=False,
@@ -322,6 +344,33 @@ class Settings(BaseSettings):
     @classmethod
     def validate_tax_rate(cls, value: object) -> Decimal | None:
         return TaxProfile.exact_rate(value)
+
+    @field_validator(
+        "live_max_order_notional",
+        "live_max_gross_exposure_pct",
+        "live_max_risk_per_trade",
+        "live_daily_loss_limit",
+        mode="before",
+    )
+    @classmethod
+    def validate_live_decimal(cls, value: object) -> Decimal | None:
+        if value is None:
+            return None
+        result = _exact_decimal(value)
+        decimal_money(result)
+        if result <= 0:
+            raise ValueError("live limits must be positive exact values")
+        if result > Decimal("1000000000"):
+            raise ValueError("live limit exceeds the absolute money ceiling")
+        return result
+
+    @field_validator("live_max_daily_orders", "live_max_open_positions", mode="before")
+    @classmethod
+    def validate_live_integer(cls, value: object, info: ValidationInfo) -> int | None:
+        if value is None:
+            return None
+        ceiling = 5 if info.field_name == "live_max_daily_orders" else 30
+        return _bounded_integer(value, str(info.field_name), (1, ceiling))
 
     @property
     def tax_profile(self) -> TaxProfile:
@@ -571,6 +620,8 @@ class Settings(BaseSettings):
         "live_trading_enabled",
         "enable_intraday_playbooks",
         "telegram_mask_amounts",
+        "auto_exits",
+        "auto_exit_before_earnings",
         mode="before",
     )
     @classmethod
@@ -610,6 +661,20 @@ class Settings(BaseSettings):
         """R-06: enforce live consent, keys, and drawdown-tier ordering."""
         if self.dd_reduce_only >= self.dd_halt:
             raise ValueError("DD_REDUCE_ONLY must be below DD_HALT")
+        if self.execution_mode != "MANUAL" and self.auto_min_score < self.min_setup_score:
+            raise ValueError("AUTO_MIN_SCORE must be at least MIN_SETUP_SCORE")
+        for name, live_limit_value, ceiling in (
+            (
+                "LIVE_MAX_GROSS_EXPOSURE_PCT",
+                self.live_max_gross_exposure_pct,
+                self.max_gross_exposure,
+            ),
+            ("LIVE_MAX_RISK_PER_TRADE", self.live_max_risk_per_trade, self.max_risk_per_trade),
+            ("LIVE_DAILY_LOSS_LIMIT", self.live_daily_loss_limit, self.daily_loss_limit),
+            ("LIVE_MAX_OPEN_POSITIONS", self.live_max_open_positions, self.max_open_positions),
+        ):
+            if live_limit_value is not None and live_limit_value > ceiling:
+                raise ValueError(f"{name} exceeds its CRO ceiling")
         if self.tax_state != DEFAULT_STATE and "tax_state_rate" not in self.model_fields_set:
             raise ValueError("a changed state requires an explicit TAX_STATE_RATE")
         _ = self.tax_profile

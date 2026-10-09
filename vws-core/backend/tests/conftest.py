@@ -86,6 +86,7 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "OFFHOURS_",
         "SCHEDULER_",
         "EXECUTION_",
+        "AUTO_",
         "SECRET_",
         "LOG_",
         "BACKUP_",

@@ -1,4 +1,4 @@
-"""OPS-02: connected MANUAL paper composition, only on explicit host start."""
+"""OPS-02/AX-11: connected composition, only on explicit guarded host start."""
 
 import asyncio
 import signal
@@ -8,9 +8,11 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from types import FrameType
-from typing import TypeVar
+from typing import Literal, Protocol, TypeVar, overload
 
 from requests import Session as RequestsSession
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from backend.agents.briefing import DeskCommands
 from backend.agents.desk import Desk
@@ -22,6 +24,7 @@ from backend.agents.orchestrator import JobCounts, Orchestrator
 from backend.agents.setup_hunter import SetupHunter
 from backend.agents.swarm_runner import SwarmRunner
 from backend.core.config import MANUAL_CSV_DISABLED_MESSAGE, load_yaml_config
+from backend.core.database import ExecutionOrderRecord, JobRun, SecurityEvent
 from backend.core.errors import ConfigurationError
 from backend.core.logging import configure_logging
 from backend.data.async_reader import AsyncAlpacaReader
@@ -32,7 +35,7 @@ from backend.data.corporate_actions import AlpacaCorporateActionsProvider
 from backend.data.data_layer import AsyncAlpacaMarketData, ResilientReader
 from backend.data.earnings import EarningsProvider
 from backend.data.fee_schedule import load_fee_schedule
-from backend.data.fill_polling import TicketFillMatcher
+from backend.data.fill_polling import ObservedFill, TicketFillMatcher
 from backend.data.liquidity import BalanceReading, LiquidityGate, PlaidLiquiditySource
 from backend.data.market_calendar import MarketCalendar
 from backend.data.news import (
@@ -47,6 +50,15 @@ from backend.domain.instruments import InstrumentRegistry
 from backend.domain.models import PortfolioSnapshot
 from backend.evaluation.ledger_source import LedgerWeeklySource
 from backend.evaluation.publication import WeeklyPublisher
+from backend.execution.control_evidence import JobBinding
+from backend.execution.fill_capture import ExecutionFillCapture
+from backend.execution.jobs import AutoJobs
+from backend.execution.live_guard import LiveGuard
+from backend.execution.modes import ModeStore
+from backend.execution.protocol import OrderExecutor
+from backend.execution.readiness import HostPrerequisites
+from backend.execution.reporting import daily_summary
+from backend.execution.worker import SingleAttemptWorker
 from backend.funding.activities import AlpacaActivitiesSource
 from backend.notifications.callbacks import ApprovalGate
 from backend.notifications.telegram_bot import TelegramBot
@@ -74,6 +86,11 @@ from vws.host_config import load_host_settings
 ReadT = TypeVar("ReadT")
 
 
+class ExecutionStream(Protocol):
+    async def start(self) -> None: ...
+    async def aclose(self) -> None: ...
+
+
 class _AdmittedReads:
     """The outer worker owns timeouts; the SDK GET hook charges physical calls."""
 
@@ -95,22 +112,49 @@ class _UnavailableChecking:
         return BalanceReading(available=None, current=None, currency="USD", as_of=self.clock.now())
 
 
+@overload
 async def compose(
     context: security_cli.SecurityContext,
     store: SecretStore,
     verified_doctor: DoctorResult,
     *,
     resources: AsyncExitStack,
-) -> HostRuntime:
+    accounting_only: Literal[False] = False,
+) -> HostRuntime: ...
+
+
+@overload
+async def compose(
+    context: security_cli.SecurityContext,
+    store: SecretStore,
+    verified_doctor: DoctorResult,
+    *,
+    resources: AsyncExitStack,
+    accounting_only: Literal[True],
+) -> None: ...
+
+
+async def compose(
+    context: security_cli.SecurityContext,
+    store: SecretStore,
+    verified_doctor: DoctorResult,
+    *,
+    resources: AsyncExitStack,
+    accounting_only: bool = False,
+) -> HostRuntime | None:
+    if accounting_only and context.settings.execution_mode != "AUTO_LIVE":
+        raise ConfigurationError(
+            "Accounting unlock preflight requires explicit AUTO_LIVE configuration"
+        )
     if context.settings.broker_state_source != "ALPACA":
         raise ConfigurationError(MANUAL_CSV_DISABLED_MESSAGE)
     if (
         verified_doctor.exit_code != 0
-        or context.settings.execution_mode != "MANUAL"
-        or not context.settings.paper_trading
+        or (context.settings.execution_mode != "MANUAL" and not verified_doctor.fully_green)
+        or (context.settings.execution_mode == "MANUAL" and not context.settings.paper_trading)
     ):
         raise ConfigurationError(
-            "Connected composition requires verified required checks and MANUAL paper mode"
+            "Connected composition requires verified doctor checks and a bound execution mode"
         )
     project, settings, state, clock = (
         security_cli.PROJECT,
@@ -125,8 +169,12 @@ async def compose(
     resources.push_async_callback(reader.aclose)
     reader.bind_policy(settings, state.ledger)
     reads = ReadChecksClient(policy, clock, alpaca_request_hook=reader.bucket.acquire)
-    account = await reads.paper_account(settings.broker_api_key, settings.broker_secret_key)
+    account = await reads.account(settings, settings.broker_api_key, settings.broker_secret_key)
     account_id = str(account.account_id)
+    modes = None if settings.execution_mode == "MANUAL" else ModeStore(settings, state, account_id)
+    execution: OrderExecutor | None = None
+    stream: ExecutionStream | None = None
+    prerequisites: HostPrerequisites | None = None
     marks = PersistedPortfolioMarks(state.ledger, account_id, calendar, settings)
     from backend.data.broker_state import configure_alpaca_transport
 
@@ -220,7 +268,7 @@ async def compose(
         actions,
         news,
         news_reader,
-        LedgerAccountContext(state, account_id, "PAPER"),
+        LedgerAccountContext(state, account_id, "PAPER" if settings.paper_trading else "LIVE"),
         sec,
     )
     swarm = SwarmRunner(
@@ -237,12 +285,13 @@ async def compose(
         earnings=earnings,
         memo=memo,
     )
-    gate = ApprovalGate(settings, config, state, risk, compliance, clock, source)
-    commands = DeskCommands(state, settings, account_id, calendar, source)
+    gate = ApprovalGate(settings, config, state, risk, compliance, clock, source, modes=modes)
+    commands = DeskCommands(state, settings, account_id, calendar, source, modes=modes)
     bot = TelegramBot(settings, state, clock, gate, policy, commands.handlers())
     fill_source = AlpacaActivitiesSource(settings, account_id, state, clock, reader, policy)
     resources.push_async_callback(fill_source.close)
     matcher = TicketFillMatcher(settings, account_id, state, registry)
+    auto_matcher = None if modes is None else ExecutionFillCapture(modes)
 
     async def portfolio() -> PortfolioSnapshot:
         return (await boundary.portfolio_async(reader)).snapshot
@@ -253,6 +302,11 @@ async def compose(
         start = calendar.previous_sessions(calendar.last_completed_session(clock.now()), 280)[0]
         for offset in range(0, len(symbols), 199):
             await market.completed_daily_bars(symbols[offset : offset + 199], start)
+        if execution is not None:
+            await execution.prepare_fills(symbols)
+
+    def observe_fill(fill: ObservedFill) -> object:
+        return matcher.record(fill) if auto_matcher is None else auto_matcher.record(fill)
 
     tax = TaxService(
         project,
@@ -265,7 +319,7 @@ async def compose(
         bot.notify,
         schedule,
         buying_power=lambda: broker.last_buying_power,
-        observe_fill=matcher.record,
+        observe_fill=observe_fill,
         prepare_fills=prepare_fills,
     )
 
@@ -283,6 +337,19 @@ async def compose(
     accounting = AccountingReports(
         tax, calendar, config.schedule.daily_scan_delay_minutes, history, spy_closes
     )
+    if accounting_only:
+        await tax.sync(force=True)
+        await accounting.capture()
+        state.ledger.append(
+            SecurityEvent,
+            kind="HOST_ACCOUNTING_READY",
+            detail={
+                "account_id": account_id,
+                "environment": "LIVE",
+                "config_hash": settings.config_hash,
+            },
+        )
+        return None
     bot.commands.update({"/pnl": accounting.pnl, "/tax": accounting.tax_summary})
 
     async def sync_context() -> None:
@@ -291,7 +358,84 @@ async def compose(
     source.sync_account_context = sync_context
 
     async def fill_poll() -> JobCounts:
-        return await tax.sync(force=True)
+        if execution is not None:
+            if prerequisites is None:
+                raise ConfigurationError("Execution prerequisite refresh is unavailable")
+            await prerequisites.refresh(lambda: security_cli.doctor_result(context, store))
+        result = await tax.sync(force=True)
+        if execution is not None:
+            await execution.reconcile()
+        return result
+
+    if modes is not None:
+        with Session(state.engine) as session:
+            managed = (
+                session.scalar(
+                    select(ExecutionOrderRecord.id)
+                    .where(
+                        ExecutionOrderRecord.account_id == account_id,
+                        ExecutionOrderRecord.environment == modes.environment,
+                    )
+                    .limit(1)
+                )
+                is not None
+            )
+        if modes.effective != "MANUAL" or managed:
+            # AX-11: the sole concrete execution module is imported only for an
+            # AUTO configuration. A downgrade retains only managed protection.
+            from backend.execution.alpaca_executor import (
+                AlpacaExecutor,
+                ManagedTradingStream,
+                ProtectionRecovery,
+            )
+
+            prerequisites = HostPrerequisites(
+                modes, verified_doctor, security_cli.backups(context, store)
+            )
+            constructor = AlpacaExecutor if modes.effective != "MANUAL" else ProtectionRecovery
+            execution = constructor(
+                settings,
+                config,
+                state,
+                modes,
+                source,
+                risk,
+                compliance,
+                calendar,
+                SingleAttemptWorker(reader.bucket),
+                store,
+                prerequisites(),
+                policy=policy,
+                notify=bot.notify,
+                portfolio=portfolio,
+                configuration_check=lambda: context.drift.check(
+                    context.config_hash(), mode=settings.execution_mode
+                ),
+                prerequisites_source=prerequisites,
+                live_guard=LiveGuard(
+                    settings,
+                    state,
+                    calendar,
+                    account_id,
+                    context.config_hash,
+                    security_reasons=security_cli.live_security_guard(context, store),
+                )
+                if settings.execution_mode == "AUTO_LIVE"
+                else None,
+            )
+            resources.push_async_callback(execution.close)
+            gate.bind_auto(execution, modes)
+
+            async def capture_stream_fills() -> object:
+                return await tax.sync(force=True)
+
+            stream = ManagedTradingStream(execution, policy, capture_stream_fills)
+            resources.push_async_callback(stream.aclose)
+    auto_jobs = (
+        None
+        if execution is None or modes is None
+        else AutoJobs(settings, modes, calendar, execution, fill_poll)
+    )
 
     async def maintenance() -> JobCounts:
         result = await NightlyMaintenance(
@@ -326,6 +470,11 @@ async def compose(
             await bot.notify(page, False)
         return result
 
+    async def auto_summary() -> str:
+        if modes is None:
+            raise ConfigurationError("An automatic summary needs the bound mode store")
+        return daily_summary(settings, modes, await portfolio(), await asyncio.to_thread(tax.book))
+
     jobs = DeskJobs(
         Desk(swarm),
         bot,
@@ -337,15 +486,32 @@ async def compose(
         refresh_request=source.refresh_request,
         accounting_capture=accounting.capture,
         pnl_digest=accounting.digest_line,
+        auto_summary=None if modes is None else auto_summary,
     )
     watchdog = Watchdog(state, calendar, clock, lambda message: bot.notify(message, True))
+    job_health = JobHealth(watchdog, policy, settings.healthcheck_ping_url)
+
+    async def on_finished(run: JobRun) -> None:
+        if modes is not None:
+            proof = JobBinding(
+                job_run_id=run.id,
+                account_id=account_id,
+                environment=modes.environment,
+                config_hash=settings.config_hash,
+            )
+            state.ledger.append(
+                SecurityEvent, kind="DESK_JOB_BINDING", detail=proof.model_dump(mode="json")
+            )
+        await job_health(run)
+
     orchestrator = Orchestrator(
         config,
         calendar,
         state,
         clock,
         jobs.bodies(),
-        on_finished=JobHealth(watchdog, policy, settings.healthcheck_ping_url),
+        on_finished=on_finished,
+        auto_tick=None if auto_jobs is None else auto_jobs.tick,
     )
 
     async def clock_read() -> object:
@@ -364,8 +530,25 @@ async def compose(
         return verified_doctor
 
     async def close_resources() -> None:
+        if stream is not None:
+            await stream.aclose()
+        if execution is not None:
+            await execution.close()
         await reader.aclose()
         await resources.aclose()
+
+    async def initialize_account() -> object:
+        result = await fill_poll()
+        state.ledger.append(
+            SecurityEvent,
+            kind="HOST_ACCOUNTING_READY",
+            detail={
+                "account_id": account_id,
+                "environment": "PAPER" if settings.paper_trading else "LIVE",
+                "config_hash": settings.config_hash,
+            },
+        )
+        return result
 
     return HostRuntime(
         settings,
@@ -377,7 +560,9 @@ async def compose(
         doctor,
         close_resources=close_resources,
         verify_broker_time=verifier.verify,
-        initialize_account=fill_poll,
+        initialize_account=initialize_account,
+        modes=modes,
+        start_execution=None if stream is None else stream.start,
     )
 
 
@@ -393,9 +578,9 @@ async def execute(env_file: Path | None) -> None:
     selected = project / ".env" if env_file is None else env_file
     store = KeyringSecretStore()
     settings = load_host_settings(project, selected, store)
-    if settings.execution_mode != "MANUAL" or not settings.paper_trading:
+    if settings.execution_mode == "MANUAL" and not settings.paper_trading:
         raise ConfigurationError(
-            "Stage H start accepts only MANUAL paper; automatic modes remain locked"
+            "MANUAL host start requires paper binding; AUTO_LIVE requires its full explicit unlock"
         )
     data = project / "data"
     if data.is_symlink() or data.parent.resolve(strict=True) != data.parent:
@@ -404,6 +589,9 @@ async def execute(env_file: Path | None) -> None:
     with ProcessLock(data / "runtime.lock"):
         context = security_cli.open_context(selected, store=store)
         try:
+            if context.settings.config_hash != settings.config_hash:
+                raise ConfigurationError("Startup settings changed while opening the host context")
+            context.settings_source = lambda: load_host_settings(project, selected, store)
             result = await security_cli.doctor_result(context, store)
             for line in result.lines():
                 print(line)
@@ -417,7 +605,7 @@ async def execute(env_file: Path | None) -> None:
                 retention_days=context.settings.log_retention_days,
                 clock=context.ledger.clock,
             )
-            context.drift.check(context.config_hash(), mode="MANUAL")
+            context.drift.check(context.config_hash(), mode=context.settings.execution_mode)
             for name in ("reports", "history"):
                 directory = data / name
                 if directory.is_symlink():

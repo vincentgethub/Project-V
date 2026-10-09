@@ -15,6 +15,18 @@ class ConfigurationError(SafetyError):
     """R-06/R-07: configuration cannot safely start the application."""
 
 
+class ExecutionDisabledError(ConfigurationError):
+    """AX-11: automatic execution is unavailable in the effective mode."""
+
+
+class OrderRejectedError(ExecutionDisabledError):
+    """AX-31: a broker rejection was confirmed by client-ID lookup."""
+
+
+class EntryAdmissionRevoked(ExecutionDisabledError):
+    """AX-25: a final guard proved that no physical order request was sent."""
+
+
 class DataIntegrityError(SafetyError):
     """R-02/DAT-02: a value is missing, malformed, or unverifiable."""
 

@@ -1,8 +1,4 @@
-"""GD-06: authenticated, fresh, single-use manual ticket gate.
-
-This boundary writes local tickets only. Telegram delivery is separate; no
-broker order API or execution module is imported.
-"""
+"""GD-06/AX-03/21: authenticated single use tickets or the pure auto protocol."""
 
 import asyncio
 import hashlib
@@ -24,6 +20,7 @@ from backend.core.database import (
     AlertEvent,
     ApprovalEvent,
     ComplianceCheck,
+    ExecutionOrderRecord,
     Order,
     ResearchReport,
     RiskDecision,
@@ -50,6 +47,8 @@ from backend.domain.models import (
     Side,
     TradeProposal,
 )
+from backend.execution.modes import ModeStore
+from backend.execution.protocol import OrderExecutor
 from backend.notifications.card_formatter import details_cards, ticket_card
 from backend.risk.boundary import RiskBoundary
 from backend.risk.compliance_boundary import ComplianceBoundary
@@ -101,6 +100,7 @@ class ClickResult(FrozenModel):
         "HANDLED",
         "DETAILS",
         "TICKET",
+        "AUTO_SUBMITTED",
         "PLACED",
         "SKIPPED",
         "REJECTED",
@@ -133,6 +133,9 @@ class ApprovalGate:
         compliance: ComplianceBoundary,
         clock: Clock,
         source: FreshSource,
+        *,
+        executor: OrderExecutor | None = None,
+        modes: ModeStore | None = None,
     ) -> None:
         self.settings = Settings.validated_copy(settings)
         self.settings.assert_telegram_ready()
@@ -152,6 +155,17 @@ class ApprovalGate:
         self.state, self.risk, self.compliance, self.clock = state, risk, compliance, clock
         self.ledger, self.source = state.ledger, source
         self._lock = asyncio.Lock()
+        self.executor, self.modes = executor, modes
+
+    def bind_auto(self, executor: OrderExecutor, modes: ModeStore) -> None:
+        if (
+            self.settings.execution_mode == "MANUAL"
+            or self.executor is not None
+            or modes.state is not self.state
+            or modes.settings.config_hash != self.settings.config_hash
+        ):
+            raise ConfigurationError("AX-11: automatic approval binding differs")
+        self.executor, self.modes = executor, modes
 
     def _audit(self, kind: str, user_id: int | None = None) -> None:
         self.ledger.append(SecurityEvent, kind=kind, telegram_user_id=user_id, detail={})
@@ -296,6 +310,56 @@ class ApprovalGate:
             )
             return ClickResult(status="REJECTED", text="Rejected. No ticket.")
         await acknowledge("Re-checking…")
+        if self.settings.execution_mode != "MANUAL":
+            from backend.core.errors import ExecutionDisabledError, OrderRejectedError
+
+            if self.modes is None:
+                raise ConfigurationError("AX-11: automatic approval has no guarded executor")
+            if self.modes.effective != "MANUAL":
+                if self.executor is None:
+                    raise ConfigurationError("AX-11: automatic approval has no guarded executor")
+                try:
+                    submitted = await self.executor.enter(proposal_id, click=click)
+                except (ExecutionDisabledError, OrderRejectedError):
+                    # Consume a refused click under the same serialized writer used
+                    # for approvals. A broker rejection may already have consumed it.
+                    with transaction(self.ledger.engine) as session:
+                        latest = self.ledger._latest_alert_event(session, alert.id)
+                        if latest is None:
+                            raise DataIntegrityError(
+                                "AX-21: refusal lost its alert lifecycle"
+                            ) from None
+                        consumed = session.scalar(
+                            select(ExecutionOrderRecord.id).where(
+                                ExecutionOrderRecord.order_id == order.id,
+                                ExecutionOrderRecord.role == "ENTRY",
+                            )
+                        )
+                        if latest.state == "SENT" and consumed is None:
+                            self.ledger.append_in_session(
+                                session,
+                                ApprovalEvent,
+                                alert_id=alert.id,
+                                action="REVALIDATION_FAILED",
+                                telegram_user_id=click.user_id,
+                                reasons=[
+                                    {
+                                        "rule_id": "AX-21",
+                                        "message": "Auto entry refused by fresh checks",
+                                    }
+                                ],
+                            )
+                    return ClickResult(status="FAILED", text="Entry refused by fresh checks.")
+                broker = submitted.broker_order
+                cohort = "PAPER" if self.settings.paper_trading else "LIVE"
+                quantity = "•••" if self.settings.telegram_mask_amounts else str(broker.qty)
+                return ClickResult(
+                    status="AUTO_SUBMITTED",
+                    text=(
+                        f"{cohort} · Submitted {quantity} {broker.symbol} BUY LIMIT "
+                        f"${broker.limit_price:.2f}; fill and broker stops are monitored."
+                    ),
+                )
         async with asyncio.timeout(30):
             inputs = FreshInputs.model_validate(await self.source.refresh(order.symbol))
         proposal = TradeProposal(

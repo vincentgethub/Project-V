@@ -8,6 +8,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -67,6 +68,7 @@ class Orchestrator:
         jobs: Mapping[JobName, JobBody],
         *,
         on_finished: Callable[[JobRun], Awaitable[None]] | None = None,
+        auto_tick: Callable[[Literal["auto_entry", "auto_poll"]], Awaitable[None]] | None = None,
     ) -> None:
         self.config = YamlConfig.model_validate(config)
         if set(jobs) != set(JobName) or state.clock is not clock:
@@ -74,6 +76,7 @@ class Orchestrator:
         self.calendar, self.state, self.clock = calendar, state, clock
         self.jobs = dict(jobs)
         self.on_finished = on_finished
+        self.auto_tick = auto_tick
         self._locks = {name: asyncio.Lock() for name in JobName}
         self._active: set[asyncio.Task[object]] = set()
         self._closing = False
@@ -91,6 +94,30 @@ class Orchestrator:
                 coalesce=True,
                 misfire_grace_time=self.config.schedule.scheduler_misfire_grace_seconds,
             )
+
+        if auto_tick is not None:
+            for auto_name in ("auto_entry", "auto_poll"):
+                self.scheduler.add_job(
+                    self._tick_auto,
+                    "interval",
+                    seconds=60,
+                    args=(auto_name,),
+                    id=auto_name,
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=self.config.schedule.scheduler_misfire_grace_seconds,
+                )
+
+    async def _tick_auto(self, name: Literal["auto_entry", "auto_poll"]) -> None:
+        task = asyncio.current_task()
+        if self._closing or task is None or self.auto_tick is None:
+            return
+        self._active.add(task)
+        try:
+            with bound_contextvars(cycle_id=str(uuid4()), job=name):
+                await self.auto_tick(name)
+        finally:
+            self._active.discard(task)
 
     def _latest(self, name: JobName) -> JobRun | None:
         with Session(self.state.engine) as session:

@@ -17,6 +17,7 @@ from backend.core.errors import ConfigurationError, DataIntegrityError, Provider
 from backend.core.logging import redact
 from backend.core.notifier import ConsoleNotifier, DeduplicatingNotifier
 from backend.core.system_state import SystemState, SystemStateStore
+from backend.execution.modes import ModeStore
 from backend.ops.doctor import DoctorResult
 from backend.ops.process import Heartbeat, write_heartbeat
 from backend.ops.watchdog import Watchdog
@@ -88,16 +89,25 @@ class HostRuntime:
         close_resources: Callable[[], Awaitable[None]],
         verify_broker_time: Callable[[], Awaitable[object]],
         initialize_account: Callable[[], Awaitable[object]] | None = None,
+        modes: ModeStore | None = None,
+        start_execution: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.settings = Settings.validated_copy(settings)
         if (
-            self.settings.execution_mode != "MANUAL"
-            or not self.settings.paper_trading
+            (self.settings.execution_mode == "MANUAL" and not self.settings.paper_trading)
+            or (
+                self.settings.execution_mode != "MANUAL"
+                and (
+                    modes is None
+                    or modes.state is not state
+                    or modes.settings.config_hash != self.settings.config_hash
+                )
+            )
             or orchestrator.state is not state
             or watchdog.state is not state
         ):
             raise ConfigurationError(
-                "Stage H startup requires the bound MANUAL paper desk; auto modes await Stage I"
+                "Host startup requires the bound desk and guarded automatic mode controller"
             )
         self.state, self.orchestrator, self.bot, self.watchdog = state, orchestrator, bot, watchdog
         self.heartbeat_path, self.doctor, self.close_resources = (
@@ -108,6 +118,7 @@ class HostRuntime:
         self.run_id = uuid4()
         self.verify_broker_time = verify_broker_time
         self.initialize_account = initialize_account
+        self.modes, self.start_execution = modes, start_execution
         self.notifications = SafetyNotifications()
         self.state.notifier = DeduplicatingNotifier(self.notifications)
 
@@ -115,7 +126,9 @@ class HostRuntime:
         started_bot = False
         try:
             result = DoctorResult.model_validate(await self.doctor())
-            if result.exit_code != 0:
+            if result.exit_code != 0 or (
+                self.settings.execution_mode != "MANUAL" and not result.fully_green
+            ):
                 raise ConfigurationError(
                     "Required doctor checks failed or are UNVERIFIED; runtime startup is refused"
                 )
@@ -131,10 +144,16 @@ class HostRuntime:
                     # warnings remain available under the persisted halt.
                     self.state.halt_for_error(error)
             self.orchestrator.start()
+            if self.start_execution is not None:
+                await self.start_execution()
             self.state.ledger.append(
                 SecurityEvent,
                 kind="HOST_STARTED",
-                detail={"run_id": str(self.run_id), "mode": "MANUAL", "cohort": "PAPER"},
+                detail={
+                    "run_id": str(self.run_id),
+                    "mode": self.mode,
+                    "cohort": "PAPER" if self.settings.paper_trading else "LIVE",
+                },
             )
             with Session(self.state.engine) as session:
                 last_state = session.scalar(
@@ -142,7 +161,7 @@ class HostRuntime:
                 )
             reason = "" if last_state is None else ": " + str(redact(last_state.reason))[:280]
             await self.bot.notify(
-                "Project V started: MANUAL, paper. State: "
+                f"Project V started: {self.mode}, {'paper' if self.settings.paper_trading else 'live'}. State: "
                 + self.state.current().value
                 + reason
                 + ". Held exit warnings continue during a halt.",
@@ -173,8 +192,8 @@ class HostRuntime:
                     Heartbeat(
                         run_id=self.run_id,
                         updated_at=self.state.clock.now(),
-                        mode="MANUAL",
-                        paper=True,
+                        mode=self.mode,
+                        paper=self.settings.paper_trading,
                         scheduler_running=True,
                     ),
                 )
@@ -223,3 +242,7 @@ class HostRuntime:
             )
             if cleanup_error is not None:
                 raise ProviderError("Host shutdown could not be fully verified; HALTED") from None
+
+    @property
+    def mode(self) -> str:
+        return "MANUAL" if self.modes is None else self.modes.effective

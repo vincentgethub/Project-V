@@ -289,6 +289,14 @@ class OpenOrder(FrozenModel):
         return self
 
 
+class ProtectiveStop(FrozenModel):
+    """AX-27: a pending SELL stop is recorded separately from LIMIT exposure."""
+
+    symbol: Symbol
+    qty: PositiveQty
+    stop_price: Price
+
+
 class PortfolioSnapshot(FrozenModel):
     """R-03/R-04/R-05/CRO-09: immutable managed-account state.
 
@@ -305,8 +313,17 @@ class PortfolioSnapshot(FrozenModel):
     settled_cash: Money
     positions: Mapping[str, Position]
     open_orders: tuple[OpenOrder, ...]
+    protective_stops: tuple[ProtectiveStop, ...] = Field(default=(), max_length=500)
     high_water_mark: Money = Field(ge=Decimal(0))
     day_start_equity: Money = Field(ge=Decimal(0))
+
+    def reserved_sell_shares(self, symbol: str) -> int:
+        """R-01: outstanding sells reserve shares until cancellation is proved."""
+        return sum(
+            order.qty
+            for order in self.open_orders
+            if order.symbol == symbol and order.side == Side.SELL
+        ) + sum(stop.qty for stop in self.protective_stops if stop.symbol == symbol)
 
     @field_validator("positions", mode="after")
     @classmethod

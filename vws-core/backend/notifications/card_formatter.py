@@ -136,7 +136,9 @@ def format_card(context: CardContext, settings: Settings) -> str:
             if not row.passed
         ],
         f"All blocking risk/compliance checks passed · Valid until {display_time(p.expires_at, policy)}",
-        "Manual review required; no broker order has been sent.",
+        "Manual review required; no broker order has been sent."
+        if policy.execution_mode == "MANUAL"
+        else "Research checks passed; no broker order has been sent.",
     ]
     rendered = "\n".join(lines)
     if len(rendered.encode("utf-16-le")) // 2 > 4096:

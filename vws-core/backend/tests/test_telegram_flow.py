@@ -688,10 +688,12 @@ async def test_GD_05_expiry_rechecks_consumption_inside_serialized_writer(
     h.clock.current = alert.expires_at
     original = h.state.ledger._latest_alert_event
     consumed = False
+    reads = 0
 
     def consume(session: Session, alert_id: UUID) -> AlertEvent | None:
-        nonlocal consumed
-        if not consumed:
+        nonlocal consumed, reads
+        reads += 1
+        if reads == 2:
             consumed = True
             h.state.ledger.append_in_session(
                 session, ApprovalEvent, alert_id=alert_id, action="EXPIRED", reasons=[]

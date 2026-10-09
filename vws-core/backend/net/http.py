@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlsplit
+from uuid import UUID
 
 import httpx
 from requests import Response, Session
 from telegram.request import BaseRequest, RequestData
 
 from backend.core.errors import ConfigurationError, EgressDeniedError, ProviderError
+from backend.core.execution_policy import ORDER_HTTP_PATH
 from backend.net.egress import EgressPolicy
 
 _policy: EgressPolicy | None = None
@@ -307,6 +311,108 @@ class TimeoutSession(Session):
         exact = ExactJSONResponse()
         exact.__dict__.update(response.__dict__)
         return exact
+
+
+class OrderSession(TimeoutSession):
+    """AX-12/SEC-30: exact bound order transport, available only to the executor.
+
+    One physical request, verified TLS, no redirects/proxies or implicit retries.
+    POST is only the bracket/exit/repair order route; DELETE is only one UUID.
+    GET remains available for account and reconciliation reads. No money route.
+    """
+
+    def __init__(
+        self,
+        endpoint: str,
+        timeout_seconds: int,
+        *,
+        policy: EgressPolicy,
+        before_request: Callable[[], None] | None = None,
+    ) -> None:
+        if endpoint not in {"https://paper-api.alpaca.markets", "https://api.alpaca.markets"}:
+            raise ConfigurationError("Order transport requires the exact Alpaca endpoint")
+        self.endpoint = endpoint
+        super().__init__(timeout_seconds, before_request=before_request, policy=policy)
+
+    def request(self, method: str | bytes, url: str | bytes, *args: Any, **kwargs: Any) -> Response:
+        if not isinstance(method, str) or not isinstance(url, str):
+            raise ProviderError("Order transport requires canonical text method and URL")
+        method = method.upper()
+        parts = urlsplit(url)
+        origin = parts.scheme + "://" + parts.netloc
+        if origin != self.endpoint or parts.fragment or parts.username or parts.password:
+            raise ProviderError("Order destination differs from the bound account endpoint")
+        allowed = method == "GET" and parts.path in {
+            "/v2/account",
+            "/v2/positions",
+            ORDER_HTTP_PATH,
+            ORDER_HTTP_PATH + ":by_client_order_id",
+        }
+        if (
+            method in {"GET", "DELETE"}
+            and parts.path.startswith(ORDER_HTTP_PATH + "/")
+            and not parts.query
+        ):
+            suffix = parts.path[len(ORDER_HTTP_PATH) + 1 :]
+            try:
+                allowed = str(UUID(suffix)) == suffix
+            except ValueError:
+                allowed = False
+        if method == "POST":
+            allowed = parts.path == ORDER_HTTP_PATH and not parts.query
+        if method == "DELETE" and parts.path.startswith(ORDER_HTTP_PATH + "/") and not parts.query:
+            suffix = parts.path[len(ORDER_HTTP_PATH) + 1 :]
+            try:
+                allowed = str(UUID(suffix)) == suffix
+            except ValueError:
+                allowed = False
+        if not allowed:
+            raise ProviderError("Order transport refuses this method or route")
+        # Pinned SDK sets params=None on a DELETE. Permit precisely that empty
+        # shape, while refusing a query or payload that could change its target.
+        if method == "DELETE" and kwargs.get("params") is None:
+            kwargs.pop("params", None)
+        forbidden = {"files", "data", "stream", "proxies", "auth", "cert"}
+        if method != "GET":
+            forbidden.add("params")
+        if args or any(key in kwargs for key in forbidden):
+            raise ProviderError("Order request cannot override transport or payload controls")
+        policy = _require_policy(self._policy)
+        policy.check_url(url, purpose="alpaca-order")
+        kwargs["timeout"] = (min(5, self._timeout_seconds), min(20, self._timeout_seconds))
+        kwargs["allow_redirects"], kwargs["verify"], kwargs["stream"] = False, True, True
+        if self._before_request is not None:
+            self._before_request()
+        deadline = time.monotonic() + min(30, self._timeout_seconds)
+        response = Session.request(self, method, url, **kwargs)
+        try:
+            if 300 <= response.status_code <= 399:
+                policy.deny(purpose="alpaca-order", reason="Order redirects are prohibited")
+            body = bytearray()
+            for chunk in response.iter_content(chunk_size=65536):
+                if time.monotonic() > deadline or len(body) + len(chunk) > 1048576:
+                    raise ProviderError("Order response exceeds its deadline or body bound")
+                body.extend(chunk)
+            if time.monotonic() > deadline:
+                raise ProviderError("Order response exceeded its whole-request deadline")
+            exact = ExactJSONResponse()
+            exact.__dict__.update(response.__dict__)
+            exact._content = bytes(body)
+            exact.__dict__["_content_consumed"] = True
+            return exact
+        finally:
+            response.close()
+
+
+def make_order_session(
+    endpoint: str,
+    timeout_seconds: int,
+    *,
+    policy: EgressPolicy,
+    before_request: Callable[[], None] | None = None,
+) -> OrderSession:
+    """AX-10: the AST grants this capability only to alpaca_executor.py."""
+    return OrderSession(endpoint, timeout_seconds, policy=policy, before_request=before_request)
 
 
 _TELEGRAM_METHODS = frozenset(

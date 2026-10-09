@@ -67,9 +67,12 @@ def test_OPS_02_health_requires_fresh_utc_bound_heartbeat_and_held_lock(
         assert not tuple(tmp_path.glob(".heartbeat-*"))
 
 
-@pytest.mark.parametrize("paper,running", [(False, True), (True, False)])
-def test_OPS_02_stopped_or_live_heartbeat_refuses_before_write(
-    tmp_path: Path, clock: FrozenClock, paper: bool, running: bool
+@pytest.mark.parametrize(
+    "mode,paper,running",
+    [("AUTO_PAPER", False, True), ("AUTO_LIVE", True, True), ("MANUAL", True, False)],
+)
+def test_OPS_02_stopped_or_mismatched_heartbeat_refuses_before_write(
+    tmp_path: Path, clock: FrozenClock, mode: str, paper: bool, running: bool
 ) -> None:
     with pytest.raises(DataIntegrityError):
         write_heartbeat(
@@ -77,12 +80,31 @@ def test_OPS_02_stopped_or_live_heartbeat_refuses_before_write(
             Heartbeat(
                 run_id=uuid4(),
                 updated_at=clock.now(),
-                mode="MANUAL",
+                mode=mode,
                 paper=paper,
                 scheduler_running=running,
             ),
         )
     assert not tuple(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "mode,paper", [("MANUAL", True), ("MANUAL", False), ("AUTO_PAPER", True), ("AUTO_LIVE", False)]
+)
+def test_OPS_02_bound_heartbeat_certifies_liveness_without_unlocking_trading(
+    tmp_path: Path, clock: FrozenClock, mode: str, paper: bool
+) -> None:
+    path, lock = tmp_path / "heartbeat.json", tmp_path / "process.lock"
+    write_heartbeat(
+        path,
+        Heartbeat(
+            run_id=uuid4(), updated_at=clock.now(), mode=mode, paper=paper, scheduler_running=True
+        ),
+    )
+    assert not heartbeat_is_fresh(path, lock, clock)
+    with ProcessLock(lock):
+        assert heartbeat_is_fresh(path, lock, clock)
+    assert not heartbeat_is_fresh(path, lock, clock)
 
 
 def test_OPS_02_file_sqlite_wal_is_explicit_and_keeps_busy_timeout(engine: Engine) -> None:

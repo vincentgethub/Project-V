@@ -78,6 +78,55 @@ def _day(value: datetime) -> date:
     return ensure_utc(value).astimezone(_NEW_YORK).date()
 
 
+def day_trade_activity(
+    calendar: MarketCalendar,
+    account_id: str,
+    symbol: str,
+    side: Side,
+    history: tuple[TradeRecord, ...],
+    now: datetime,
+) -> tuple[bool, int]:
+    """CMP-05/AX-25: one pure, conservative count shared by both entry gates."""
+    today = _day(now)
+    window = frozenset(
+        (*calendar.previous_sessions(today, 4), today)
+        if calendar.is_session(today)
+        else calendar.previous_sessions(today, 5)
+    )
+    pending: dict[tuple[date, str], deque[tuple[UUID, int]]] = {}
+    completed_ids: set[UUID] = set()
+    same_day = False
+    # BUY-before-SELL at an equal timestamp maximizes the conservative count.
+    for trade in sorted(history, key=lambda row: (row.ts, row.side != Side.BUY, str(row.trade_id))):
+        if trade.account_id != account_id:
+            continue
+        trade_day = _day(trade.ts)
+        if trade_day == today and trade.symbol == symbol and trade.side != side:
+            same_day = True
+        if trade_day not in window:
+            continue
+        queue = pending.setdefault((trade_day, trade.symbol), deque())
+        if trade.side == Side.BUY:
+            queue.append((trade.trade_id, trade.qty))
+        else:
+            remaining = trade.qty
+            available_orders = list(queue)
+            queue.clear()
+            for index, (buy_id, available) in enumerate(available_orders):
+                if remaining == 0:
+                    break
+                if buy_id not in completed_ids:
+                    available_orders[index] = (buy_id, available - 1)
+                    completed_ids.add(buy_id)
+                    remaining -= 1
+            for buy_id, available in available_orders:
+                matched = min(remaining, available)
+                remaining -= matched
+                if matched < available:
+                    queue.append((buy_id, available - matched))
+    return same_day, len(completed_ids)
+
+
 def _compliance_canonical(value: object) -> object:
     """R-03/R-04/R-05: exact B-stage JSON normalization with tax date support."""
     if isinstance(value, FrozenModel):
@@ -411,11 +460,7 @@ class ComplianceEngine:
             raise DataIntegrityError("Account binding, expiry or portfolio freshness is invalid")
         if proposal.side == Side.SELL:
             held = snapshot.positions.get(proposal.symbol)
-            pending = sum(
-                order.qty
-                for order in snapshot.open_orders
-                if order.side == Side.SELL and order.symbol == proposal.symbol
-            )
+            pending = snapshot.reserved_sell_shares(proposal.symbol)
             if held is None or proposal.qty > held.qty - pending:
                 raise DataIntegrityError("R-09: sell quantity exceeds unreserved held shares")
 
@@ -700,52 +745,9 @@ class ComplianceEngine:
         """
         # VERIFY: https://syndication.finra.org/content/understanding-new-intraday-margin-requirements
         # VERIFY: https://www.finra.org/rules-guidance/guidance/interps-4210
-        today = _day(now)
-        window = frozenset(
-            (*self.calendar.previous_sessions(today, 4), today)
-            if self.calendar.is_session(today)
-            else self.calendar.previous_sessions(today, 5)
+        same_day, completed = day_trade_activity(
+            self.calendar, proposal.account_id, proposal.symbol, proposal.side, history, now
         )
-        pending: dict[tuple[date, str], deque[tuple[UUID, int]]] = {}
-        completed_ids: set[UUID] = set()
-        same_day = False
-        # Equal timestamps lack fill ordering: BUY-before-SELL maximizes the
-        # conservative count instead of letting arbitrary UUID order reduce it.
-        for trade in sorted(
-            history, key=lambda row: (row.ts, row.side != Side.BUY, str(row.trade_id))
-        ):
-            if trade.account_id != proposal.account_id:
-                continue
-            trade_day = _day(trade.ts)
-            if (
-                trade_day == today
-                and trade.symbol == proposal.symbol
-                and trade.side != proposal.side
-            ):
-                same_day = True
-            if trade_day not in window:
-                continue
-            key = (trade_day, trade.symbol)
-            queue = pending.setdefault(key, deque())
-            if trade.side == Side.BUY:
-                queue.append((trade.trade_id, trade.qty))
-            else:
-                remaining = trade.qty
-                available_orders = list(queue)
-                queue.clear()
-                for index, (buy_id, available) in enumerate(available_orders):
-                    if remaining == 0:
-                        break
-                    if buy_id not in completed_ids:
-                        available_orders[index] = (buy_id, available - 1)
-                        completed_ids.add(buy_id)
-                        remaining -= 1
-                for buy_id, available in available_orders:
-                    matched = min(remaining, available)
-                    remaining -= matched
-                    if matched < available:
-                        queue.append((buy_id, available - matched))
-        completed = len(completed_ids)
         legacy_block = (
             self.config.day_trade_regime == DayTradeRegime.LEGACY_PDT
             and snapshot.account_type == AccountType.MARGIN

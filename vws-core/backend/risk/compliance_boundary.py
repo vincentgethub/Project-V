@@ -120,11 +120,7 @@ class ComplianceBoundary:
         exit_trade = proposal.intent in {Intent.REDUCE, Intent.EXIT}
         if exit_trade:
             held = snapshot.positions.get(proposal.symbol)
-            pending = sum(
-                order.qty
-                for order in snapshot.open_orders
-                if order.symbol == proposal.symbol and order.side.value == "SELL"
-            )
+            pending = snapshot.reserved_sell_shares(proposal.symbol)
             verifiable = (
                 held is not None
                 and proposal.qty <= held.qty - pending

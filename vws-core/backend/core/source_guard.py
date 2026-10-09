@@ -18,6 +18,7 @@ from pathlib import Path
 
 from backend.core.errors import ConfigurationError
 from backend.core.execution_policy import (
+    ALLOWED_EXECUTOR_NAMES,
     BANNED_ALPACA_FIELDS,
     BANNED_DYNAMIC_BUILTINS,
     BANNED_EXECUTION_METHODS,
@@ -26,12 +27,14 @@ from backend.core.execution_policy import (
     BANNED_ORDER_REQUESTS,
     BANNED_TLS_MEMBERS,
     DIRECT_HTTP_CALLS,
+    EXECUTOR_RELATIVE_PATH,
     GENERATED_DIRECTORIES,
     HTTP_CLIENT_TYPES,
     HTTP_URL_PATTERN,
     INBOUND_NETWORK_CALLS,
     MONEY_ENDPOINT_WORDS,
     MUTATING_HTTP_METHODS,
+    ORDER_HTTP_FACTORY_NAMES,
     PRIVATE_LLM_FIELDS,
     PRIVATE_LLM_MODELS,
     RESTRICTED_REFLECTION,
@@ -334,24 +337,30 @@ def _node_messages(
     node: ast.AST,
     aliases: dict[str, frozenset[str]],
     values: dict[str, frozenset[str]],
+    *,
+    executor: bool = False,
 ) -> tuple[str, ...]:
     messages: list[str] = []
+
+    def prohibited(name: str) -> bool:
+        return _prohibited_member(name) and not (executor and name in ALLOWED_EXECUTOR_NAMES)
+
     if isinstance(node, ast.Import):
         for item in node.names:
-            if _prohibited_member(item.name.rsplit(".", 1)[-1]):
+            if prohibited(item.name.rsplit(".", 1)[-1]):
                 messages.append(f"prohibited import: {item.name}")
     if isinstance(node, ast.ImportFrom):
         for item in node.names:
             if item.name in BANNED_ALPACA_FIELDS:
                 messages.append(f"removed Alpaca field import: {item.name}")
-            if item.name in BANNED_ORDER_REQUESTS or _prohibited_member(item.name):
+            if prohibited(item.name):
                 messages.append(f"prohibited import: {item.name}")
             qualified = f"{node.module}.{item.name}" if node.module else item.name
             if _dynamic_reference(qualified):
                 messages.append(f"prohibited dynamic import: {qualified}")
         if any(item.name == "*" for item in node.names):
             messages.append("wildcard import prevents verification of execution aliases")
-    if isinstance(node, ast.Attribute) and _prohibited_member(node.attr):
+    if isinstance(node, ast.Attribute) and prohibited(node.attr):
         messages.append(f"prohibited execution member: {node.attr}")
     if isinstance(node, ast.Attribute) and node.attr in BANNED_ALPACA_FIELDS:
         messages.append(f"removed Alpaca field read: {node.attr}")
@@ -359,7 +368,7 @@ def _node_messages(
         for ref in sorted(_references(node, aliases)):
             if _dynamic_reference(ref):
                 messages.append(f"prohibited dynamic code reference: {ref}")
-            if isinstance(node, ast.Name) and _prohibited_member(ref.rsplit(".", 1)[-1]):
+            if isinstance(node, ast.Name) and prohibited(ref.rsplit(".", 1)[-1]):
                 messages.append(f"prohibited execution alias: {ref}")
     if isinstance(node, ast.Subscript):
         for key in sorted(_literal_strings(node.slice, values)):
@@ -626,6 +635,7 @@ def scan_file(
     path: Path,
     *,
     factory_path: Path | None = None,
+    executor_path: Path | None = None,
     config_writer_path: Path | None = None,
     build_metadata_paths: frozenset[str] = frozenset(),
 ) -> tuple[Violation, ...]:
@@ -640,11 +650,12 @@ def scan_file(
         nodes = tuple(ast.walk(tree))
         tables = _scoped_tables(tree)
         factory = factory_path is not None and path.resolve() == factory_path.resolve()
+        executor = executor_path is not None and path.resolve() == executor_path.resolve()
         test_file = path.name.startswith("test_") or path.name == "conftest.py"
         findings = {
             _location(path, node, message)
             for node in nodes
-            for message in _node_messages(node, tables[node][0], tables[node][1])
+            for message in _node_messages(node, tables[node][0], tables[node][1], executor=executor)
         }
         findings.update(
             _location(path, node, message, rule_id)
@@ -656,6 +667,25 @@ def scan_file(
                 test_file=test_file,
             )
         )
+        if not factory and not executor:
+            for node in nodes:
+                imported = (
+                    tuple(item.name for item in node.names)
+                    if isinstance(node, (ast.Import, ast.ImportFrom))
+                    else ()
+                )
+                referenced = tuple(
+                    ref.rsplit(".", 1)[-1] for ref in _references(node, tables[node][0])
+                )
+                if any(name in ORDER_HTTP_FACTORY_NAMES for name in (*imported, *referenced)):
+                    findings.add(
+                        _location(
+                            path,
+                            node,
+                            "order transport capability exists outside the isolated executor",
+                            "AX-10",
+                        )
+                    )
         config_writer = (
             config_writer_path is not None and path.resolve() == config_writer_path.resolve()
         )
@@ -764,6 +794,7 @@ def scan_project(root: Path) -> tuple[Violation, ...]:
                         scan_file(
                             path,
                             factory_path=source_root / _HTTP_FACTORY_PATH,
+                            executor_path=source_root / EXECUTOR_RELATIVE_PATH,
                             config_writer_path=path if authorized_writer else None,
                             build_metadata_paths=frozenset(
                                 (source_root / name).resolve().as_posix()

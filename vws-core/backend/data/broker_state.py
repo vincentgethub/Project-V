@@ -244,7 +244,7 @@ class AlpacaBrokerState:
             cash = _money(account.get("cash"))
             buying_power = _money(account.get("buying_power"))
             positions = self._positions(positions_raw)
-            orders = self._orders(orders_raw)
+            orders, protective_stops = self._orders(orders_raw)
             high_water_mark, day_start_equity = self._marks(equity, instant)
             settled = Decimal("0") if self._settled is None else _money(self._settled(instant))
             snapshot = PortfolioSnapshot.model_validate(
@@ -257,6 +257,7 @@ class AlpacaBrokerState:
                     "settled_cash": settled,
                     "positions": positions,
                     "open_orders": orders,
+                    "protective_stops": protective_stops,
                     "high_water_mark": _money(high_water_mark),
                     "day_start_equity": _money(day_start_equity),
                 }
@@ -305,11 +306,12 @@ class AlpacaBrokerState:
             }
         return result
 
-    def _orders(self, raw: object) -> list[dict[str, object]]:
+    def _orders(self, raw: object) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         """R-01/CRO-03: count unfilled LIMIT quantities and reject truncation."""
         if not isinstance(raw, list) or len(raw) >= 500:
             raise DataIntegrityError("open-order list is invalid or possibly truncated")
         result: list[dict[str, object]] = []
+        protective: list[dict[str, object]] = []
         seen: set[str] = set()
         for item in raw:
             order = _mapping(item, "order")
@@ -320,7 +322,10 @@ class AlpacaBrokerState:
             if not isinstance(order_id, str) or not order_id.strip() or order_id in seen:
                 raise DataIntegrityError("open orders require distinct IDs")
             seen.add(order_id)
-            if order.get("type") != "limit" or order.get("asset_class") != "us_equity":
+            if (
+                order.get("type") not in {"limit", "stop"}
+                or order.get("asset_class") != "us_equity"
+            ):
                 raise DataIntegrityError("open order must be a US-equity LIMIT order")
             if order.get("status") not in {
                 "new",
@@ -342,6 +347,17 @@ class AlpacaBrokerState:
             filled = _whole_qty(order.get("filled_qty"), allow_zero=True)
             if filled >= qty:
                 raise DataIntegrityError("open order remaining quantity must be positive")
+            if order.get("type") == "stop":
+                if side != "sell":
+                    raise DataIntegrityError("Only protective SELL stops are permitted")
+                protective.append(
+                    {
+                        "symbol": symbol,
+                        "qty": qty - filled,
+                        "stop_price": _price(order.get("stop_price")),
+                    }
+                )
+                continue
             result.append(
                 {
                     "symbol": symbol,
@@ -350,7 +366,7 @@ class AlpacaBrokerState:
                     "limit_price": _price(order.get("limit_price")),
                 }
             )
-        return result
+        return result, protective
 
     def _symbol(self, value: object) -> str:
         """R-02: account holdings must resolve to the configured instrument set."""
