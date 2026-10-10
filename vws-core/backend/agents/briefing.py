@@ -199,6 +199,7 @@ class DeskCommands:
         positions: PositionsSource,
         *,
         modes: ModeStore | None = None,
+        extra_status: Callable[[], tuple[str, ...]] | None = None,
     ) -> None:
         if not account_id:
             raise ConfigurationError("UX: private desk commands need an account binding")
@@ -209,6 +210,7 @@ class DeskCommands:
         )
         self.calendar, self.position_source = calendar, positions
         self.modes = modes
+        self.extra_status = extra_status
 
     def handlers(self) -> dict[str, CommandBody]:
         return {
@@ -248,6 +250,7 @@ class DeskCommands:
                     ],
                     "Other-account wash-sale awareness depends on lots you enter or import.",
                     "Held exits and protection remain available. Resets and upgrades require the host.",
+                    *(self.extra_status() if self.extra_status is not None else ()),
                 ]
             )
         )
@@ -431,13 +434,15 @@ class DeskCommands:
     async def help(self, argument: str) -> tuple[str, ...]:
         if self.modes is not None:
             return (
-                "/status · /positions · /digest · /report · /edge · /progress · /pnl · /tax\n"
+                "/status · /positions · /digest · /report · /edge · /progress · /pnl · /tax · /watch TICKER\n"
+                "Watch cards never auto-trade. Reply to a trade card or FYI to save a journal note.\n"
                 "/halt, /pause and /manual stop automatic entries; held exits and broker stops continue.\n"
                 "In an automatic mode, Approve places the order now after fresh checks.\n"
                 "Resume only on the host: python -m vws ops resume-auto --operator NAME (type RESUME).",
             )
         return (
-            "/status · /positions · /digest · /report · /edge · /progress · /pnl · /tax\n"
+            "/status · /positions · /digest · /report · /edge · /progress · /pnl · /tax · /watch TICKER\n"
+            "Reply to a trade card or FYI to save a journal note.\n"
             "/halt reason stops entries immediately. /pause allows reductions only.\n"
             "Approve creates a manual ticket after fresh checks. Details is read-only.\n"
             "I placed it records your action; broker fills are checked separately.\n"

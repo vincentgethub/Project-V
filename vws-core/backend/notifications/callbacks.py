@@ -316,6 +316,15 @@ class ApprovalGate:
             if self.modes is None:
                 raise ConfigurationError("AX-11: automatic approval has no guarded executor")
             if self.modes.effective != "MANUAL":
+                from backend.core.database import Signal
+
+                with Session(self.state.engine) as session:
+                    signal = session.get(Signal, order.signal_id)
+                    if signal is None or signal.structured_thesis.get("manual_only") is True:
+                        return ClickResult(
+                            status="FAILED",
+                            text="Watch cards are manual only; automatic order refused.",
+                        )
                 if self.executor is None:
                     raise ConfigurationError("AX-11: automatic approval has no guarded executor")
                 try:

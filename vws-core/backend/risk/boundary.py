@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Protocol
 from uuid import UUID
 
@@ -10,6 +11,7 @@ from backend.core.clock import Clock, ensure_utc
 from backend.core.errors import DataIntegrityError
 from backend.core.system_state import SystemState, SystemStateStore, financial_state
 from backend.domain.models import (
+    BlackoutWindow,
     Decision,
     DeployableCapital,
     Intent,
@@ -60,12 +62,14 @@ class RiskBoundary:
         *,
         veto_sink: VetoSink | None = None,
         marks: PersistedPortfolioMarks | None = None,
+        additional_blackouts: Callable[[], tuple[BlackoutWindow, ...]] | None = None,
     ) -> None:
         self.cro = cro
         self.state = state
         self.clock = clock
         self.veto_sink = LoggingVetoSink() if veto_sink is None else veto_sink
         self.marks = marks
+        self.additional_blackouts = additional_blackouts
         if marks is not None and (
             marks.ledger.engine is not state.engine
             or marks.config.config_hash != cro.config.config_hash
@@ -151,13 +155,29 @@ class RiskBoundary:
         try:
             now = ensure_utc(self.clock.now())
             self.state.ledger.verify_chain()
+            officer = self.cro
+            if self.additional_blackouts is not None:
+                extra = self.additional_blackouts()
+                if not isinstance(extra, tuple) or len(extra) > 500:
+                    raise DataIntegrityError("CRO-11: bounded immutable extra windows required")
+                officer = ChiefRiskOfficer(
+                    self.cro.config,
+                    self.cro.registry,
+                    self.cro.calendar,
+                    blackout_windows=tuple(
+                        window
+                        for window in self.cro.blackout_windows
+                        if window not in self.cro.registry.blackout_windows
+                    )
+                    + tuple(BlackoutWindow.model_validate(window) for window in extra),
+                )
             daily_loss_blocked = False
             if self.marks is not None:
                 snapshot = self.marks.observe(snapshot)
                 daily_loss_blocked = self.marks.daily_loss_blocked(now)
             initial = self.state.current()
             verdict = self._checked(
-                self.cro.evaluate(
+                officer.evaluate(
                     proposal,
                     snapshot,
                     market,
@@ -174,7 +194,7 @@ class RiskBoundary:
             current = self.state.current()
             if current != initial:
                 verdict = self._checked(
-                    self.cro.evaluate(
+                    officer.evaluate(
                         proposal,
                         snapshot,
                         market,
@@ -195,7 +215,7 @@ class RiskBoundary:
             )
             if latched != current and latched != verdict.recommended_state:
                 verdict = self._checked(
-                    self.cro.evaluate(
+                    officer.evaluate(
                         proposal,
                         snapshot,
                         market,

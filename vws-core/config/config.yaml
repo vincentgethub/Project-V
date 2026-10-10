@@ -1,4 +1,14 @@
 # GD-02: research parameters only. Risk ceilings and secrets live in env settings.
+# XK-03/05/06: registered reduction controls; no parameter optimization.
+regime_filter:
+  manual: annotate
+  auto: half_size
+playbook_kill:
+  min_trades: 30
+ramp:
+  first_after: 10
+  more_after: 20
+  steps: ["0.25", "0.50", "1"]
 watchlist:
   - AAPL
   - MSFT

@@ -106,6 +106,7 @@ async def test_AX_40_each_missing_unlock_proof_is_named_and_refuses(
         calendar,
         "live-scratch",
         lambda: effective[0],
+        drill_ready=lambda: fault != "drill",
         validation_ready=lambda: fault != "ready",
         feeds_healthy=lambda: fault != "feeds",
         security_reasons=None if fault == "security" else lambda: (),

@@ -1130,6 +1130,37 @@ class PlaybookConfig(_FrozenYamlModel):
         return {name: _canonical_decimal(weight) for name, weight in value.items()}
 
 
+class RegimeFilterConfig(_FrozenYamlModel):
+    """XK-03: explicit reduction-only actions; manual research is annotated."""
+
+    manual: Literal["annotate"] = "annotate"
+    auto: Literal["annotate", "half_size", "no_new_entries"] = "half_size"
+
+
+class PlaybookKillConfig(_FrozenYamlModel):
+    """XK-05: the approved fixed sample threshold, without parameter search."""
+
+    min_trades: int = Field(default=30, strict=True, ge=30, le=30)
+
+
+class RampConfig(_FrozenYamlModel):
+    """XK-06: fixed registered capital steps, never a risk-limit override."""
+
+    first_after: int = Field(default=10, strict=True, ge=10, le=10)
+    more_after: int = Field(default=20, strict=True, ge=20, le=20)
+    steps: tuple[Decimal, Decimal, Decimal] = (Decimal("0.25"), Decimal("0.50"), Decimal(1))
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def fixed_steps(cls, value: object) -> tuple[Decimal, Decimal, Decimal]:
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            raise ValueError("XK-06 requires three fixed steps")
+        result = tuple(_bounded_exact_decimal(item) for item in value)
+        if result != (Decimal("0.25"), Decimal("0.50"), Decimal(1)):
+            raise ValueError("XK-06 steps must remain 25%, 50%, 100%")
+        return result[0], result[1], result[2]
+
+
 class YamlConfig(_FrozenYamlModel):
     """GD-02/R-03: research configuration cannot modify env risk limits."""
 
@@ -1142,6 +1173,9 @@ class YamlConfig(_FrozenYamlModel):
     sizing: SizingConfig = Field(default_factory=SizingConfig)
     cm: CostModelConfig = Field(default_factory=CostModelConfig)
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
+    regime_filter: RegimeFilterConfig = Field(default_factory=RegimeFilterConfig)
+    playbook_kill: PlaybookKillConfig = Field(default_factory=PlaybookKillConfig)
+    ramp: RampConfig = Field(default_factory=RampConfig)
     playbooks: Mapping[str, PlaybookConfig]
 
     @model_validator(mode="before")

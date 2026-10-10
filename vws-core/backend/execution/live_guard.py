@@ -1,7 +1,6 @@
 """AX-40/41: verified local history and host-only live unlock; no SDK imports."""
 
 from collections.abc import Callable
-from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -40,6 +39,7 @@ class LiveGuard:
         validation_ready: Callable[[], bool] | None = None,
         feeds_healthy: Callable[[], bool] | None = None,
         security_reasons: Callable[[], tuple[str, ...]] | None = None,
+        drill_ready: Callable[[], bool] | None = None,
     ) -> None:
         self.settings = Settings.validated_copy(settings)
         self.state, self.calendar, self.account_id = state, calendar, account_id
@@ -49,6 +49,7 @@ class LiveGuard:
             feeds_healthy,
         )
         self.security_reasons = security_reasons
+        self.drill_ready = drill_ready
 
     def _history(self) -> tuple[str | None, list[str]]:
         self.state.ledger.verify_chain()
@@ -138,11 +139,7 @@ class LiveGuard:
             reasons.append(
                 "AX-40: Stage J account activity, P&L and tax capture must be verified for this live account"
             )
-        if not any(
-            row.kind == "KILL_SWITCH_DRILL_PASSED"
-            and timedelta(0) <= now - row.ts <= timedelta(days=45)
-            for row in events
-        ):
+        if self.drill_ready is None or self.drill_ready() is not True:
             reasons.append(
                 "AX-40: a passed scratch-account kill-switch drill within 45 days is required"
             )

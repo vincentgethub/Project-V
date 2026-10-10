@@ -31,7 +31,11 @@ Halts, `/pause` and `/manual` cancel unfilled entries and retain held protection
 Host `ops resume-auto --operator NAME` needs the exact `RESUME` phrase and doctor
 checks; it cannot reset a HALT or acknowledge configuration drift.
 
-AUTO_LIVE remains locked pending K/V/W, paper history, reports, Stage J evidence,
+Stage K's journal, private static reports, watch cards, reducing controls and
+scratch emergency drill passed offline gates. Actual Telegram drill delivery
+and broker integrations remain UNVERIFIED.
+
+AUTO_LIVE remains locked pending V/W, paper history, reports, Stage J evidence,
 the drill, security evidence, six explicit ceilings, and the host unlock phrase.
 `ops disable-live --operator NAME` is a local downgrade requiring no broker
 connection. During an incident, `ops panic` commits local HALT first, then makes

@@ -378,3 +378,42 @@ Daily records/corrections retain source evidence. Reconstructed historical
 cash and market value are COMPUTED; unknown sessions/fees refuse accounting.
 Actual fee attribution, corporate-action basis, the broker's real tax export
 and 2026 IRS form instructions remain UNVERIFIED on this machine.
+
+## Extras and the emergency drill
+
+After setup, run `python -m vws ops drill --operator "Vincent La Rocca"` on the host.
+It uses a new scratch ledger and fake positions/orders; it opens no owner database
+and places no broker order. It sends a marked DRILL to your private Telegram chat
+and checks its receipt within 60 seconds. It needs setup's native backup key and
+Telegram token/private chat. A failed or offline-only drill cannot qualify for
+live unlock. The authenticated proof is stored at `data/drills/latest.enc`;
+verify again within 31 days. No real drill was run here. This proof belongs to
+the specified safety drill; the declined manual-CSV evidence file is not built.
+AUTO_LIVE still needs the verdict, feed history and all separate unlock checks.
+
+Reply to a bound trade card or trade FYI with a note of at most 1,000 characters.
+Notes are escaped, private and append-only; they never enter trading decisions.
+`python -m vws journal export` writes the complete bound journal CSV. A physical
+sale outside a Project V proposal is UNASSIGNED/UNAVAILABLE and gets no invented
+setup or CRO evidence. The digest lists at most five vetoes.
+
+`/watch TICKER` accepts instruments.csv names and allows ten requests per ET day.
+Watch cards are approvable in MANUAL and read-only in AUTO; they never auto-trade.
+SPY below EMA200 defaults to annotation in MANUAL and half size in AUTO. Macro
+release windows reuse CRO-11. The calendar ships empty; maintain official dates
+in `config/macro_events.csv`. Status warns after 90 days.
+
+A negative mean R after 30 resolved tracker trades pauses that playbook's auto
+entries. Only `python -m vws ops playbook enable BASE_BREAKOUT --operator NAME`
+can re-enable it. PAPER/LIVE samples stay separate. New losing evidence can pause
+it again. Existing valid exits and stop protection continue.
+
+`/report` and weekly delivery attach generated `latest.html` privately. It uses
+inline SVG and no scripts or external resources; printing it is enough.
+`python -m vws report monthly --month 2026-10` exports those sections to CSV.
+The month filters daily accounting, SPY and the report's last 20 trades; current
+positions, tax YTD and health show their snapshot date. It is not a full trade
+statement or reconstructed historical month-end holdings/tax report.
+
+`python -m vws ops secrets set NAME` uses the existing audited native keyring
+rotation path and prompts without echo. Enter FRED only in `vws setup`.

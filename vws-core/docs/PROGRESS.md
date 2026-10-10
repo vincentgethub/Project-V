@@ -1,9 +1,10 @@
 # Project V progress
-Last updated: October 9, 2026 - paper auto passed offline; manual CSV deferred
+Last updated: October 9, 2026 - extras passed offline; manual CSV deferred
 
 ## Where things stand
 Research, tickets, isolated paper auto and reports pass their offline safety tests.
 Account and tax stage passed offline; the manual CSV connection stays disabled.
+Journal, watch cards, reducing controls, reports and fake emergency drills pass.
 
 ## What works now
 From the vws-core folder in PowerShell:
@@ -15,8 +16,7 @@ Preview/replay leave your DB closed. Setup confirms saves; AI starts off.
 Tax defaults are single, Texas state zero and NIIT zero; federal rates are unset.
 
 ## What's being built next
-Emergency drills, the journal and remaining extras come next, followed by
-validation and the learning loop, in that order.
+Next: registered validation and readiness, then the learning and realtime stages.
 
 ## Waiting on you
 Setup later needs the following; broker state stays ALPACA only:
@@ -32,10 +32,10 @@ Do not paste secrets; setup stores keys in the computer's secret store.
 
 ## Not checked yet
 Real broker, bank, Telegram, FRED and SEC checks need setup.
-The auto safety evidence has 4,512 distinct passes; 58 checks were skipped.
+The full extras gate passed 4,644 tests; 58 checks were skipped.
 Amendment 02 "MANUAL_CSV path works": DEFERRED (user decision, Oct 8 2026).
-The seven-year, 20-stock fake replay passed in 86.479 seconds, with identical results.
-Required coverage is 100%; the full run and later affected checks are recorded separately.
+The seven-year, 20-stock fake replay passed in 78.144 seconds; worker results match.
+Seven later safety tests pass; required coverage is 100% across both runs.
 Skipped checks are not passes. Code-changing tests, the optional database,
 container build/runtime and remote CI have not run here; commands are supplied.
 Your secret storage, protections and actual backup remain unchecked.
@@ -50,7 +50,7 @@ Start requires verified checks and MANUAL paper. Fake preview/replay remains saf
 MANUAL paper defaults. Isolated auto passed offline checks; live stays locked.
 Live still needs paper history/report, account/tax completion, an emergency
 drill, explicit host unlock, small limits, account protections, a readiness
-verdict and five healthy feed sessions. Last drill: not built or run.
+verdict and five healthy feed sessions. Fake drills pass; a real drill is unchecked.
 Your real backup is unchecked. After all stages, the final report lists gaps; then stop.
 
 ## Suggestions

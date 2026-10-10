@@ -97,6 +97,7 @@ class FundamentalProvider(Protocol):
 
 
 class ResearchRequest(FrozenModel):
+    manual_only: bool = Field(default=False, strict=True)
     candidate: SetupCandidate
     data_snapshot_id: UUID
     portfolio: PortfolioSnapshot
@@ -333,6 +334,7 @@ class SwarmRunner:
                     "candidate": c.model_dump(mode="json"),
                     "account": request.portfolio.account_id,
                     "config": self.settings.config_hash,
+                    **({"manual_only": True} if request.manual_only else {}),
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -387,6 +389,7 @@ class SwarmRunner:
                 "setup": c.model_dump(mode="json"),
                 "confidence_kind": "uncalibrated score fraction",
                 "evaluation_provenance": provenance.model_dump(mode="json"),
+                "manual_only": request.manual_only,
             },
             invalidation="stop or fresh revalidation failure",
             data_snapshot_id=request.data_snapshot_id,
@@ -454,9 +457,10 @@ class SwarmRunner:
         now = ensure_utc(self.clock.now())
         c = request.candidate
         self.ledger.verify_chain()
-        if c.symbol not in self.config.watchlist or not timedelta(0) <= now - c.as_of <= timedelta(
-            seconds=self.timeout_seconds
-        ):
+        if (
+            c.symbol not in self.config.watchlist
+            and not (request.manual_only and c.symbol in self.risk.cro.registry.symbols)
+        ) or not timedelta(0) <= now - c.as_of <= timedelta(seconds=self.timeout_seconds):
             raise DataIntegrityError("GD-03: candidate is outside the current cycle/watchlist")
         bars = self._verify_candidate(request, now)
         if not score_eligible(c.score, self.settings.min_setup_score):

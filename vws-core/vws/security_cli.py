@@ -576,6 +576,7 @@ async def doctor_result(context: SecurityContext, store: SecretStore) -> DoctorR
     from backend.ops.doctor import Doctor
     from backend.ops.host import inspect_host
     from backend.ops.read_checks import ReadChecksClient
+    from vws.drill_cli import verified_drill
 
     config = load_yaml_config(
         PROJECT / "config/config.yaml",
@@ -671,6 +672,9 @@ async def doctor_result(context: SecurityContext, store: SecretStore) -> DoctorR
                     doctor.account_id,
                     context.config_hash,
                     security_reasons=security_reasons,
+                    drill_ready=lambda: verified_drill(
+                        PROJECT, context.settings, store, context.ledger.clock.now(), 45
+                    ),
                 ).reasons()
             except Exception:
                 findings = ("AUTO_LIVE readiness evidence is invalid or unavailable",)

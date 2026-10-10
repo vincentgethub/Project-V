@@ -14,6 +14,7 @@ from backend.ops.doctor import DoctorResult
 from backend.ops.read_checks import ReadChecksClient
 from backend.security.secrets import SecretStore
 from vws import security_cli
+from vws.drill_cli import verified_drill
 
 
 async def panic_cancel(context: security_cli.SecurityContext, store: SecretStore) -> None:
@@ -185,6 +186,9 @@ async def execute(
         modes.account_id,
         context.config_hash,
         security_reasons=security_cli.live_security_guard(context, store),
+        drill_ready=lambda: verified_drill(
+            security_cli.PROJECT, settings, store, context.ledger.clock.now(), 45
+        ),
     )
     guard.enable(operator=operator, phrase=getpass.getpass(f"Type {LIVE_PHRASE}: "))
     print("Config-bound live approval recorded. Re-run doctor before an explicit host restart.")

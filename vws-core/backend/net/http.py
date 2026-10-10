@@ -427,6 +427,7 @@ _TELEGRAM_METHODS = frozenset(
         "answerCallbackQuery",
         "leaveChat",
         "getChat",
+        "sendDocument",
     }
 )
 
@@ -439,13 +440,23 @@ class TelegramRequest(BaseRequest):
     """
 
     def __init__(
-        self, token: str, policy: EgressPolicy, *, transport: httpx.AsyncBaseTransport | None = None
+        self,
+        token: str,
+        policy: EgressPolicy,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+        document_chats: tuple[int, ...] = (),
     ) -> None:
         super().__init__()
         if not token.strip() or policy.ledger is None:
             raise ConfigurationError("GD-05: Telegram needs a token and audited egress policy")
         self._prefix = "https://api.telegram.org/bot" + token + "/"
         self.policy = policy
+        if not isinstance(document_chats, tuple) or any(
+            type(chat) is not int or chat <= 0 for chat in document_chats
+        ):
+            raise ConfigurationError("XK-08: private document recipients required")
+        self.document_chats = document_chats
         self._client = httpx.AsyncClient(
             verify=True,
             trust_env=False,
@@ -479,17 +490,56 @@ class TelegramRequest(BaseRequest):
             not url.startswith(self._prefix)
             or url[len(self._prefix) :] not in _TELEGRAM_METHODS
             or method not in {"GET", "POST"}
-            or (request_data is not None and request_data.multipart_data)
+            or (
+                request_data is not None
+                and request_data.multipart_data
+                and not url.endswith("sendDocument")
+            )
         ):
             self.policy.deny(purpose="telegram_api", reason="Telegram method/path/files prohibited")
         data = None if request_data is None else request_data.json_parameters
+        files = None
+        if url.endswith("sendDocument"):
+            from backend.ops.html_report import validate_report
+
+            uploads = {} if request_data is None else request_data.multipart_data
+            if (
+                data is None
+                or len(uploads) != 1
+                or set(data) - {"chat_id", "document", "disable_content_type_detection"}
+            ):
+                self.policy.deny(
+                    purpose="telegram_api",
+                    reason="only generated private HTML reports may be uploaded",
+                )
+            try:
+                upload_part, content = next(iter(uploads.items()))
+                filename, payload, mime = content
+                if (
+                    filename != "latest.html"
+                    or mime != "text/html"
+                    or not isinstance(payload, bytes)
+                    or not (
+                        (upload_part == "document" and "document" not in data)
+                        or data.get("document") == "attach://" + upload_part
+                    )
+                    or str(int(data["chat_id"])) != data["chat_id"]
+                    or int(data["chat_id"]) not in self.document_chats
+                ):
+                    raise ValueError("document shape or recipient differs")
+                validate_report(payload)
+                files = uploads
+            except Exception:
+                self.policy.deny(
+                    purpose="telegram_api", reason="document bytes or recipient are not approved"
+                )
         # PTB bootstrap clears an already-empty webhook, with no update loss.
         if url.endswith("deleteWebhook") and data and data.get("drop_pending_updates") == "true":
             self.policy.deny(purpose="telegram_api", reason="cannot discard pending owner updates")
         try:
             async with asyncio.timeout(30):
                 async with self._client.stream(
-                    method, url, data=data, follow_redirects=False
+                    method, url, data=data, files=files, follow_redirects=False
                 ) as response:
                     if 300 <= response.status_code < 400:
                         self.policy.deny(

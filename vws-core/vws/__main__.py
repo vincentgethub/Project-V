@@ -47,6 +47,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     tax_reconcile.add_argument("--year", type=int, required=True)
     tax_reconcile.add_argument("--1099b", dest="official", type=Path, required=True)
     tax_reconcile.add_argument("--mapping", type=Path, default=Path("config/1099b_columns.yaml"))
+    journal = commands.add_parser("journal").add_subparsers(dest="journal_operation", required=True)
+    journal.add_parser("export")
+    report_parser = commands.add_parser("report").add_subparsers(
+        dest="report_operation", required=True
+    )
+    report_parser.add_parser("monthly").add_argument("--month", required=True)
     ops = commands.add_parser("ops").add_subparsers(dest="operation", required=True)
     attest = ops.add_parser("attest")
     attest.add_argument("item")
@@ -61,10 +67,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     ops.add_parser("backup")
     ops.add_parser("migrate").add_argument("--operator", required=True)
     ops.add_parser("audit-dependencies").add_argument("--operator", required=True)
+    ops.add_parser("drill").add_argument("--operator", required=True)
     restore = ops.add_parser("restore-test")
     restore.add_argument("--file", type=Path, required=True)
     ops.add_parser("show-backup-key")
     ops.add_parser("rotate-secret").add_argument("name")
+    secrets = ops.add_parser("secrets").add_subparsers(dest="secret_operation", required=True)
+    secrets.add_parser("set").add_argument("name")
+    playbook = ops.add_parser("playbook").add_subparsers(dest="playbook_operation", required=True)
+    enable = playbook.add_parser("enable")
+    enable.add_argument("name")
+    enable.add_argument("--operator", required=True)
     ledger = commands.add_parser("ledger").add_subparsers(dest="operation", required=True)
     verify = ledger.add_parser("verify-anchor")
     verify.add_argument("--seq", type=int)
@@ -129,6 +142,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.command != "ops" or args.operation not in {"panic", "disable-live"}:
                 raise
             store = LocalLedgerLocator()
+        if args.command == "ops" and args.operation == "drill":
+            from vws.drill_cli import execute as drill_execute
+
+            print(asyncio.run(drill_execute(security.PROJECT, args.operator, args.env_file, store)))
+            return 0
         if args.command == "ops" and args.operation == "migrate":
             from vws.migrate_cli import execute as migrate_execute
 
@@ -148,10 +166,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         ):
             selected_env = security.PROJECT / ".env"
         if selected_env is None and (
-            args.command in {"doctor", "tax"}
+            args.command in {"doctor", "tax", "journal", "report"}
             or (
                 args.command == "ops"
-                and args.operation in {"resume-auto", "enable-live", "disable-live"}
+                and args.operation
+                in {"resume-auto", "enable-live", "disable-live", "playbook", "secrets"}
             )
         ):
             selected_env = security.PROJECT / ".env"
@@ -162,7 +181,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             store=store,
         )
         try:
-            if args.command == "tax":
+            if args.command in {"journal", "report"}:
+                from vws.extras_cli import export_journal, export_monthly
+
+                path = (
+                    export_journal(context, security.PROJECT)
+                    if args.command == "journal"
+                    else export_monthly(context, security.PROJECT, args.month)
+                )
+                print(f"Local {args.command} export: {path}")
+            elif args.command == "tax":
                 from vws.tax_cli import reconcile_broker, report
 
                 if args.tax_operation == "import-lots":
@@ -209,6 +237,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 from vws.execution_cli import execute as mode_execute
 
                 asyncio.run(mode_execute(context, store, args.operation, args.operator))
+            elif args.operation == "playbook":
+                from vws.extras_cli import enable_playbook
+
+                enable_playbook(context, args.name, args.operator)
+                print("Playbook enabled by the host operator; all entry checks still apply.")
+            elif args.operation == "secrets":
+                print(security.rotate_secret(context, args.name, store))
             elif args.operation == "attest":
                 attestation = context.ops.attest(security.attest_item(args.item), args.operator)
                 print(f"{attestation.status}: {attestation.item} {attestation.recorded_at}")

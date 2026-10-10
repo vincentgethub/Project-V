@@ -15,6 +15,63 @@ docs/FINAL_REPORT.md with per-stage gates, the final cumulative offline/replay
 result, every unverified prerequisite, unmet spec IDs, known risks and exact
 setup/doctor/paper-start commands; then stop. No AUTO_LIVE or live trading.
 
+## Stage K GREEN OFFLINE - October 9, 2026
+
+Stage I is committed locally as `3ff4ce0`. K's frozen production source passed
+**4,644 tests / 58 skipped / two warnings, 1,743.86s**, including the fixed
+20-stock seven-year replay (128.308s for that instrumented test case).
+The full run's coverage gate initially failed at 99.86%, with five uncovered
+Telegram refusal/delivery paths. Seven new focused regressions passed on the
+unchanged production source (**20.56s, one warning**). The documented union is
+**4,651 distinct passing cases**, not a second full-suite run. Required coverage
+is **100%: 5,384 statements and 1,754 branches, zero missing/partial**, in
+`data/k-union-coverage.json`; the original full result remains in
+`data/k-final-suite.xml`. K components separately passed 131 cases (85.74s).
+The separate uninstrumented fixed replay passed **one case / four deselected,
+104.33s total; 78.144s timed replay**, 443 decisions, proof
+`28c0f6a89487a881d7a87b0ce8b960369372a44ae7e4c137c0d3dba870ea38a6`.
+Its hash includes the amended K YAML policy; it is not expected to equal I's
+older configuration hash. Worker determinism remains covered in the full gate.
+One first follow-up fixture used a positional argument for a keyword-only
+callback; six passed and one failed, then all seven passed after fixing the test.
+The first revised progress page exceeded the 60-line limit; its gate failed,
+then all 11 progress checks passed after shortening the page to 60 lines.
+Ruff checks/format pass 333 authored files; strict typing passes 333 authored
+files; the full AST guard and all five Git hooks pass. Bandit reports zero
+findings. Dependencies are unchanged from the pinned, clean Stage I inventories.
+No owner DB, real dotenv, keyring, credential, service or broker account was used.
+57 PostgreSQL cases and one read-only paper integration remain skipped, not PASS.
+Mutation on this Windows host, PostgreSQL, Docker, real paper bracket/OCO/OTO
+semantics, real Telegram drill/delivery, and remote CI remain UNVERIFIED; exact
+reproduction commands and service prerequisites remain in VERIFY.md/RUNBOOK.md.
+An existing `origin` points to the owner's Project-V repository; it was left
+untouched, and nothing was pushed. The requested author/email are configured;
+11 earlier different-email commits remain unchanged. V and W follow K.
+XK-01 → ops/drill.py + notifications/control.py + vws/drill_cli.py → test_k_drill.py:
+scratch ledger, shared downgrade, fake cancellation/protection/reset, private receipt,
+authenticated native-key proof; actual Telegram drill remains UNVERIFIED.
+XK-02 → ops/journal.py + Telegram note/FYI hooks → test_k_journal.py,
+test_k_notifications.py: source criteria/rules, canonical sale quantity, escaped
+notes, WHY mapping, idempotent outcomes and unavailable external-sale context.
+XK-03..06 → trading_controls.py + macro_events.py + k_runtime.py + CRO-11 boundary
+→ test_k_controls.py, test_k_integration.py, test_k_publication.py: exact product/floor,
+SPY all-adjusted EMA200, macro DST, persisted playbook pause/ramp, separate cohorts,
+physical closed trades only, faults/drawdowns, missing baseline refusal.
+XK-07 → existing premarket job + ExtraControls.briefing → test_k_publication.py:
+quiet when healthy/empty; required daily-source unavailability is audited and shown.
+XK-08 → html_report.py + report_publisher.py + TelegramRequest + extras_cli.py
+→ test_k_integration.py/test_k_publication.py: exact TWR/SPY/calendar golden,
+static generated HTML only, private bounded document, immutable per-owner quiet queue.
+XK-09 → watch.py + immutable ResearchRequest.manual_only + executor/callback refusal
+→ test_k_integration.py: registry membership, ten/day, no automatic eligibility.
+XK-10 → native secret store/rotation + ops secrets set alias; Amendment 03
+keyring-only rules override the earlier env default. FRED enters only setup.
+Fixed K thresholds preserve the registered 30-trade pause and 10/20-trade capital
+steps. Monthly CSV contains the report's last-20-trades section filtered by month;
+positions/tax/health retain explicit snapshot dates. It does not claim historical
+month-end positions or all monthly fills. No parameter search occurs.
+No owner database, credential, service or account was touched. Live remains locked.
+
 ## Stage I GREEN OFFLINE - October 9, 2026
 
 J is committed locally as `5ff2ee7`. Stage I's cumulative offline evidence is

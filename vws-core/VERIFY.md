@@ -681,6 +681,12 @@ reproduction and prerequisite limitations are retained in docs/STATUS.md.
 
 ## Complete VERIFY tag inventory
 
+Stage K's document transport was checked against pinned python-telegram-bot 22.8
+RequestData/InputFile multipart behavior with MockTransport and the official
+[sendDocument contract](https://core.telegram.org/bots/api#senddocument).
+Only generated, bounded latest.html bytes to an admitted owner private chat are
+allowed. No actual document or DRILL was sent; real Telegram remains UNVERIFIED.
+
 Tags in the preserved Stage D draft are historical references, not certification
 of that draft. The completed A–C tags and earlier references are collected from
 current source locations below. External source scope is described above and in

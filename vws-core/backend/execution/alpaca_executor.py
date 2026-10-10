@@ -392,6 +392,8 @@ class AlpacaExecutor:
         prerequisites_source: Callable[[], AutoPrerequisites] | None = None,
         portfolio: Callable[[], Awaitable[PortfolioSnapshot]] | None = None,
         configuration_check: Callable[[], object] | None = None,
+        size_entry: Callable[[TradeProposal, FreshInputs], Awaitable[int]] | None = None,
+        trade_notice: Callable[[str, bool, UUID], Awaitable[None]] | None = None,
     ) -> None:
         self.settings, self.config = (
             Settings.validated_copy(settings),
@@ -439,6 +441,7 @@ class AlpacaExecutor:
         self.prerequisites_source, self.portfolio = prerequisites_source, portfolio
         self.configuration_check = configuration_check
         self.live_guard = live_guard
+        self.size_entry, self.trade_notice = size_entry, trade_notice
         if recovery:
             managed = self._instructions()
             if not managed:
@@ -534,6 +537,11 @@ class AlpacaExecutor:
             alert = session.scalar(select(Alert).where(Alert.proposal_id == proposal_id))
             if order is None or alert is None:
                 raise DataIntegrityError("Auto entry has no published local research proposal")
+            from backend.core.database import Signal
+
+            signal = session.get(Signal, order.signal_id)
+            if signal is None or signal.structured_thesis.get("manual_only") is True:
+                raise ExecutionDisabledError("XK-09: watch cards never authorize automatic orders")
             desk = session.scalar(
                 select(ResearchReport).where(
                     ResearchReport.alert_id == alert.id, ResearchReport.agent_name == "desk_policy"
@@ -809,12 +817,18 @@ class AlpacaExecutor:
                     inputs.expected_cik != inputs.filings.cik or inputs.filings.fetched_at > now
                 ):
                     raise DataIntegrityError("Fresh filing issuer or timestamp differs")
-                if self.settings.execution_mode == "AUTO_LIVE":
-                    qty = proposal.qty // 4
-                    if qty == 0:
-                        raise ExecutionDisabledError(
-                            "Initial live capital ramp rounds to zero shares"
+                if self.size_entry is not None or self.settings.execution_mode == "AUTO_LIVE":
+                    qty = (
+                        await self.size_entry(proposal, inputs)
+                        if self.size_entry is not None
+                        else proposal.qty // 4
+                    )
+                    if type(qty) is not int or not 0 <= qty <= proposal.qty:
+                        raise DataIntegrityError(
+                            "XK-03/06: entry overlays must only reduce whole shares"
                         )
+                    if qty == 0:
+                        raise ExecutionDisabledError("Reducing entry overlays produce zero shares")
                     proposal = TradeProposal.model_validate(
                         proposal.model_copy(update={"qty": qty})
                     )
@@ -1050,9 +1064,10 @@ class AlpacaExecutor:
                     )
                     raise
                 self._register_children(instruction, broker)
-                await self.notify(
+                await self._trade_notice(
                     f"{self.environment} · Submitted {self._quantity(proposal.qty)} {proposal.symbol} LIMIT ${proposal.limit_price:.2f}; broker stop verification pending.",
                     False,
+                    order.id,
                 )
                 return Submission(
                     proposal_id=proposal_id,
@@ -1066,11 +1081,25 @@ class AlpacaExecutor:
                     detail={"proposal_id": str(proposal_id), "reason": str(error)[:280]},
                 )
                 raise
+
             except Exception as error:
                 self.state.halt_for_error(error)
                 raise ProviderError(
                     "Automatic entry failed closed; inspect persisted intent"
                 ) from None
+
+    async def _trade_notice(self, text: str, urgent: bool, order_id: UUID) -> None:
+        if self.trade_notice is None:
+            await self.notify(text, urgent)
+            return
+        with DatabaseSession(self.state.engine) as session:
+            order = session.get(Order, order_id)
+            if order is None or order.account_id != self.modes.account_id:
+                raise DataIntegrityError("XK-02: trade FYI requires a bound proposal")
+            proposal_id = order.proposal_id
+        await self.trade_notice(
+            text + " · " + display_time(self.state.clock.now(), self.settings), urgent, proposal_id
+        )
 
     def _instructions(self) -> tuple[ExecutionOrderRecord, ...]:
         self.state.ledger.verify_chain()
@@ -1316,15 +1345,17 @@ class AlpacaExecutor:
                 or confirmed.status in {"held", "suspended", "pending_cancel"}
             ):
                 raise ReconciliationError("Submitted protective stop is not confirmed active")
-            await self.notify(
+            await self._trade_notice(
                 f"{self.environment} · Stop repaired for {self._quantity(qty)} {entry.symbol} at ${entry.stop_price:.2f} (at broker).",
                 True,
+                entry.order_id,
             )
         except Exception as error:
             self.state.halt_for_error(error)
-            await self.notify(
+            await self._trade_notice(
                 f"{self.environment} · HALTED: stop repair failed for {entry.symbol}; inspect broker protection urgently.",
                 True,
+                entry.order_id,
             )
             raise ReconciliationError("Protective stop could not be confirmed; HALTED") from None
 
@@ -1444,9 +1475,10 @@ class AlpacaExecutor:
         if qty == 0:
             if cycle is not None and cycle.state == "ACTIVE":
                 self._cycle_event(cycle, "DONE")
-                await self.notify(
+                await self._trade_notice(
                     f"{self.environment} · {entry.symbol} exit completed; no held shares remain.",
                     False,
+                    entry.order_id,
                 )
             return False
         if cycle is None or cycle.state != "ACTIVE":
@@ -1500,9 +1532,10 @@ class AlpacaExecutor:
         if not self.calendar.is_open(now) or len(approvals) >= 4:
             await self._ensure_stop(entry, qty)
             self._cycle_event(cycle, "FAILED")
-            await self.notify(
+            await self._trade_notice(
                 f"{self.environment} · {entry.symbol} exit remains unfilled; broker stop restored. Operator review required.",
                 True,
+                entry.order_id,
             )
             return False
         try:
@@ -1597,9 +1630,10 @@ class AlpacaExecutor:
                     )
 
             await self._submit(instruction, request, guard=exit_guard)
-            await self.notify(
+            await self._trade_notice(
                 f"{self.environment} · {entry.symbol} {cycle.reason.lower()} exit submitted: {self._quantity(qty)} shares LIMIT ${limit:.2f}; attempt {authorization.attempt}/4.",
                 False,
+                entry.order_id,
             )
             return True
         except Exception:
@@ -1608,9 +1642,10 @@ class AlpacaExecutor:
             await self._cancel_sells(entry)
             await self._ensure_stop(entry, qty)
             self._cycle_event(cycle, "FAILED")
-            await self.notify(
+            await self._trade_notice(
                 f"{self.environment} · {entry.symbol} exit failed; broker stop restored. Operator review required.",
                 True,
+                entry.order_id,
             )
             raise
 
@@ -1717,9 +1752,10 @@ class AlpacaExecutor:
                     )
                 except Exception as error:
                     self.state.halt_for_error(error)
-                    await self.notify(
+                    await self._trade_notice(
                         f"{self.environment} · HALTED: verified protection recovery failed for {entry.symbol}; inspect broker stops urgently.",
                         True,
+                        entry.order_id,
                     )
         except Exception as error:
             self.state.halt_for_error(error)
@@ -1834,6 +1870,7 @@ class AlpacaExecutor:
                 notices.append(
                     (
                         fill.id,
+                        entry.order_id,
                         fill_fyi(
                             self.settings,
                             instruction,
@@ -1845,8 +1882,8 @@ class AlpacaExecutor:
                         ),
                     )
                 )
-        for identity, text in notices:
-            await self.notify(text, False)
+        for identity, order_id, text in notices:
+            await self._trade_notice(text, False, order_id)
             self.state.ledger.append(
                 SecurityEvent,
                 kind="EXECUTION_FILL_NOTICE_QUEUED",
@@ -1991,9 +2028,10 @@ class AlpacaExecutor:
                     reason="unfilled remainder canceled; held shares retained",
                     broker_order_id=str(canceled.order_id),
                 )
-                await self.notify(
+                await self._trade_notice(
                     f"{self.environment} · Canceled unfilled {entry.symbol} entry; {self._quantity(qty)} filled shares retained.",
                     False,
+                    entry.order_id,
                 )
         await self._protect_and_exit(entry, qty)
 

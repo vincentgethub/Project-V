@@ -78,6 +78,9 @@ class DeskJobs:
         accounting_capture: Callable[[], Awaitable[JobCounts]] | None = None,
         pnl_digest: Callable[[], Awaitable[str]] | None = None,
         auto_summary: Callable[[], Awaitable[str]] | None = None,
+        journal_sync: Callable[[], int] | None = None,
+        briefing: Callable[[PositionView, int], Awaitable[str | None]] | None = None,
+        veto_digest: Callable[[], tuple[str, ...]] | None = None,
     ) -> None:
         if bot.state is not desk.swarm.state or commands.state is not bot.state:
             raise ConfigurationError("GD-04: job bodies must share the defensive desk")
@@ -87,6 +90,7 @@ class DeskJobs:
         self.refresh_request = refresh_request
         self.accounting_capture, self.pnl_digest = accounting_capture, pnl_digest
         self.auto_summary = auto_summary
+        self.journal_sync, self.briefing, self.veto_digest = journal_sync, briefing, veto_digest
 
     def bodies(self) -> dict[JobName, JobBody]:
         return {
@@ -164,6 +168,8 @@ class DeskJobs:
                     )
                 request = refreshed
             result = await self.desk.research(request)
+            if self.journal_sync is not None:
+                counts["journal"] += await asyncio.to_thread(self.journal_sync)
             counts[result.status.lower()] += 1
             if result.status == "ALERT":
                 if result.research is None or result.research.alert_id is None:
@@ -180,7 +186,10 @@ class DeskJobs:
         )
         pnl = None if self.pnl_digest is None else await self.pnl_digest()
         auto = None if self.auto_summary is None else await self.auto_summary()
-        await self.bot.notify(self.commands.save_digest(context, pnl=pnl, auto_summary=auto), False)
+        digest = self.commands.save_digest(context, pnl=pnl, auto_summary=auto)
+        if self.veto_digest is not None:
+            digest += "".join("\n" + line for line in self.veto_digest()[:5])
+        await self.bot.notify(digest, False)
         counts.update(accounting.counts)
         return JobCounts(counts=dict(counts))
 
@@ -257,6 +266,13 @@ class DeskJobs:
                 counts["annotated"] += int(
                     await self.bot.annotate(alert.id, "; ".join(annotations))
                 )
+        if self.briefing is not None:
+            message = await self.briefing(
+                PositionView.model_validate(await self.source.positions()), len(self.pending())
+            )
+            if message is not None:
+                await self.bot.notify(message, False)
+                counts["briefing"] += 1
         return JobCounts(counts=dict(counts))
 
     @staticmethod

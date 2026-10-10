@@ -14,7 +14,15 @@ from telegram.ext import Application, CallbackQueryHandler, ContextTypes, Messag
 
 from backend.core.clock import Clock, ensure_utc
 from backend.core.config import Settings
-from backend.core.database import Alert, AlertEvent, ApprovalEvent, SecurityEvent, transaction
+from backend.core.database import (
+    Alert,
+    AlertEvent,
+    ApprovalEvent,
+    Order,
+    SecurityEvent,
+    Signal,
+    transaction,
+)
 from backend.core.errors import (
     ConfigurationError,
     DataIntegrityError,
@@ -68,7 +76,12 @@ class TelegramBot:
         self.application: Application[Any, Any, Any, Any, Any, Any] = (
             Application.builder()
             .token(token)
-            .request(transport or TelegramRequest(token, policy))
+            .request(
+                transport
+                or TelegramRequest(
+                    token, policy, document_chats=self.settings.telegram_allowed_user_ids
+                )
+            )
             .get_updates_request(polling_transport or TelegramRequest(token, policy))
             .concurrent_updates(8)
             .build()
@@ -88,6 +101,10 @@ class TelegramBot:
         self.application.add_error_handler(self._error)
         self._delivery_lock = asyncio.Lock()
         self._admitted = False
+        self.note_handler: Callable[[int, int, int, str], Awaitable[UUID]] | None = None
+        self.watch_handler: Callable[[str, int], Awaitable[tuple[str, ...]]] | None = None
+        self.card_annotations: Callable[[Alert], tuple[str, ...]] | None = None
+        self.report_document: Callable[[], Awaitable[bytes]] | None = None
 
     async def leave(self, chat_id: int) -> None:
         await self.application.bot.leave_chat(chat_id)
@@ -110,6 +127,20 @@ class TelegramBot:
             return
         for owner in self.settings.telegram_allowed_user_ids:
             await self.reply(owner, escape(text))
+
+    async def document(self, chat_id: int, payload: bytes) -> None:
+        from telegram import InputFile
+
+        from backend.ops.html_report import validate_report
+
+        if not self._admitted or chat_id not in self.settings.telegram_allowed_user_ids:
+            raise ConfigurationError("XK-08: admitted private report recipient required")
+        validate_report(payload)
+        message = await self.application.bot.send_document(
+            chat_id, InputFile(payload, filename="latest.html"), disable_content_type_detection=True
+        )
+        if message.chat.id != chat_id or message.chat.type != "private" or message.message_id <= 0:
+            raise DataIntegrityError("XK-08: private report delivery identity differs")
 
     def keyboard(
         self, proposal_id: UUID, chat_id: int, *, ticket: bool = False
@@ -138,7 +169,54 @@ class TelegramBot:
             and modes.effective != "MANUAL"
             and modes.entries_enabled
             and alert.score >= self.settings.auto_min_score
+            and not self._manual_only(alert)
         )
+
+    def _manual_only(self, alert: Alert) -> bool:
+        with Session(self.state.engine) as session:
+            order = session.scalar(select(Order).where(Order.proposal_id == alert.proposal_id))
+            signal = None if order is None else session.get(Signal, order.signal_id)
+            if signal is None:
+                raise DataIntegrityError("XK-09: card has no bound signal")
+            return signal.structured_thesis.get("manual_only") is True
+
+    async def notify_trade(self, text: str, urgent: bool, proposal_id: UUID) -> None:
+        from html import escape
+
+        if not self._admitted or not isinstance(text, str) or not 1 <= len(text) <= 3500:
+            raise ConfigurationError("XK-02: admitted private trade FYI required")
+        self.state.ledger.verify_chain()
+        with Session(self.state.engine) as session:
+            alert = session.scalar(select(Alert).where(Alert.proposal_id == proposal_id))
+            if alert is None:
+                raise DataIntegrityError("XK-02: trade FYI has no research card")
+            alert_id = alert.id
+        if quiet_hours(self.clock.now()) and not urgent:
+            self.state.ledger.append(
+                SecurityEvent,
+                kind="QUIET_NOTICE_QUEUED",
+                detail={"text": text, "proposal_id": str(proposal_id)},
+            )
+            return
+        for owner in self.settings.telegram_allowed_user_ids:
+            message = await self.application.bot.send_message(
+                owner, escape(text), parse_mode="HTML"
+            )
+            if (
+                message.chat.id != owner
+                or message.chat.type != "private"
+                or message.message_id <= 0
+            ):
+                raise DataIntegrityError("XK-02: trade FYI delivery identity differs")
+            self.state.ledger.append(
+                SecurityEvent,
+                kind="TRADE_FYI_BINDING",
+                detail={
+                    "chat_id": owner,
+                    "message_id": message.message_id,
+                    "alert_id": str(alert_id),
+                },
+            )
 
     async def deliver(self, alert_id: UUID, chat_id: int) -> bool:
         from uuid import uuid4
@@ -174,6 +252,11 @@ class TelegramBot:
                     reply_markup=(
                         None
                         if self._auto_eligible(alert)
+                        or (
+                            self._manual_only(alert)
+                            and self.gate.modes is not None
+                            and self.gate.modes.effective != "MANUAL"
+                        )
                         else self.keyboard(alert.proposal_id, chat_id)
                     ),
                 )
@@ -213,13 +296,22 @@ class TelegramBot:
             if note is None
             else alert.card_text + "\nUpdate: " + escape(note.detail["note"])
         )
+        if self.card_annotations is not None:
+            text += "".join("\n" + escape(line) for line in self.card_annotations(alert))
+        manual_only = self._manual_only(alert)
+        if manual_only:
+            text += "\nWatch request · manual only; automatic orders are disabled for this card."
         if self.gate.modes is not None and self.gate.modes.effective != "MANUAL":
             cohort = "PAPER" if self.settings.paper_trading else "LIVE"
             text = f"{cohort} · " + text
             text += (
-                f"\n🤖 {cohort} · Planned for the next entry window; fresh checks decide."
-                if self._auto_eligible(alert)
-                else f"\nApprove = places the order now ({cohort}), after fresh checks."
+                "\nRead-only watch card in AUTO mode."
+                if manual_only
+                else (
+                    f"\n🤖 {cohort} · Planned for the next entry window; fresh checks decide."
+                    if self._auto_eligible(alert)
+                    else f"\nApprove = places the order now ({cohort}), after fresh checks."
+                )
             )
         if len(text.encode("utf-16-le")) // 2 > 4096:
             raise DataIntegrityError("GD-05: annotated card exceeds message boundary")
@@ -296,7 +388,14 @@ class TelegramBot:
     async def _proposal_is_auto(self, proposal_id: UUID) -> bool:
         with Session(self.state.engine) as session:
             alert = session.scalar(select(Alert).where(Alert.proposal_id == proposal_id))
-        return alert is not None and self._auto_eligible(alert)
+        return alert is not None and (
+            self._auto_eligible(alert)
+            or (
+                self.gate.modes is not None
+                and self.gate.modes.effective != "MANUAL"
+                and self._manual_only(alert)
+            )
+        )
 
     async def flush_annotations(self) -> None:
         if quiet_hours(self.clock.now()):
@@ -444,7 +543,12 @@ class TelegramBot:
                 }
             for notice in notices:
                 if str(notice.id) not in sent:
-                    await self.notify(notice.detail["text"], False)
+                    if "proposal_id" in notice.detail:
+                        await self.notify_trade(
+                            notice.detail["text"], False, UUID(notice.detail["proposal_id"])
+                        )
+                    else:
+                        await self.notify(notice.detail["text"], False)
                     self.state.ledger.append(
                         SecurityEvent,
                         kind="QUIET_NOTICE_DELIVERED",
@@ -538,19 +642,19 @@ class TelegramBot:
         command = command.split("@", 1)[0]
         if command in {"/halt", "/pause", "/manual"}:
             from backend.core.content import sanitize_text
+            from backend.notifications.control import downgrade
 
-            if self.gate.modes is not None:
-                action: Literal["HALT", "PAUSE", "MANUAL"] = (
-                    "HALT" if command == "/halt" else "PAUSE" if command == "/pause" else "MANUAL"
-                )
-                self.gate.modes.downgrade(action, actor=f"Telegram user {user.id}")
-                if self.gate.executor is not None:
-                    await self.gate.executor.monitor()
-            elif command != "/manual":
-                self.state.escalate(
-                    SystemState.HALTED if command == "/halt" else SystemState.REDUCE_ONLY,
-                    "Telegram operator " + command + ": " + sanitize_text(argument)[:280],
-                )
+            action: Literal["HALT", "PAUSE", "MANUAL"] = (
+                "HALT" if command == "/halt" else "PAUSE" if command == "/pause" else "MANUAL"
+            )
+            await downgrade(
+                self.state,
+                self.gate.modes,
+                self.gate.executor,
+                action,
+                f"Telegram user {user.id}",
+                "Telegram operator " + command + ": " + sanitize_text(argument)[:280],
+            )
             self.state.ledger.append(
                 SecurityEvent,
                 kind=(
@@ -569,9 +673,36 @@ class TelegramBot:
                 "On the host: python -m vws ops resume-auto --operator NAME (type RESUME); "
                 "a halted account also requires the audited host reset first.",
             )
+        elif command == "/watch" and self.watch_handler is not None:
+            for page in await self.watch_handler(argument, chat.id):
+                await self.reply(chat.id, page)
+        elif (
+            not text.startswith("/")
+            and message.reply_to_message is not None
+            and self.note_handler is not None
+        ):
+            try:
+                await self.note_handler(user.id, chat.id, message.reply_to_message.message_id, text)
+            except DataIntegrityError:
+                self.state.ledger.append(
+                    SecurityEvent,
+                    kind="JOURNAL_NOTE_REFUSED",
+                    telegram_user_id=user.id,
+                    detail={"reason": "unbound, invalid or oversized private note"},
+                )
+                await self.reply(
+                    chat.id,
+                    "Note refused: reply to a recorded card or trade FYI with at most 1,000 characters.",
+                )
+            else:
+                await self.reply(
+                    chat.id, "Journal note recorded. Notes never change trading decisions."
+                )
         elif command in self.commands:
             for page in await self.commands[command](argument):
                 await self.reply(chat.id, page)
+            if command == "/report" and self.report_document is not None:
+                await self.document(chat.id, await self.report_document())
         else:
             await self.reply(
                 chat.id,

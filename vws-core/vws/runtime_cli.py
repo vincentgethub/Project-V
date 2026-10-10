@@ -9,6 +9,8 @@ from decimal import Decimal
 from pathlib import Path
 from types import FrameType
 from typing import Literal, Protocol, TypeVar, overload
+from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from requests import Session as RequestsSession
 from sqlalchemy import select
@@ -24,7 +26,7 @@ from backend.agents.orchestrator import JobCounts, Orchestrator
 from backend.agents.setup_hunter import SetupHunter
 from backend.agents.swarm_runner import SwarmRunner
 from backend.core.config import MANUAL_CSV_DISABLED_MESSAGE, load_yaml_config
-from backend.core.database import ExecutionOrderRecord, JobRun, SecurityEvent
+from backend.core.database import Alert, ExecutionOrderRecord, JobRun, SecurityEvent
 from backend.core.errors import ConfigurationError
 from backend.core.logging import configure_logging
 from backend.data.async_reader import AsyncAlpacaReader
@@ -47,7 +49,7 @@ from backend.data.news import (
 )
 from backend.data.sec_edgar import SecEdgarProvider
 from backend.domain.instruments import InstrumentRegistry
-from backend.domain.models import PortfolioSnapshot
+from backend.domain.models import Playbook, PortfolioSnapshot
 from backend.evaluation.ledger_source import LedgerWeeklySource
 from backend.evaluation.publication import WeeklyPublisher
 from backend.execution.control_evidence import JobBinding
@@ -66,10 +68,16 @@ from backend.ops.account_context import LedgerAccountContext
 from backend.ops.desk_source import ConnectedDeskSource
 from backend.ops.doctor import DoctorResult
 from backend.ops.job_health import JobHealth
+from backend.ops.journal import Journal
+from backend.ops.k_runtime import ExtraControls
+from backend.ops.macro_events import MacroCalendar
 from backend.ops.maintenance import NightlyMaintenance
 from backend.ops.process import ProcessLock
 from backend.ops.read_checks import ReadChecksClient
+from backend.ops.report_publisher import ReportPublisher
 from backend.ops.runtime import HostRuntime
+from backend.ops.trading_controls import ControlScope
+from backend.ops.watch import WatchDesk
 from backend.ops.watchdog import Watchdog
 from backend.pnl.history import EquityHistory, read_history
 from backend.pnl.service import AccountingReports
@@ -81,6 +89,7 @@ from backend.risk.risk_cro import ChiefRiskOfficer
 from backend.security.secrets import KeyringSecretStore, SecretStore
 from backend.tax.service import TaxService
 from vws import security_cli
+from vws.drill_cli import verified_drill
 from vws.host_config import load_host_settings
 
 ReadT = TypeVar("ReadT")
@@ -225,8 +234,20 @@ async def compose(
         submissions=None if sec is None else sec.submissions,
     )
     cro = ChiefRiskOfficer(settings, registry, calendar)
+    macro = MacroCalendar(project / "config/macro_events.csv")
+    macro.read()
     risk, compliance = (
-        RiskBoundary(cro, state, clock, marks=marks),
+        RiskBoundary(
+            cro,
+            state,
+            clock,
+            marks=marks,
+            additional_blackouts=lambda: (
+                tuple(row.window() for row in macro.read())
+                if modes is not None and modes.effective != "MANUAL"
+                else ()
+            ),
+        ),
         ComplianceBoundary(ComplianceEngine(settings, registry, calendar), state, clock),
     )
     llm = LLMClient(settings, state.ledger, clock, policy=policy, notifier=state.notifier)
@@ -288,6 +309,62 @@ async def compose(
     gate = ApprovalGate(settings, config, state, risk, compliance, clock, source, modes=modes)
     commands = DeskCommands(state, settings, account_id, calendar, source, modes=modes)
     bot = TelegramBot(settings, state, clock, gate, policy, commands.handlers())
+    scope = ControlScope(
+        account_id=account_id, environment="PAPER" if settings.paper_trading else "LIVE"
+    )
+    journal = Journal(state.ledger, scope)
+    extras = ExtraControls(state.ledger, scope, config, source, macro, bot.notify)
+    desk = Desk(swarm)
+    bot.watch_handler = WatchDesk(desk, source, bot, journal)
+
+    async def bound_note(user: int, chat: int, message: int, text: str) -> UUID:
+        return await asyncio.to_thread(
+            journal.note,
+            user_id=user,
+            chat_id=chat,
+            message_id=message,
+            text=text,
+            allowed=settings.telegram_allowed_user_ids,
+        )
+
+    bot.note_handler = bound_note
+
+    def extra_status() -> tuple[str, ...]:
+        drill = (
+            ()
+            if verified_drill(project, settings, store, clock.now(), 31)
+            else ("Monthly drill due: run vws ops drill --operator NAME on the host.",)
+        )
+        return (*extras.status(), *drill)
+
+    commands.extra_status = extra_status
+
+    def card_annotations(alert: Alert) -> tuple[str, ...]:
+        extras.update_playbooks()
+        lines = ["Playbook paused"] if extras.controls.paused(Playbook(alert.playbook)) else []
+        batch = source._batch
+        if batch is None:
+            lines.append("SPY regime UNVERIFIED")
+        else:
+            from backend.agents.indicators import ema
+
+            spy = batch.for_symbol("SPY", "ALL")
+            average = None if not spy else ema(tuple(bar.close for bar in spy), 200)[-1]
+            if average is None:
+                lines.append("SPY regime UNVERIFIED")
+            elif spy[-1].close < average:
+                lines.append(
+                    "SPY below EMA200; automatic size is reduced or blocked by configuration."
+                )
+        day = clock.now().astimezone(ZoneInfo("America/New_York")).date()
+        lines.extend(
+            f"Macro event today: {event.event}; automatic blackout applies."
+            for event in macro.read()
+            if event.date == day
+        )
+        return tuple(lines)
+
+    bot.card_annotations = card_annotations
     fill_source = AlpacaActivitiesSource(settings, account_id, state, clock, reader, policy)
     resources.push_async_callback(fill_source.close)
     matcher = TicketFillMatcher(settings, account_id, state, registry)
@@ -351,6 +428,10 @@ async def compose(
         )
         return None
     bot.commands.update({"/pnl": accounting.pnl, "/tax": accounting.tax_summary})
+    reports = ReportPublisher(
+        project / "data/reports", scope, accounting, source, commands, bot, extra_status
+    )
+    bot.report_document = reports.latest
 
     async def sync_context() -> None:
         await tax.sync()
@@ -365,6 +446,10 @@ async def compose(
         result = await tax.sync(force=True)
         if execution is not None:
             await execution.reconcile()
+            if scope.environment == "LIVE":
+                await extras.observe_ramp(await portfolio())
+        await asyncio.to_thread(journal.sync)
+        await reports.flush()
         return result
 
     if modes is not None:
@@ -407,6 +492,8 @@ async def compose(
                 prerequisites(),
                 policy=policy,
                 notify=bot.notify,
+                trade_notice=bot.notify_trade,
+                size_entry=extras.size,
                 portfolio=portfolio,
                 configuration_check=lambda: context.drift.check(
                     context.config_hash(), mode=settings.execution_mode
@@ -419,6 +506,7 @@ async def compose(
                     account_id,
                     context.config_hash,
                     security_reasons=security_cli.live_security_guard(context, store),
+                    drill_ready=lambda: verified_drill(project, settings, store, clock.now(), 45),
                 )
                 if settings.execution_mode == "AUTO_LIVE"
                 else None,
@@ -427,7 +515,9 @@ async def compose(
             gate.bind_auto(execution, modes)
 
             async def capture_stream_fills() -> object:
-                return await tax.sync(force=True)
+                result = await tax.sync(force=True)
+                await asyncio.to_thread(journal.sync)
+                return result
 
             stream = ManagedTradingStream(execution, policy, capture_stream_fills)
             resources.push_async_callback(stream.aclose)
@@ -438,6 +528,7 @@ async def compose(
     )
 
     async def maintenance() -> JobCounts:
+        await reports.capture()
         result = await NightlyMaintenance(
             security_cli.backups(context, store), settings.backup_retention_days
         )()
@@ -466,8 +557,13 @@ async def compose(
 
     async def weekly() -> JobCounts:
         result = await weekly_publisher()
+        await asyncio.to_thread(journal.resolve)
+        await asyncio.to_thread(extras.update_playbooks)
+        for reminder in extra_status():
+            await bot.notify(reminder, False)
         for page in await accounting.tax_summary():
             await bot.notify(page, False)
+        await reports.weekly()
         return result
 
     async def auto_summary() -> str:
@@ -476,7 +572,7 @@ async def compose(
         return daily_summary(settings, modes, await portfolio(), await asyncio.to_thread(tax.book))
 
     jobs = DeskJobs(
-        Desk(swarm),
+        desk,
         bot,
         commands,
         source,
@@ -487,6 +583,9 @@ async def compose(
         accounting_capture=accounting.capture,
         pnl_digest=accounting.digest_line,
         auto_summary=None if modes is None else auto_summary,
+        journal_sync=journal.sync,
+        briefing=extras.briefing,
+        veto_digest=journal.veto_digest,
     )
     watchdog = Watchdog(state, calendar, clock, lambda message: bot.notify(message, True))
     job_health = JobHealth(watchdog, policy, settings.healthcheck_ping_url)

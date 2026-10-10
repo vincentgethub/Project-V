@@ -193,13 +193,20 @@ class ConnectedDeskSource:
             expected_cik=cik,
         )
 
-    async def scan(self) -> ScanCycle:
+    async def scan(self, selected: tuple[str, ...] | None = None) -> ScanCycle:
+        symbols = self.config.watchlist if selected is None else selected
+        if (
+            not symbols
+            or len(symbols) > 1000
+            or any(symbol not in self.registry.symbols for symbol in symbols)
+        ):
+            raise DataIntegrityError("XK-09: bounded registered scan symbols required")
         if self.sync_account_context is not None:
             await self.sync_account_context()
         context = await asyncio.to_thread(self.account_context.read)
-        batch = await self.daily()
+        batch = await self.daily(symbols)
         requests: list[ResearchRequest] = []
-        for symbol in self.config.watchlist:
+        for symbol in symbols:
             quote = await self.quote(symbol)
             account = await self.boundary.portfolio_async(self.reader)
             funds = await self.boundary.funding_async(self.reader, refresh=True)
@@ -246,6 +253,7 @@ class ConnectedDeskSource:
                 )
             requests.extend(
                 ResearchRequest(
+                    manual_only=selected is not None,
                     candidate=candidate,
                     data_snapshot_id=snapshot.id,
                     portfolio=account.snapshot,
@@ -262,7 +270,7 @@ class ConnectedDeskSource:
         average = ema(tuple(bar.close for bar in spy), 200)[-1]
         return ScanCycle(
             as_of=ensure_utc(self.clock.now()),
-            symbols_scanned=len(self.config.watchlist),
+            symbols_scanned=len(symbols),
             requests=tuple(requests),
             spy_above_ema200=None if average is None else spy[-1].close > average,
         )
@@ -284,6 +292,7 @@ class ConnectedDeskSource:
         if candidate is None:
             return None
         return ResearchRequest(
+            manual_only=request.manual_only,
             candidate=candidate,
             data_snapshot_id=request.data_snapshot_id,
             portfolio=fresh.portfolio,
