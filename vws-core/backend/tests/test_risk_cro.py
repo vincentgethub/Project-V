@@ -146,7 +146,7 @@ def _rule(
         deployable=_capital(),
         **kwargs,
     )
-    assert len(verdict.results) == 13
+    assert len(verdict.results) == 14
     return next(result for result in verdict.results if result.rule_id == rule_id)
 
 
@@ -170,11 +170,12 @@ def test_CRO_01_to_12_R_03_approval_is_complete_exact_and_deterministic(
         proposal, snapshot, market, SystemState.RUNNING, clock.now(), deployable=_capital()
     )
     assert [rule.rule_id for rule in first.results] == [
-        f"CRO-{number:02d}" for number in range(1, 14)
+        f"CRO-{number:02d}" for number in range(1, 15)
     ]
     assert all(rule.passed for rule in first.results if rule.severity == Severity.BLOCK)
-    assert first.results[-1].severity == Severity.WARN
-    assert not first.results[-1].passed
+    assert first.results[12].severity == Severity.WARN
+    assert not first.results[12].passed
+    assert first.results[13].passed and first.results[13].severity == Severity.BLOCK
 
 
 @pytest.mark.parametrize(
@@ -270,7 +271,7 @@ def test_CRO_02_R_02_entry_missing_market_vetoes(
         deployable=_capital(),
     )
     assert verdict.decision == Decision.VETOED
-    assert len(verdict.results) == 13
+    assert len(verdict.results) == 14
 
 
 @pytest.mark.parametrize(
@@ -990,7 +991,7 @@ def test_CRO_02_R_02_faults_produce_veto_or_typed_error(
         deployable=_capital(),
     )
     assert verdict.decision == Decision.VETOED
-    assert len(verdict.results) == 13
+    assert len(verdict.results) == 14
     with pytest.raises(DataIntegrityError):
         cro.evaluate(
             _proposal(clock).model_copy(update={"proposal_id": "bad"}),

@@ -52,6 +52,7 @@ from backend.evaluation.dividends import (
     distribution_credit,
     distribution_rates,
 )
+from backend.indicators.portfolio import causal_split_atr, causal_split_ema
 
 MICRO = Decimal("0.000001")
 ZERO = Decimal(0)
@@ -84,6 +85,8 @@ ExitReason = Literal[
     "FRACTIONAL_SPLIT",
     "SUBCENT_SPLIT",
 ]
+ExitVariant = Literal["BASELINE", "SPLIT_1R", "SPLIT_1R_TRAIL", "TRAIL_EMA20"]
+EXIT_VARIANTS = frozenset({"BASELINE", "SPLIT_1R", "SPLIT_1R_TRAIL", "TRAIL_EMA20"})
 
 
 class OutcomeSetup(FrozenModel):
@@ -112,6 +115,45 @@ class OutcomeSetup(FrozenModel):
         return self
 
 
+class PartialExit(FrozenModel):
+    """EX-01: immutable A-leg cash flow; shares use that day's native basis."""
+
+    session: SessionDate
+    fill: FillResult
+    fees: FeeBreakdown
+    basis_ratio: Exact = Field(gt=0)
+
+    @model_validator(mode="after")
+    def filled(self) -> Self:
+        if self.fill.status != "FILLED" or self.fill.qty <= 0 or self.fill.reason != "TARGET":
+            raise ValueError("EX-01: A requires a complete target fill")
+        return self
+
+
+class StopMove(FrozenModel):
+    decided_session: SessionDate
+    effective_session: SessionDate
+    old_stop: Price
+    new_stop: Price
+    basis_ratio: Exact = Field(gt=0)
+
+    @model_validator(mode="after")
+    def upward(self) -> Self:
+        if self.decided_session >= self.effective_session or self.new_stop <= self.old_stop:
+            raise ValueError("EX-02: upward stop decision applies after its close")
+        return self
+
+
+def _combined_fees(parts: tuple[FeeBreakdown, ...]) -> FeeBreakdown:
+    return FeeBreakdown(
+        commission=sum((row.commission for row in parts), ZERO),
+        sec=sum((row.sec for row in parts), ZERO),
+        taf=sum((row.taf for row in parts), ZERO),
+        cat=sum((row.cat for row in parts), ZERO),
+        source="MODELED",
+    )
+
+
 class Outcome(FrozenModel):
     setup: OutcomeSetup
     manifest_sha256: Digest
@@ -133,6 +175,11 @@ class Outcome(FrozenModel):
     mfe_money: Money | None = Field(ge=0)
     sessions_held: int = Field(strict=True, ge=0, le=31)
     distributions: tuple[DistributionCredit, ...] = Field(default=(), max_length=30)
+    partial_exits: tuple[PartialExit, ...] = Field(
+        default=(), max_length=1, exclude_if=lambda v: not v
+    )
+    stop_moves: tuple[StopMove, ...] = Field(default=(), max_length=30, exclude_if=lambda v: not v)
+    exit_basis_ratio: Exact | None = Field(default=None, gt=0, exclude_if=lambda v: v is None)
     notes: tuple[Note, ...] = Field(default=NOTES, min_length=2, max_length=2)
 
     @classmethod
@@ -159,6 +206,24 @@ class Outcome(FrozenModel):
                 {**row, "session": date.fromisoformat(row["session"])}
                 for row in values.get("distributions", ())
             )
+            values["partial_exits"] = tuple(
+                {
+                    **row,
+                    "session": date.fromisoformat(row["session"]),
+                    "fill": {**row["fill"], "price": _provider_money(row["fill"]["price"])},
+                }
+                for row in values.get("partial_exits", ())
+            )
+            values["stop_moves"] = tuple(
+                {
+                    **row,
+                    "decided_session": date.fromisoformat(row["decided_session"]),
+                    "effective_session": date.fromisoformat(row["effective_session"]),
+                    "old_stop": _provider_money(row["old_stop"]),
+                    "new_stop": _provider_money(row["new_stop"]),
+                }
+                for row in values.get("stop_moves", ())
+            )
             return cls.model_validate(values)
         except Exception:
             raise DataIntegrityError("EV-01: recorded outcome is unverifiable") from None
@@ -167,10 +232,45 @@ class Outcome(FrozenModel):
     def consistent(self) -> Self:
         entry = self.entry_fill
         replay = self.setup.cohort.startswith("REPLAY")
+        split = self.setup.variant in {"SPLIT_1R", "SPLIT_1R_TRAIL"}
+        if (self.partial_exits and not split) or (
+            self.stop_moves and self.setup.variant != "SPLIT_1R_TRAIL"
+        ):
+            raise ValueError("EX: leg and stop evidence requires its recorded variant")
+        if any(
+            self.entry_session is None
+            or row.session < self.entry_session
+            or (self.exit_session is not None and row.session > self.exit_session)
+            for row in self.partial_exits
+        ):
+            raise ValueError("EX-01: partial exit must be inside the holding interval")
+        if any(
+            self.entry_session is None
+            or row.decided_session < self.entry_session
+            or (self.exit_session is not None and row.effective_session > self.exit_session)
+            for row in self.stop_moves
+        ) or any(
+            a.effective_session >= b.effective_session
+            or a.new_stop * a.basis_ratio > b.old_stop * b.basis_ratio
+            for a, b in zip(self.stop_moves, self.stop_moves[1:], strict=False)
+        ):
+            raise ValueError("EX-02: stop evidence must be ordered and never lowered")
+        if self.stop_moves and (
+            not self.partial_exits
+            or self.stop_moves[0].decided_session < self.partial_exits[0].session
+        ):
+            raise ValueError("EX-02: A must fill before B trails")
         if self.notes != (REPLAY_NOTES if replay else NOTES) or (entry is None) != (
             self.entry_basis_ratio is None
         ):
             raise ValueError("EV-01: fixed disclosures and entry split basis are required")
+        if self.partial_exits and (
+            entry is None
+            or self.entry_basis_ratio is None
+            or sum((Decimal(row.fill.qty) / row.basis_ratio for row in self.partial_exits), ZERO)
+            >= entry.qty / self.entry_basis_ratio
+        ):
+            raise ValueError("EX-01: the A exit must leave held B shares")
         days = tuple(item.session for item in self.distributions)
         if (
             days != tuple(sorted(set(days)))
@@ -239,7 +339,24 @@ class Outcome(FrozenModel):
                     - cast(FeeBreakdown, self.entry_fees).total
                     - cast(FeeBreakdown, self.exit_fees).total
                     + sum((item.amount for item in self.distributions), ZERO)
+                    + sum(
+                        (
+                            cast(Decimal, row.fill.price) * row.fill.qty - row.fees.total
+                            for row in self.partial_exits
+                        ),
+                        ZERO,
+                    )
                 )
+                if split and (
+                    self.exit_basis_ratio is None
+                    or sum(
+                        (Decimal(row.fill.qty) / row.basis_ratio for row in self.partial_exits),
+                        ZERO,
+                    )
+                    + outgoing.qty / self.exit_basis_ratio
+                    != incoming.qty / cast(Decimal, self.entry_basis_ratio)
+                ):
+                    raise ValueError("EX-01: exits must conserve split-adjusted filled shares")
                 if (
                     self.initial_risk_money != risk
                     or self.net_money != net
@@ -289,6 +406,7 @@ def simulate_outcome(
     policy: EvaluationConfig | None = None,
     signal_exit_session: date | None = None,
     cancel_entry_at: date | None = None,
+    exit_variant: ExitVariant = "BASELINE",
 ) -> Outcome:
     """EV-01: no I/O, no trades, no discretion or model output changes the rules."""
     try:
@@ -297,6 +415,12 @@ def simulate_outcome(
         checked_context = CostContext.model_validate(context)
         checked_schedule = FeeSchedule.model_validate(schedule)
         hold = EvaluationConfig.model_validate(policy or EvaluationConfig())
+        if exit_variant not in EXIT_VARIANTS or (
+            exit_variant != "BASELINE" and intent.variant != exit_variant
+        ):
+            raise DataIntegrityError("EX-03: recorded and supported exit variant required")
+        if exit_variant.startswith("SPLIT_") and intent.qty < 2:
+            raise DataIntegrityError("EX-01: split entry needs at least two shares")
         validate_history(frozen.bundle, calendar)
         calendar.session_open(intent.decision_session)
         calendar.session_open(intent.valid_until_session)
@@ -321,6 +445,7 @@ def simulate_outcome(
             hold,
             signal_exit_session,
             cancel_entry_at=cancel_entry_at,
+            exit_variant=exit_variant,
         )
     except DataIntegrityError:
         raise
@@ -338,9 +463,23 @@ def _simulate(
     end_session: date | None = None,
     cancel_entry_at: date | None = None,
     distribution_evidence: dict[date, Decimal] | None = None,
+    exit_variant: ExitVariant = "BASELINE",
+    close_exit_ema: dict[date, Decimal | None] | None = None,
+    close_trail_atr: dict[date, Decimal | None] | None = None,
 ) -> Outcome:
     """Internal replay reuse after its public boundary validates the sealed bundle."""
     native = history.bundle.for_symbol(setup.symbol, "RAW")
+    if exit_variant == "TRAIL_EMA20" and close_exit_ema is None:
+        close_exit_ema = causal_split_ema(
+            native, history.bundle.splits, 20, end_session or native.sessions[-1]
+        )
+    if exit_variant == "SPLIT_1R_TRAIL" and close_trail_atr is None:
+        close_trail_atr = causal_split_atr(
+            native, history.bundle.splits, end_session or native.sessions[-1]
+        )
+    split = exit_variant in {"SPLIT_1R", "SPLIT_1R_TRAIL"}
+    if split and setup.qty < 2:
+        raise DataIntegrityError("EX-01: split entry needs at least two shares")
     replay = setup.cohort.startswith("REPLAY")
     rates = (
         (
@@ -372,6 +511,12 @@ def _simulate(
     held = 0
     pending: Literal["TIME", "SIGNAL"] | None = None
     pending_day: date | None = None
+    partial_exits: list[PartialExit] = []
+    stop_moves: list[StopMove] = []
+    a_qty = 0
+    a_target = limit + (limit - stop)
+    realized_gross = ZERO
+    pending_stop: tuple[date, Decimal] | None = None
 
     def result(
         status: Literal["NOT_FILLED", "OPEN", "RESOLVED", "INCOMPLETE"],
@@ -390,12 +535,28 @@ def _simulate(
                 cast(date, day),
                 schedule=schedule,
             )
+            if split and a_qty:
+                exit_cost = _combined_fees(
+                    tuple(
+                        fees(
+                            Side.SELL,
+                            shares,
+                            cast(Decimal, outgoing.price),
+                            cast(date, day),
+                            schedule=schedule,
+                        )
+                        for shares in (a_qty, qty - a_qty)
+                        if shares
+                    )
+                )
             net = (
                 cast(Decimal, outgoing.price) * outgoing.qty
                 - entry_value
                 - cast(FeeBreakdown, entry_cost).total
                 - exit_cost.total
                 + sum((item.amount for item in distributions), ZERO)
+                + realized_gross
+                - sum((row.fees.total for row in partial_exits), ZERO)
             )
             multiple = (net / cast(Decimal, risk)).quantize(MICRO, rounding=ROUND_HALF_EVEN)
         return Outcome(
@@ -420,7 +581,19 @@ def _simulate(
             sessions_held=held,
             distributions=tuple(distributions),
             notes=REPLAY_NOTES if replay else NOTES,
+            partial_exits=tuple(partial_exits),
+            stop_moves=tuple(stop_moves),
+            exit_basis_ratio=basis if split and outgoing is not None else None,
         )
+
+    if exit_variant == "TRAIL_EMA20" and (
+        close_exit_ema is None or close_exit_ema.get(setup.decision_session) is None
+    ):
+        return result("INCOMPLETE", "HISTORY_PENDING")
+    if exit_variant == "SPLIT_1R_TRAIL" and (
+        close_trail_atr is None or close_trail_atr.get(setup.decision_session) is None
+    ):
+        return result("INCOMPLETE", "HISTORY_PENDING")
 
     with localcontext() as precision:
         precision.prec = 80
@@ -443,9 +616,33 @@ def _simulate(
                 if any(value != value.quantize(CENT) for value in levels):
                     return result("INCOMPLETE", "SUBCENT_SPLIT")
                 qty = int(shares)
+                a_shares = a_qty * ratio
+                if a_shares != a_shares.to_integral_value():
+                    return result("INCOMPLETE", "FRACTIONAL_SPLIT")
+                a_qty = int(a_shares)
                 basis *= ratio
                 limit, stop, target, atr = levels
+                a_target /= ratio
+                if pending_stop is not None:
+                    pending_stop = (pending_stop[0], pending_stop[1] / ratio)
                 context = CostContext.model_validate({**context.model_dump(), "atr14": atr})
+            if pending_stop is not None and day > pending_stop[0]:
+                decided, raised = pending_stop
+                if raised != raised.quantize(CENT):
+                    return result("INCOMPLETE", "SUBCENT_SPLIT")
+                # Revalidate every queued raise, including its strict upward
+                # direction. Corrupt protection must fail, not disappear.
+                stop_moves.append(
+                    StopMove(
+                        decided_session=decided,
+                        effective_session=day,
+                        old_stop=stop,
+                        new_stop=raised,
+                        basis_ratio=basis,
+                    )
+                )
+                stop = raised
+                pending_stop = None
             if entry is not None:
                 credit = distribution_credit(day, qty, rates.get(day))
                 if credit is not None:
@@ -469,6 +666,16 @@ def _simulate(
                 entry_cost = fees(
                     Side.BUY, qty, cast(Decimal, incoming.price), day, schedule=schedule
                 )
+                if split:
+                    a_qty = qty // 2
+                    parts = tuple(
+                        fees(
+                            Side.BUY, shares, cast(Decimal, incoming.price), day, schedule=schedule
+                        )
+                        for shares in (a_qty, qty - a_qty)
+                        if shares
+                    )
+                    entry_cost = _combined_fees(parts)
                 entry_value = cast(Decimal, incoming.price) * qty
                 risk = (limit - stop) * qty
                 mae, mfe = ZERO, ZERO
@@ -494,20 +701,54 @@ def _simulate(
                     bar,
                     context,
                 )
-                mae = min(cast(Decimal, mae), bar.open * qty - entry_value)
-                mfe = max(cast(Decimal, mfe), bar.open * qty - entry_value)
+                mae = min(cast(Decimal, mae), realized_gross + bar.open * qty - entry_value)
+                mfe = max(cast(Decimal, mfe), realized_gross + bar.open * qty - entry_value)
                 return result("RESOLVED", pending, outgoing, day)
             held += 1
             mae = min(
                 cast(Decimal, mae),
-                (bar.open if stopped.reason == "GAP_STOP" else bar.low) * qty - entry_value,
+                realized_gross
+                + (bar.open if stopped.reason == "GAP_STOP" else bar.low) * qty
+                - entry_value,
             )
             mfe = max(
                 cast(Decimal, mfe),
-                (bar.open if stopped.reason == "GAP_STOP" else bar.high) * qty - entry_value,
+                realized_gross
+                + (bar.open if stopped.reason == "GAP_STOP" else bar.high) * qty
+                - entry_value,
             )
             if stopped.qty:
                 return result("RESOLVED", cast(ExitReason, stopped.reason), stopped, day)
+            if split and a_qty:
+                a_fill = estimate_fill(
+                    CostOrder(
+                        side=Side.SELL,
+                        kind="TARGET",
+                        qty=a_qty,
+                        level=a_target,
+                        decision_session=cast(date, entry_day),
+                    ),
+                    bar,
+                    context,
+                )
+                if a_fill.qty:
+                    partial_exits.append(
+                        PartialExit(
+                            session=day,
+                            fill=a_fill,
+                            fees=fees(
+                                Side.SELL,
+                                a_qty,
+                                cast(Decimal, a_fill.price),
+                                day,
+                                schedule=schedule,
+                            ),
+                            basis_ratio=basis,
+                        )
+                    )
+                    realized_gross += cast(Decimal, a_fill.price) * a_qty
+                    qty -= a_qty
+                    a_qty = 0
             targeted = estimate_fill(
                 CostOrder(
                     side=Side.SELL,
@@ -519,10 +760,25 @@ def _simulate(
                 bar,
                 context,
             )
-            if targeted.qty:
+            if targeted.qty and exit_variant != "SPLIT_1R_TRAIL":
                 return result("RESOLVED", "TARGET", targeted, day)
+            if exit_variant == "SPLIT_1R_TRAIL" and partial_exits:
+                atr_value = None if close_trail_atr is None else close_trail_atr.get(day)
+                if atr_value is None:
+                    return result("INCOMPLETE", "HISTORY_PENDING")
+                raised = bar.close - Decimal(3) * atr_value
+                if raised > stop:
+                    pending_stop = (day, raised)
             if day == signal_exit_session:
                 pending, pending_day = "SIGNAL", day
+            elif exit_variant == "TRAIL_EMA20" and mfe >= cast(Decimal, risk):
+                average = None if close_exit_ema is None else close_exit_ema.get(day)
+                if average is None:
+                    return result("INCOMPLETE", "HISTORY_PENDING")
+                if bar.close < average:
+                    pending, pending_day = "SIGNAL", day
+                elif held >= policy.max_hold_sessions:
+                    pending, pending_day = "TIME", day
             elif held >= policy.max_hold_sessions:
                 pending, pending_day = "TIME", day
         if entry is not None:

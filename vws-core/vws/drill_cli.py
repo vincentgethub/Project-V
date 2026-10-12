@@ -14,12 +14,22 @@ from vws.host_config import load_host_settings
 def verified_drill(
     project: Path, settings: Settings, store: SecretStore, now: datetime, days: int
 ) -> bool:
+    return verified_drill_time(project, settings, store, now, days) is not None
+
+
+def verified_drill_time(
+    project: Path, settings: Settings, store: SecretStore, now: datetime, days: int
+) -> datetime | None:
     path = project / "data/drills/latest.enc"
     key = store.get("VWS_BACKUP_KEY")
     if key is None or not path.is_file():
-        return False
+        return None
     proof = read_proof(path, key)
-    return proof.recipients == settings.telegram_allowed_user_ids and proof.eligible(now, days)
+    return (
+        proof.created_at
+        if proof.recipients == settings.telegram_allowed_user_ids and proof.eligible(now, days)
+        else None
+    )
 
 
 async def execute(project: Path, operator: str, env_file: Path | None, store: SecretStore) -> str:

@@ -36,6 +36,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     replay_command.add_argument("--initial-equity")
     replay_command.add_argument("--checking-balance")
     replay_command.add_argument("--workers", type=int)
+    profiles = commands.add_parser("profile").add_subparsers(
+        dest="profile_operation", required=True
+    )
+    for operation in ("scan", "replay"):
+        profile = profiles.add_parser(operation)
+        profile.add_argument("--end", type=date.fromisoformat, required=True)
+        profile.add_argument("--symbols", nargs="+")
+        profile.add_argument("--offline-fixtures", action="store_true")
+        profile.add_argument("--history", type=Path, default=Path("data/history"))
+        profile.add_argument("--output", type=Path, default=Path("data/profiles"))
+        if operation == "replay":
+            profile.add_argument("--start", type=date.fromisoformat, required=True)
+            profile.add_argument("--initial-equity")
+            profile.add_argument("--checking-balance")
+            profile.add_argument("--workers", type=int)
+    validation = commands.add_parser("validate").add_subparsers(
+        dest="validation_operation", required=True
+    )
+    for name in ("register", "walkforward", "final"):
+        command = validation.add_parser(name)
+        command.add_argument("--history", type=Path, default=Path("data/history"))
+        command.add_argument("--initial-equity", required=True)
+        command.add_argument("--checking-balance", required=True)
+        command.add_argument("--workers", type=int, default=1)
+        if name != "register":
+            command.add_argument("--family", required=True)
     tax = commands.add_parser("tax").add_subparsers(dest="tax_operation", required=True)
     tax_report = tax.add_parser("report")
     tax_report.add_argument("--year", type=int, required=True)
@@ -130,6 +156,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 workers=args.workers,
             )
             return 0
+        if args.command == "profile":
+            from vws.profile_cli import execute as profile_execute
+
+            profile_execute(
+                args.profile_operation,
+                end=args.end,
+                project=Path(__file__).resolve().parents[1],
+                output_root=args.output,
+                history_root=args.history,
+                offline_fixtures=args.offline_fixtures,
+                symbols=None if args.symbols is None else tuple(args.symbols),
+                env_file=args.env_file,
+                start=getattr(args, "start", None),
+                workers=getattr(args, "workers", None),
+                initial_equity=getattr(args, "initial_equity", None),
+                checking_balance=getattr(args, "checking_balance", None),
+            )
+            return 0
         # Progress never imports network/keyring service composition.
         from backend.security.secrets import KeyringSecretStore, SecretStore
         from vws import security_cli as security
@@ -181,6 +225,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             store=store,
         )
         try:
+            if args.command == "validate":
+                from vws.validation_cli import execute as validation_execute
+
+                phrase = (
+                    input("Type RUN HOLDOUT " + args.family + ": ")
+                    if args.validation_operation == "final"
+                    else ""
+                )
+                validation_execute(
+                    context,
+                    security.PROJECT,
+                    args.validation_operation,
+                    history_root=args.history,
+                    initial_equity=args.initial_equity,
+                    checking_balance=args.checking_balance,
+                    family=getattr(args, "family", None),
+                    workers=args.workers,
+                    phrase=phrase,
+                )
+                return 0
             if args.command in {"journal", "report"}:
                 from vws.extras_cli import export_journal, export_monthly
 

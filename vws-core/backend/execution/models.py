@@ -71,7 +71,7 @@ class BrokerOrder(FrozenModel):
     symbol: Symbol
     side: Literal["buy", "sell"]
     order_type: Literal["limit", "stop"]
-    order_class: Literal["simple", "bracket", "oco"]
+    order_class: Literal["simple", "bracket", "oco", "oto"]
     time_in_force: Literal["day", "gtc"]
     qty: PositiveQty
     filled_qty: NonnegativeQty
@@ -143,6 +143,9 @@ class Submission(FrozenModel):
     proposal_id: UUID
     broker_order: BrokerOrder
     recovered_after_ambiguity: bool = Field(strict=True)
+    broker_orders: tuple[BrokerOrder, ...] = Field(
+        default=(), max_length=2, exclude_if=lambda v: not v
+    )
 
 
 class BindingEvidence(FrozenModel):
@@ -195,8 +198,14 @@ class EntryApprovalEvidence(FrozenModel):
     snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     compliance_input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     qty: PositiveQty
+    exit_variant: Literal["BASELINE", "SPLIT_1R", "SPLIT_1R_TRAIL", "TRAIL_EMA20"] = Field(
+        default="BASELINE", exclude_if=lambda v: v == "BASELINE"
+    )
+    hold_sessions: Literal[10, 20, 30] = Field(default=20, exclude_if=lambda v: v == 20)
     checked_at: UTCDateTime
-    risk_results: tuple[RuleResult, ...] = Field(min_length=13, max_length=13)
+    # Historical approvals remain readable for held exits/protection. New
+    # executor admissions require all fourteen rules independently.
+    risk_results: tuple[RuleResult, ...] = Field(min_length=13, max_length=14)
     compliance_results: tuple[RuleResult, ...] = Field(min_length=7, max_length=7)
 
     @field_validator("checked_at", mode="before")
@@ -209,7 +218,10 @@ class EntryApprovalEvidence(FrozenModel):
         if (
             (self.actor == "auto") != (self.user_id is None)
             or tuple(row.rule_id for row in self.risk_results)
-            != tuple(f"CRO-{n:02d}" for n in range(1, 14))
+            not in (
+                tuple(f"CRO-{n:02d}" for n in range(1, 14)),
+                tuple(f"CRO-{n:02d}" for n in range(1, 15)),
+            )
             or tuple(row.rule_id for row in self.compliance_results)
             != tuple(f"CMP-{n:02d}" for n in range(1, 8))
             or any(
@@ -262,7 +274,7 @@ class ExitCycleEvidence(FrozenModel):
     account_id: str = Field(strict=True, min_length=1, max_length=128)
     environment: Environment
     config_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    reason: Literal["TIME", "EARNINGS", "SUSPECT"]
+    reason: Literal["TIME", "EARNINGS", "SUSPECT", "EMA20"]
     state: Literal["ACTIVE", "DONE", "FAILED"]
     session_date: date
 

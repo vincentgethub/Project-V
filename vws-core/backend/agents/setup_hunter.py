@@ -4,6 +4,7 @@ No LLM, provider, ledger, clock read or order execution occurs in this module.
 The caller audits typed drops and applies the complete CRO check before research.
 """
 
+from collections.abc import Callable
 from datetime import datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 from typing import Self
@@ -20,6 +21,7 @@ from backend.core.config import PlaybookConfig, SizingConfig, YamlConfig
 from backend.core.errors import ConfigurationError, DataIntegrityError
 from backend.core.money import CENT
 from backend.data.data_layer import Bar
+from backend.data.earnings_reports import EarningsReport
 from backend.domain.models import (
     FrozenModel,
     Intent,
@@ -33,11 +35,13 @@ from backend.domain.models import (
     SetupCandidate,
     SetupCriterion,
     Side,
+    SizeEvidence,
     Symbol,
     TradeProposal,
     UTCDateTime,
     validate_symbol,
 )
+from backend.risk.overlays import fit_open_risk
 from backend.risk.risk_cro import ChiefRiskOfficer
 
 _IDENTITY = UUID("cadf65d8-1569-44ee-a074-d6f658393603")
@@ -72,6 +76,31 @@ class PlaybookEvidence(FrozenModel):
 class HuntDrop(FrozenModel):
     playbook: Playbook
     reason: str = Field(max_length=280)
+    filtered_candidate: SetupCandidate | None = Field(default=None, exclude_if=lambda v: v is None)
+    reductions: SizeEvidence | None = Field(default=None, exclude_if=lambda v: v is None)
+    filtered_cro_cap: int | None = Field(
+        default=None, strict=True, ge=0, le=0, exclude_if=lambda v: v is None
+    )
+
+    @model_validator(mode="after")
+    def shadow_bound(self) -> Self:
+        if (self.filtered_candidate is None) != (self.reductions is None):
+            raise ValueError("ER-04: filter shadow needs its exact reduction evidence")
+        if self.filtered_cro_cap is not None and self.filtered_candidate is None:
+            raise ValueError("ER-04: CRO shadow requires its candidate")
+        if (
+            self.filtered_candidate is not None
+            and self.reductions is not None
+            and (
+                self.filtered_candidate.playbook != self.playbook
+                or self.filtered_candidate.qty != self.reductions.base_qty
+                or self.filtered_candidate.size_evidence is not None
+                or self.reductions.product >= 1
+                and self.filtered_cro_cap is None
+            )
+        ):
+            raise ValueError("ER-04: shadow must retain the unsized candidate")
+        return self
 
 
 class PlaybookWindow(FrozenModel):
@@ -111,8 +140,16 @@ class PlaybookWindow(FrozenModel):
 class HuntResult(FrozenModel):
     symbol: Symbol
     as_of: UTCDateTime
-    candidates: tuple[SetupCandidate, ...] = Field(max_length=3)
-    drops: tuple[HuntDrop, ...] = Field(max_length=3)
+    candidates: tuple[SetupCandidate, ...] = Field(max_length=4)
+    drops: tuple[HuntDrop, ...] = Field(max_length=4)
+    active_playbooks: tuple[Playbook, ...] = Field(
+        default=(Playbook.TREND_50EMA, Playbook.BASE_BREAKOUT, Playbook.ANCHORED_VWAP_RECLAIM),
+        min_length=1,
+        max_length=4,
+        exclude_if=lambda value: (
+            value == (Playbook.TREND_50EMA, Playbook.BASE_BREAKOUT, Playbook.ANCHORED_VWAP_RECLAIM)
+        ),
+    )
 
     @model_validator(mode="after")
     def consistent(self) -> Self:
@@ -120,7 +157,11 @@ class HuntResult(FrozenModel):
             *tuple(item.playbook for item in self.candidates),
             *tuple(item.playbook for item in self.drops),
         )
-        if len(names) != 3 or len(set(names)) != 3:
+        if (
+            len(names) != len(self.active_playbooks)
+            or set(names) != set(self.active_playbooks)
+            or len(set(self.active_playbooks)) != len(self.active_playbooks)
+        ):
             raise ValueError("GD-03: exactly one result per daily playbook required")
         if any(item.symbol != self.symbol or item.as_of != self.as_of for item in self.candidates):
             raise ValueError("GD-03: candidate provenance differs from hunt")
@@ -370,6 +411,9 @@ class SetupHunter:
         self.config.assert_settings_consistent(cro.config)
         self.config.assert_allowed_symbols(cro.registry.symbols)
         self.memo = memo
+        self.size_provider: (
+            Callable[[str, Decimal, int, PortfolioSnapshot, datetime], SizeEvidence] | None
+        ) = None
 
     def hunt(
         self,
@@ -378,6 +422,10 @@ class SetupHunter:
         snapshot: PortfolioSnapshot,
         market: MarketContext,
         now: datetime,
+        *,
+        earnings_reports: tuple[EarningsReport, ...] = (),
+        spy_bars: tuple[Bar, ...] = (),
+        stock_return_bars: tuple[Bar, ...] | None = None,
     ) -> HuntResult:
         try:
             validate_symbol(symbol)
@@ -397,13 +445,39 @@ class SetupHunter:
                 if len(checked) >= 200 and market.status == MarketStatus.OK
                 else None
             )
-            evidence = tuple(
-                evaluate_playbook(Playbook(name), checked, series, weights, self.config.sizing)
-                if series is not None
-                else None
-                for name, weights in self.config.playbooks.items()
-            )
-            return self.size_evidence(symbol, evidence, snapshot, market, instant)
+            evidence: list[PlaybookEvidence | None] = []
+            for name in self.config.enabled_playbooks:
+                if series is None:
+                    evidence.append(None)
+                elif name == "EARNINGS_GAP":
+                    from backend.agents.earnings_gap import evaluate_earnings_gap
+
+                    evidence.append(
+                        evaluate_earnings_gap(
+                            self.cro.registry.get(symbol),
+                            checked,
+                            series,
+                            spy_bars,
+                            earnings_reports,
+                            self.config.sizing,
+                            instant,
+                            self.cro.calendar,
+                            stock_return_bars=stock_return_bars,
+                        )
+                        if earnings_reports and spy_bars
+                        else None
+                    )
+                else:
+                    evidence.append(
+                        evaluate_playbook(
+                            Playbook(name),
+                            checked,
+                            series,
+                            self.config.playbooks[name],
+                            self.config.sizing,
+                        )
+                    )
+            return self.size_evidence(symbol, tuple(evidence), snapshot, market, instant)
 
         except (DataIntegrityError, ConfigurationError):
             raise
@@ -427,12 +501,15 @@ class SetupHunter:
             if (
                 symbol not in self.config.watchlist
                 or not isinstance(evidence, tuple)
-                or len(evidence) != 3
+                or len(evidence) != len(self.config.enabled_playbooks)
             ):
                 raise DataIntegrityError("PF-03: bounded configured daily evidence required")
             results: list[SetupCandidate] = []
             drops: list[HuntDrop] = []
-            for name, item in zip(self.config.playbooks, evidence, strict=True):
+            for name, item in zip(self.config.enabled_playbooks, evidence, strict=True):
+                filtered_candidate = None
+                reductions = None
+                filtered_cro_cap = None
                 playbook = Playbook(name)
                 found = PlaybookEvidence.model_validate(item) if item is not None else None
                 if found is not None and found.playbook != playbook:
@@ -458,7 +535,33 @@ class SetupHunter:
                                 / per_share
                             ),
                         )
+                    factors = SizeEvidence(base_qty=qty, minimum=self.config.sizing.min_multiplier)
+                    if qty and self.size_provider is not None:
+                        factors = SizeEvidence.model_validate(
+                            self.size_provider(symbol, found.score, qty, snapshot, instant)
+                        )
+                        if (
+                            factors.base_qty != qty
+                            or factors.minimum != self.config.sizing.min_multiplier
+                        ):
+                            raise DataIntegrityError(
+                                "PR-04: reduction evidence has another base size or policy"
+                            )
+                        qty = factors.qty
                     reason = "quantity zero; no alert or LLM call"
+                    if not qty and factors is not None and factors.product < 1:
+                        reductions = factors
+                        filtered_candidate = SetupCandidate(
+                            symbol=symbol,
+                            playbook=playbook,
+                            score=found.score,
+                            criteria=found.criteria,
+                            entry_price=found.entry,
+                            stop_price=found.stop,
+                            target_price=found.target,
+                            qty=factors.base_qty,
+                            as_of=instant,
+                        )
                     if qty:
                         identity = f"{snapshot.account_id}/{symbol}/{playbook.value}/{instant.isoformat()}/{self.config.config_hash}"
                         proposal = TradeProposal(
@@ -477,10 +580,28 @@ class SetupHunter:
                             expires_at=proposal_expiry(
                                 instant, self.cro.config.proposal_ttl_sessions, self.cro.calendar
                             ),
+                            size_evidence=factors,
                         )
                         qty = min(
-                            qty, self.cro.max_allowed_qty(proposal, snapshot, market, instant)
+                            fit_open_risk(
+                                qty, proposal, snapshot, self.cro.config.portfolio_max_open_risk
+                            ),
+                            self.cro.max_allowed_qty(proposal, snapshot, market, instant),
                         )
+                        if not qty:
+                            filtered_cro_cap = 0
+                            reductions = factors
+                            filtered_candidate = SetupCandidate(
+                                symbol=symbol,
+                                playbook=playbook,
+                                score=found.score,
+                                criteria=found.criteria,
+                                entry_price=found.entry,
+                                stop_price=found.stop,
+                                target_price=found.target,
+                                qty=factors.base_qty,
+                                as_of=instant,
+                            )
                         if qty:
                             results.append(
                                 SetupCandidate(
@@ -493,14 +614,27 @@ class SetupHunter:
                                     target_price=found.target,
                                     qty=qty,
                                     as_of=instant,
+                                    size_evidence=factors,
                                 )
                             )
                             continue
                 elif found is not None:
                     reason = "setup score below configured minimum"
-                drops.append(HuntDrop(playbook=playbook, reason=reason))
+                drops.append(
+                    HuntDrop(
+                        playbook=playbook,
+                        reason=reason,
+                        filtered_candidate=filtered_candidate,
+                        reductions=reductions,
+                        filtered_cro_cap=filtered_cro_cap,
+                    )
+                )
             return HuntResult(
-                symbol=symbol, as_of=instant, candidates=tuple(results), drops=tuple(drops)
+                symbol=symbol,
+                as_of=instant,
+                candidates=tuple(results),
+                drops=tuple(drops),
+                active_playbooks=tuple(Playbook(name) for name in self.config.enabled_playbooks),
             )
         except (DataIntegrityError, ConfigurationError):
             raise

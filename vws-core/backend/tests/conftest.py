@@ -25,6 +25,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Explicit disposable loopback vws_ci database only; never owner storage",
     )
+    parser.addoption(
+        "--paper-cancel-order-ids",
+        default=None,
+        help="Explicit existing canceled paper OTO root and OCO root broker UUIDs, comma separated; read-only integration",
+    )
 
 
 def pytest_asyncio_loop_factories() -> dict[str, Callable[[], asyncio.AbstractEventLoop]]:

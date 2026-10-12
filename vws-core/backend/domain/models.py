@@ -165,6 +165,7 @@ class Playbook(StrEnum):
     TREND_50EMA = "TREND_50EMA"
     BASE_BREAKOUT = "BASE_BREAKOUT"
     ANCHORED_VWAP_RECLAIM = "ANCHORED_VWAP_RECLAIM"
+    EARNINGS_GAP = "EARNINGS_GAP"
     INTRADAY_ORB = "INTRADAY_ORB"
     INTRADAY_VWAP_RECLAIM = "INTRADAY_VWAP_RECLAIM"
 
@@ -219,6 +220,43 @@ class Instrument(FrozenModel):
         return value
 
 
+class SizeEvidence(FrozenModel):
+    """PR-04: exact recorded reduction factors, applied with one final floor."""
+
+    base_qty: int = Field(strict=True, ge=0, le=10**9)
+    regime: Money = Field(default=Decimal(1), ge=0, le=1)
+    ramp: Money = Field(default=Decimal(1), ge=0, le=1)
+    correlation: Money = Field(default=Decimal(1), ge=0, le=1)
+    volatility: Money = Field(default=Decimal(1), ge=0, le=1)
+    relative_strength: Money = Field(default=Decimal(1), ge=0, le=1)
+    confidence: Money = Field(default=Decimal(1), ge=0, le=1)
+    events: Money = Field(default=Decimal(1), ge=0, le=1)
+    minimum: Money = Field(default=Decimal("0.25"), ge=Decimal("0.25"), le=1)
+
+    @property
+    def product(self) -> Decimal:
+        with localcontext() as precision:
+            precision.prec = 256
+            return (
+                self.regime
+                * self.ramp
+                * self.correlation
+                * self.volatility
+                * self.relative_strength
+                * self.confidence
+                * self.events
+            )
+
+    @property
+    def qty(self) -> int:
+        checked = SizeEvidence.model_validate(self)
+        with localcontext() as precision:
+            precision.prec = 256
+            return (
+                0 if checked.product < checked.minimum else int(checked.base_qty * checked.product)
+            )
+
+
 class TradeProposal(FrozenModel):
     """R-01/R-04/R-05: whole-share long-only LIMIT proposal linked to a signal."""
 
@@ -235,6 +273,7 @@ class TradeProposal(FrozenModel):
     source: ProposalSource
     created_at: UTCDateTime
     expires_at: UTCDateTime
+    size_evidence: SizeEvidence | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_long_only_shape(self) -> Self:
@@ -250,6 +289,10 @@ class TradeProposal(FrozenModel):
             raise ValueError("REDUCE/EXIT must be SELL")
         if self.expires_at <= self.created_at:
             raise ValueError("proposal expiry must follow its creation")
+        if self.size_evidence is not None and (
+            self.intent not in (Intent.ENTRY, Intent.ADD) or self.qty > self.size_evidence.qty
+        ):
+            raise ValueError("PR-04: entry shares exceed their recorded reduction")
         return self
 
 
@@ -533,6 +576,7 @@ class SetupCandidate(FrozenModel):
     target_price: Price
     qty: PositiveQty
     as_of: UTCDateTime
+    size_evidence: SizeEvidence | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_deterministic_levels(self) -> Self:
@@ -546,6 +590,8 @@ class SetupCandidate(FrozenModel):
                 raise ValueError("setup score must equal deterministic criterion points")
         if not self.stop_price < self.entry_price < self.target_price:
             raise ValueError("setup levels require stop < entry < target")
+        if self.size_evidence is not None and self.qty > self.size_evidence.qty:
+            raise ValueError("PR-04: candidate shares exceed their recorded reduction")
         return self
 
 

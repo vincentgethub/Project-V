@@ -102,7 +102,7 @@ async def test_XK_02_alert_journal_retains_full_criteria_and_is_idempotent(
     rows = store.entries()
     assert len(rows) == 1 and rows[0].trigger == "ALERT"
     assert rows[0].setup == h.request.candidate and rows[0].qty == h.request.candidate.qty
-    assert len(rows[0].cro) == 13 and len(rows[0].compliance) == 7
+    assert len(rows[0].cro) == 14 and len(rows[0].compliance) == 7
     assert rows[0].framework_status.value == "INCOMPLETE"
     assert store.csv() == Journal(h.state.ledger, store.scope).csv()
     h.state.ledger.verify_chain()

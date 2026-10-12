@@ -26,7 +26,7 @@ from backend.domain.models import validate_symbol
 from backend.indicators import vectorized
 from backend.ops.anchors import controlled_path
 
-CODE_VERSION = "pf1-v1"
+CODE_VERSION = "pf1-v2"
 _MAX_BYTES = 32 * 1024 * 1024
 _MAX_ROWS = 20000
 _FIELDS = (

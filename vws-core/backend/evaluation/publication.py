@@ -8,7 +8,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from html import escape, unescape
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import Field
 
@@ -23,8 +23,11 @@ from backend.data.history import FrozenHistory
 from backend.data.market_calendar import MarketCalendar
 from backend.domain.models import FrozenModel
 from backend.domain.tax_profile import TaxProfile
+from backend.evaluation.calibrated_costs import CostCalibration
+from backend.evaluation.calibrated_costs import snapshot as cost_snapshot
 from backend.evaluation.costs import FeeSchedule
 from backend.evaluation.evidence import OutcomeEvidence, save_outcomes
+from backend.evaluation.fill_quality import QualityBucket
 from backend.evaluation.outcomes import Outcome
 from backend.evaluation.security_summary import WeeklySecurity
 from backend.evaluation.weekly import (
@@ -35,6 +38,7 @@ from backend.evaluation.weekly import (
     report_csv,
     save_report,
 )
+from backend.ops.trading_controls import ControlScope
 
 
 class WeeklyInputs(FrozenModel):
@@ -45,6 +49,9 @@ class WeeklyInputs(FrozenModel):
     cost_policy: CostModelConfig
     tax_profile: TaxProfile
     security: WeeklySecurity | None = None
+    calibration: CostCalibration = Field(
+        default_factory=CostCalibration, exclude_if=lambda v: v.scope is None
+    )
 
 
 class WeeklySource(Protocol):
@@ -73,15 +80,47 @@ class WeeklyPublisher:
         self.source, self.notify = source, notify
         self._lock = asyncio.Lock()
 
+    def _quality_table(self) -> tuple[QualityBucket, ...]:
+        from zoneinfo import ZoneInfo
+
+        from backend.evaluation.tca_store import calibration, capture_pending, inventory
+
+        physical_scope = ControlScope(
+            account_id=self.account_id,
+            environment="PAPER" if self.settings.paper_trading else "LIVE",
+        )
+        capture_pending(self.state.ledger, physical_scope)
+        fills = inventory(self.state.ledger, physical_scope)
+        months = tuple(
+            sorted(
+                {
+                    row.filled_at.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m")
+                    for row in fills
+                }
+            )
+        )[-12:]
+        table: list[QualityBucket] = []
+        floors = self.config.cm.spread_floor_bps
+        for month in months:
+            for bucket, floor in (("HIGH", floors.high), ("MID", floors.mid), ("LOW", floors.low)):
+                table.append(calibration(self.state.ledger, physical_scope, month, bucket, floor))
+        return tuple(table)
+
     def _publish(self, inputs: WeeklyInputs, cancelled: threading.Event) -> WeeklyReport:
         self.state.ledger.verify_chain()
         bound = WeeklyInputs.model_validate(inputs)
-        expected = "PAPER" if self.settings.paper_trading else "LIVE"
+        expected: Literal["PAPER", "LIVE"] = "PAPER" if self.settings.paper_trading else "LIVE"
         if (
             bound.context.account_id != self.account_id
             or bound.context.cohort != expected
             or bound.context.config_sha256 != self.config.config_hash
             or bound.cost_policy != self.config.cm
+            or bound.calibration
+            != cost_snapshot(
+                self.state.ledger,
+                expected,
+                scope=ControlScope(account_id=self.account_id, environment=expected),
+            )
         ):
             raise DataIntegrityError("EV-02: weekly account/mode/configuration binding differs")
         tail = _eligible_session(self.calendar, self.state.clock.now(), 30)
@@ -102,7 +141,36 @@ class WeeklyPublisher:
             bound.cost_policy,
             bound.tax_profile,
             security=bound.security,
+            calibration=bound.calibration,
         )
+        table = self._quality_table()
+        if bound.calibration != cost_snapshot(
+            self.state.ledger,
+            expected,
+            scope=ControlScope(account_id=self.account_id, environment=expected),
+        ):
+            raise DataIntegrityError(
+                "XA-01: costs changed during publication; rebuild the report with current calibration"
+            )
+        if table:
+            report = WeeklyReport.model_validate(
+                {**report.model_dump(), "fill_quality": tuple(table)}
+            )
+        if expected == "PAPER":
+            from backend.evaluation.fill_quality import drift_rows
+
+            report = WeeklyReport.model_validate(
+                {
+                    **report.model_dump(),
+                    "drift": drift_rows(
+                        self.state.ledger,
+                        self.settings,
+                        self.config,
+                        ControlScope(account_id=self.account_id, environment="PAPER"),
+                        bound.fees,
+                    ),
+                }
+            )
         if cancelled.is_set():
             raise DataIntegrityError("EV-02: canceled weekly work cannot publish")
         json_path, csv_path = save_report(self.root, report)
@@ -142,6 +210,7 @@ class WeeklyPublisher:
             cancelled = threading.Event()
             try:
                 async with asyncio.timeout(60):
+                    await asyncio.to_thread(self._quality_table)
                     inputs = await self.source.weekly_inputs()
                     report = await asyncio.to_thread(self._publish, inputs, cancelled)
                 for page in pages(
@@ -152,7 +221,11 @@ class WeeklyPublisher:
                     counts={
                         "report_cards": len(report.cards),
                         "resolved": sum(
-                            card.n for card in report.cards if card.key.fundamentals_status is None
+                            card.n
+                            for card in report.cards
+                            if card.key.fundamentals_status is None
+                            and card.key.disposition
+                            not in {"CRO_VETO", "RS_FILTER", "PR_FILTER", "SZ_FILTER"}
                         ),
                     }
                 )

@@ -211,6 +211,7 @@ class DeskCommands:
         self.calendar, self.position_source = calendar, positions
         self.modes = modes
         self.extra_status = extra_status
+        self.verdict_handler: Callable[[], Awaitable[str]] | None = None
 
     def handlers(self) -> dict[str, CommandBody]:
         return {
@@ -219,6 +220,7 @@ class DeskCommands:
             "/digest": self.digest,
             "/report": self.report,
             "/edge": self.edge,
+            "/verdict": self.verdict,
             "/help": self.help,
             "/progress": self.progress,
         }
@@ -431,17 +433,24 @@ class DeskCommands:
         """ER-03: same after-cost evidence; private admission and heavy rate limits apply."""
         return await self.report(argument)
 
+    async def verdict(self, argument: str) -> tuple[str, ...]:
+        if argument.strip():
+            return pages("Use /verdict without arguments; it never changes a trading mode.")
+        if self.verdict_handler is None:
+            return pages("NOT YET · Paper readiness evidence is UNVERIFIED. Live stays locked.")
+        return pages(escape(await self.verdict_handler()))
+
     async def help(self, argument: str) -> tuple[str, ...]:
         if self.modes is not None:
             return (
-                "/status · /positions · /digest · /report · /edge · /progress · /pnl · /tax · /watch TICKER\n"
+                "/status · /positions · /digest · /report · /edge · /verdict · /progress · /pnl · /tax · /watch TICKER\n"
                 "Watch cards never auto-trade. Reply to a trade card or FYI to save a journal note.\n"
                 "/halt, /pause and /manual stop automatic entries; held exits and broker stops continue.\n"
                 "In an automatic mode, Approve places the order now after fresh checks.\n"
                 "Resume only on the host: python -m vws ops resume-auto --operator NAME (type RESUME).",
             )
         return (
-            "/status · /positions · /digest · /report · /edge · /progress · /pnl · /tax · /watch TICKER\n"
+            "/status · /positions · /digest · /report · /edge · /verdict · /progress · /pnl · /tax · /watch TICKER\n"
             "Reply to a trade card or FYI to save a journal note.\n"
             "/halt reason stops entries immediately. /pause allows reductions only.\n"
             "Approve creates a manual ticket after fresh checks. Details is read-only.\n"

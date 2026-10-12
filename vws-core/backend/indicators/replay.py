@@ -24,8 +24,19 @@ from backend.core.config import YamlConfig
 from backend.core.errors import DataIntegrityError
 from backend.core.money import CENT
 from backend.data.data_layer import Bar, _bars_digest
+from backend.data.earnings_reports import EarningsReport, gap_sessions
 from backend.data.history import Digest, HistorySeries, KnownSplit
-from backend.domain.models import FrozenModel, Money, Playbook, Price, SessionDate, Symbol
+from backend.data.market_calendar import MarketCalendar
+from backend.domain.models import (
+    AssetClass,
+    FrozenModel,
+    Instrument,
+    Money,
+    Playbook,
+    Price,
+    SessionDate,
+    Symbol,
+)
 from backend.evaluation.costs import Note
 from backend.indicators.causal_cache import load_or_compute
 from backend.indicators.vectorized import average
@@ -37,7 +48,7 @@ class GateDay(FrozenModel):
     adv20: Money | None = Field(ge=0)
     median_dollar_volume_20: Money | None = Field(ge=0)
     atr14: Money | None = Field(ge=0)
-    evidence: tuple[PlaybookEvidence | None, ...] = Field(min_length=3, max_length=3)
+    evidence: tuple[PlaybookEvidence | None, ...] = Field(min_length=1, max_length=4)
     reason: Note
 
 
@@ -72,6 +83,11 @@ def precompute_symbol(
     manifest_sha256: str,
     *,
     cache_root: Path | None = None,
+    instrument: Instrument | None = None,
+    earnings_reports: tuple[EarningsReport, ...] | None = None,
+    spy_returns: HistorySeries | None = None,
+    stock_returns: HistorySeries | None = None,
+    calendar: MarketCalendar | None = None,
 ) -> SymbolGates:
     """One full indicator pass, one bounded gate pass, no portfolio or future lookup."""
     try:
@@ -79,6 +95,32 @@ def precompute_symbol(
         policy = YamlConfig.model_validate(config)
         if audit.adjustment != "RAW" or audit.symbol not in policy.watchlist:
             raise ValueError("configured native audit series required")
+        earnings_days: set[int] = set()
+        if "EARNINGS_GAP" in policy.enabled_playbooks:
+            if instrument is None or calendar is None:
+                raise DataIntegrityError("EG-02: bound instrument/calendar unavailable")
+            Instrument.model_validate(instrument)
+            if instrument.symbol != audit.symbol:
+                raise DataIntegrityError("EG-02: issuer differs from replay symbol")
+            if instrument.asset_class == AssetClass.STOCK:
+                if earnings_reports is None or spy_returns is None or stock_returns is None:
+                    raise DataIntegrityError(
+                        "EG-02: frozen submissions and ALL return tapes required"
+                    )
+                if not isinstance(earnings_reports, tuple) or len(earnings_reports) > 5000:
+                    raise DataIntegrityError("EG-02: bounded report evidence required")
+                for report in earnings_reports:
+                    EarningsReport.model_validate(report)
+                for tape, symbol in ((spy_returns, "SPY"), (stock_returns, audit.symbol)):
+                    HistorySeries.model_validate(tape)
+                    if tape.symbol != symbol or tape.adjustment != "ALL":
+                        raise DataIntegrityError("EG-03: bound ALL-adjusted returns required")
+                indexes = {day: i for i, day in enumerate(audit.sessions)}
+                cutoff = calendar.session_close(audit.sessions[-1])
+                for report in earnings_reports:
+                    for gap in gap_sessions(report, cutoff, calendar):
+                        if gap in indexes:
+                            earnings_days.update(range(indexes[gap] + 1, indexes[gap] + 4))
         if not isinstance(splits, tuple) or len(splits) > 10000:
             raise ValueError("bounded split tuple required")
         actions = tuple(KnownSplit.model_validate(item) for item in splits)
@@ -180,7 +222,9 @@ def precompute_symbol(
         with localcontext() as precision:
             precision.prec = 256
             for i, latest in enumerate(audit.bars):
-                evidence: tuple[PlaybookEvidence | None, ...] = (None, None, None)
+                evidence: tuple[PlaybookEvidence | None, ...] = (None,) * len(
+                    policy.enabled_playbooks
+                )
                 reason = "200-session warm-up or indicator evidence unavailable"
                 atr_value = _export(atr[i : i + 1] / np.float64(factors[i]), CENT)[0]
                 dollars = sorted(
@@ -279,10 +323,33 @@ def precompute_symbol(
                             base_low=minima[3],
                         )
                         evidence = tuple(
-                            evaluate_window(Playbook(name), frame, weights, policy.sizing)
-                            for name, weights in policy.playbooks.items()
+                            None
+                            if name == "EARNINGS_GAP"
+                            else evaluate_window(
+                                Playbook(name), frame, policy.playbooks[name], policy.sizing
+                            )
+                            for name in policy.enabled_playbooks
                         )
                         reason = "Shared hunter gates evaluated on causal completed-session inputs"
+                    if i in earnings_days:
+                        from backend.indicators.earnings import earnings_gate
+
+                        result = earnings_gate(
+                            audit,
+                            i,
+                            tuple(factors),
+                            arrays,
+                            instrument,
+                            earnings_reports,
+                            spy_returns,
+                            stock_returns,
+                            policy,
+                            calendar,
+                        )
+                        evidence = tuple(
+                            result if name == "EARNINGS_GAP" else value
+                            for name, value in zip(policy.enabled_playbooks, evidence, strict=True)
+                        )
                 days.append(
                     GateDay(
                         session=latest.session_date,

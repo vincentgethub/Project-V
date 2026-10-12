@@ -12,7 +12,8 @@ import ssl
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta
 from decimal import Decimal, localcontext
-from typing import Any, Protocol, Self, cast
+from time import monotonic_ns
+from typing import Any, Literal, Protocol, Self, cast
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,7 @@ from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, OrderType, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import (
+    GetOrderByIdRequest,
     GetOrdersRequest,
     LimitOrderRequest,
     StopLossRequest,
@@ -65,7 +67,9 @@ from backend.data.market_calendar import MarketCalendar
 from backend.domain.models import (
     Decision,
     Intent,
+    MarketContext,
     MarketStatus,
+    Playbook,
     PortfolioSnapshot,
     PositiveQty,
     Price,
@@ -74,6 +78,14 @@ from backend.domain.models import (
     Side,
     Symbol,
     TradeProposal,
+)
+from backend.execution.exit_variants import (
+    HeldEntry,
+    HeldExitObservation,
+    HeldQuoteObservation,
+    StopMoved,
+    StopRaiseApproval,
+    stop_raise_plan,
 )
 from backend.execution.fill_capture import ExecutionFillCapture
 from backend.execution.live_guard import LiveGuard
@@ -95,7 +107,9 @@ from backend.execution.policy import (
     live_ceiling_reasons,
 )
 from backend.execution.reporting import fill_fyi
+from backend.execution.stop_evidence import current_stop, moved_stops, stop_approvals
 from backend.execution.storage import (
+    approval_evidence,
     bindings,
     exit_approvals,
     exit_cycles,
@@ -164,6 +178,25 @@ class ExactLimit(LimitOrderRequest):
                 or not self.stop_loss.stop_price < self.limit_price < self.take_profit.limit_price
             ):
                 raise ValueError("Entry requires one BUY GTC bracket with ordered cent prices")
+        elif self.order_class == OrderClass.OTO:
+            if (
+                self.side != OrderSide.BUY
+                or self.time_in_force != TimeInForce.GTC
+                or self.take_profit is not None
+                or self.stop_loss is None
+                or self.stop_loss.stop_price >= self.limit_price
+            ):
+                raise ValueError("EX-02: OTO is BUY GTC LIMIT with a protective stop only")
+        elif self.order_class == OrderClass.OCO:
+            if (
+                self.side != OrderSide.SELL
+                or self.time_in_force != TimeInForce.GTC
+                or self.take_profit is None
+                or self.stop_loss is None
+                or self.limit_price != self.take_profit.limit_price
+                or self.stop_loss.stop_price >= self.limit_price
+            ):
+                raise ValueError("EX-05: OCO is a protected SELL GTC exit with an exact target")
         elif (
             self.order_class not in {None, OrderClass.SIMPLE}
             or self.side != OrderSide.SELL
@@ -184,13 +217,24 @@ class ExactLimit(LimitOrderRequest):
             "side": checked.side.value,
             "type": "limit",
             "time_in_force": checked.time_in_force.value,
-            "order_class": "bracket" if checked.order_class == OrderClass.BRACKET else "simple",
+            "order_class": "bracket"
+            if checked.order_class == OrderClass.BRACKET
+            else "oto"
+            if checked.order_class == OrderClass.OTO
+            else "oco"
+            if checked.order_class == OrderClass.OCO
+            else "simple",
             "client_order_id": checked.client_order_id,
             "limit_price": format(checked.limit_price, ".2f"),
         }
-        if checked.take_profit is not None and checked.stop_loss is not None:
+        if checked.take_profit is not None:
             result["take_profit"] = checked.take_profit.to_request_fields()
+        if checked.stop_loss is not None:
             result["stop_loss"] = checked.stop_loss.to_request_fields()
+        if checked.order_class == OrderClass.OCO:
+            # VERIFY: OCO target is represented by take_profit in the request;
+            # the response reports that target as the LIMIT parent.
+            del result["limit_price"]
         return result
 
 
@@ -356,13 +400,68 @@ def order_not_found(error: Exception) -> bool:
     return isinstance(error, APIError) and error.status_code == 404
 
 
+async def inspect_paper_cancel_semantics(
+    settings: Settings, reader: Any, client: Any, oto_id: UUID, oco_id: UUID
+) -> tuple[BrokerOrder, BrokerOrder]:
+    """EX-06 integration: explicit existing paper exercise, four fresh GETs only."""
+    policy = Settings.validated_copy(settings)
+    if not policy.paper_trading or policy.execution_mode != "AUTO_PAPER" or oto_id == oco_id:
+        raise ExecutionDisabledError("EX-06: two distinct explicit AUTO_PAPER roots required")
+    assert_broker_endpoint(policy, str(client._base_url))
+    account = await reader.run(client.get_account)
+    if (
+        not isinstance(account, Mapping)
+        or account.get("status") != "ACTIVE"
+        or account.get("currency") != "USD"
+        or not isinstance(account.get("id"), str)
+        or any(
+            account.get(flag) is not False
+            for flag in ("trading_blocked", "account_blocked", "trade_suspended_by_user")
+        )
+    ):
+        raise ReconciliationError("EX-06: bound active USD paper account unavailable")
+    roots = []
+    for identity in (oto_id, oco_id):
+        raw = await reader.run(
+            lambda order_id=identity: client.get_order_by_id(
+                order_id, filter=GetOrderByIdRequest(nested=True)
+            )
+        )
+        root = parse_order(raw)
+        if root.order_id != identity or len(root.legs) != 1 or root.legs[0].order_type != "stop":
+            raise DataIntegrityError("EX-06: root must expose its one actual stop leg")
+        stop = parse_order(
+            await reader.run(
+                lambda child_id=root.legs[0].order_id: client.get_order_by_id(child_id)
+            ),
+            parent_id=root.order_id,
+        )
+        if stop != root.legs[0] or stop.status != "canceled":
+            raise DataIntegrityError("EX-06: fresh generated stop cancellation differs")
+        roots.append(root)
+    oto, oco = roots
+    if (
+        oto.order_class != "oto"
+        or oto.side != "buy"
+        or oto.status not in {"canceled", "filled"}
+        or oco.order_class != "oco"
+        or oco.side != "sell"
+        or oco.status != "canceled"
+        or oto.legs[0].order_id == oco.legs[0].order_id
+    ):
+        raise DataIntegrityError("EX-06: OTO stop and OCO siblings not proved canceled")
+    return oto, oco
+
+
 class TradingCalls(Protocol):
     """Only this isolated module may invoke the pinned order methods."""
 
     def submit_order(self, order_data: ExactLimit | ExactStop) -> object: ...
     def cancel_order_by_id(self, order_id: UUID | str) -> None: ...
     def get_order_by_client_id(self, client_id: str) -> object: ...
-    def get_order_by_id(self, order_id: UUID | str) -> object: ...
+    def get_order_by_id(
+        self, order_id: UUID | str, filter: GetOrderByIdRequest | None = None
+    ) -> object: ...
     def get_orders(self, filter: GetOrdersRequest | None = None) -> object: ...
     def get_all_positions(self) -> object: ...
     def get_account(self) -> object: ...
@@ -393,6 +492,11 @@ class AlpacaExecutor:
         portfolio: Callable[[], Awaitable[PortfolioSnapshot]] | None = None,
         configuration_check: Callable[[], object] | None = None,
         size_entry: Callable[[TradeProposal, FreshInputs], Awaitable[int]] | None = None,
+        entry_variant_allowed: Callable[[], bool] | None = None,
+        playbook_allowed: Callable[[Playbook], bool] | None = None,
+        stop_raise_readiness: Callable[[], tuple[str, ...]] | None = None,
+        held_exit_observation: Callable[[HeldEntry, FreshInputs], Awaitable[HeldExitObservation]]
+        | None = None,
         trade_notice: Callable[[str, bool, UUID], Awaitable[None]] | None = None,
     ) -> None:
         self.settings, self.config = (
@@ -442,6 +546,11 @@ class AlpacaExecutor:
         self.configuration_check = configuration_check
         self.live_guard = live_guard
         self.size_entry, self.trade_notice = size_entry, trade_notice
+        self.entry_variant_allowed = entry_variant_allowed
+        self.playbook_allowed = playbook_allowed
+        self.stop_raise_readiness = stop_raise_readiness
+        self._arrival_quotes: dict[str, MarketContext] = {}
+        self.held_exit_observation = held_exit_observation
         if recovery:
             managed = self._instructions()
             if not managed:
@@ -569,7 +678,7 @@ class AlpacaExecutor:
                     decision.decision != "APPROVED"
                     or decision.config_hash != self.settings.config_hash
                     or tuple(row.rule_id for row in results)
-                    != tuple(f"CRO-{n:02d}" for n in range(1, 14))
+                    != tuple(f"CRO-{n:02d}" for n in range(1, 15))
                     or any(row.passed != 1 and row.severity == "BLOCK" for row in results)
                 ):
                     raise ExecutionDisabledError(
@@ -619,6 +728,7 @@ class AlpacaExecutor:
                 source=ProposalSource(order.source),
                 created_at=order.created_at,
                 expires_at=alert.expires_at,
+                size_evidence=signal.structured_thesis["setup"].get("size_evidence"),
             )
             if (
                 proposal.side != Side.BUY
@@ -633,15 +743,18 @@ class AlpacaExecutor:
 
         day = ensure_utc(self.state.clock.now()).astimezone(ZoneInfo("America/New_York")).date()
         with DatabaseSession(self.state.engine) as session:
-            return sum(
-                row.created_at.astimezone(ZoneInfo("America/New_York")).date() == day
-                for row in session.scalars(
-                    select(ExecutionOrderRecord).where(
-                        ExecutionOrderRecord.account_id == self.modes.account_id,
-                        ExecutionOrderRecord.environment == self.environment,
-                        ExecutionOrderRecord.role == "ENTRY",
+            return len(
+                {
+                    row.order_id
+                    for row in session.scalars(
+                        select(ExecutionOrderRecord).where(
+                            ExecutionOrderRecord.account_id == self.modes.account_id,
+                            ExecutionOrderRecord.environment == self.environment,
+                            ExecutionOrderRecord.role == "ENTRY",
+                        )
                     )
-                )
+                    if row.created_at.astimezone(ZoneInfo("America/New_York")).date() == day
+                }
             )
 
     async def _lookup(self, client_id: str) -> BrokerOrder | None:
@@ -721,6 +834,14 @@ class AlpacaExecutor:
         *,
         guard: Callable[[], None] = lambda: None,
     ) -> tuple[BrokerOrder, bool]:
+        from backend.evaluation.tca_store import record_arrival
+
+        record_arrival(
+            self.state.ledger,
+            instruction,
+            self._arrival_quotes.get(instruction.symbol),
+            self.settings.stale_quote_seconds,
+        )
         try:
             raw = await self.worker.attempt(lambda: self.client.submit_order(request), guard=guard)
             broker = parse_order(raw)
@@ -773,6 +894,91 @@ class AlpacaExecutor:
         self._outcome(instruction, "ACCEPTED")
         return broker, recovered
 
+    def _entry_requests(self, proposal: TradeProposal) -> tuple[ExactLimit, ...]:
+        """EX-01/02: a single approved quantity, split without increasing exposure."""
+        if proposal.stop_price is None or proposal.target_price is None:
+            raise DataIntegrityError("EX: ordered entry levels required")
+        base = "vws-" + proposal.proposal_id.hex
+        variant = self.config.exits.variant
+        split = variant in {"SPLIT_1R", "SPLIT_1R_TRAIL"}
+        if split and proposal.qty < 2:
+            raise ExecutionDisabledError("EX-01: split entry requires at least two shares")
+        specs = (
+            ((base, proposal.qty, proposal.target_price),)
+            if not split
+            else (
+                (
+                    base + "-a",
+                    proposal.qty // 2,
+                    proposal.limit_price + (proposal.limit_price - proposal.stop_price),
+                ),
+                (
+                    base + "-b",
+                    proposal.qty - proposal.qty // 2,
+                    None if variant == "SPLIT_1R_TRAIL" else proposal.target_price,
+                ),
+            )
+        )
+        return tuple(
+            ExactLimit(
+                symbol=proposal.symbol,
+                qty=qty,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.GTC,
+                order_class=OrderClass.OTO if target is None else OrderClass.BRACKET,
+                client_order_id=identity,
+                limit_price=proposal.limit_price,
+                take_profit=None if target is None else ExactTakeProfit(limit_price=target),
+                stop_loss=ExactStopLoss(stop_price=proposal.stop_price),
+            )
+            for identity, qty, target in specs
+        )
+
+    def _assert_entry_variant(self) -> None:
+        check = self.entry_variant_allowed
+        if check is None:
+            raise ExecutionDisabledError("EX-06: registered WORKING exit evidence unavailable")
+        elif check() is not True:
+            raise ExecutionDisabledError(
+                "EX-06: configured exit needs current registered WORKING evidence"
+            )
+        if (
+            self.config.exits.variant in {"SPLIT_1R_TRAIL", "TRAIL_EMA20"}
+            and self.held_exit_observation is None
+        ):
+            raise ExecutionDisabledError("EX: required held-exit observation hook is unavailable")
+        if self.config.exits.variant == "SPLIT_1R_TRAIL" and self.environment == "LIVE":
+            self._assert_live_raises()
+
+    def _assert_playbook(self, name: str) -> None:
+        if (
+            name in {"TREND_50EMA", "BASE_BREAKOUT", "ANCHORED_VWAP_RECLAIM", "EARNINGS_GAP"}
+            and name not in self.config.enabled_playbooks
+        ):
+            raise ExecutionDisabledError("EG-01: configured playbook is disabled")
+        if name == "EARNINGS_GAP" and (
+            self.playbook_allowed is None
+            or self.playbook_allowed(Playbook.EARNINGS_GAP) is not True
+        ):
+            raise ExecutionDisabledError(
+                "EG-01: AUTO earnings-gap requires registered WORKING walk-forward evidence"
+            )
+
+    def _assert_live_raises(self) -> None:
+        if self.stop_raise_readiness is None:
+            raise ExecutionDisabledError(
+                "EX-06: live paper-raise and OCO/OTO integration evidence unavailable"
+            )
+        findings = self.stop_raise_readiness()
+        if (
+            not isinstance(findings, tuple)
+            or len(findings) > 50
+            or any(not isinstance(item, str) or not 1 <= len(item) <= 500 for item in findings)
+        ):
+            raise ExecutionDisabledError("EX-06: typed paper-raise evidence is UNVERIFIED")
+        if findings:
+            raise ExecutionDisabledError("EX-06: live stop raises locked: " + "; ".join(findings))
+
     async def enter(self, proposal_id: UUID, *, click: CallbackClick | None = None) -> Submission:
         async with account_lock(self.modes.account_id, self.environment):
             try:
@@ -787,25 +993,38 @@ class AlpacaExecutor:
                     raise ExecutionDisabledError("AX-22 market-hours guard blocks entry")
                 order, alert, proposal = self._loaded(proposal_id, click)
                 with DatabaseSession(self.state.engine) as session:
-                    existing = session.scalar(
-                        select(ExecutionOrderRecord).where(
-                            ExecutionOrderRecord.order_id == order.id,
-                            ExecutionOrderRecord.role == "ENTRY",
+                    existing = tuple(
+                        session.scalars(
+                            select(ExecutionOrderRecord)
+                            .where(
+                                ExecutionOrderRecord.order_id == order.id,
+                                ExecutionOrderRecord.role == "ENTRY",
+                            )
+                            .order_by(ExecutionOrderRecord.seq)
                         )
                     )
-                if existing is not None:
-                    known = await self._lookup(existing.client_order_id)
-                    if known is None:
-                        raise ExecutionDisabledError(
-                            "Prior durable intent is retained; never resubmit"
-                        )
-                    self._observe(existing, known)
+                if existing:
+                    known_orders = []
+                    for prior in existing:
+                        known = await self._lookup(prior.client_order_id)
+                        if known is None:
+                            raise ExecutionDisabledError(
+                                "Prior durable intent is retained; never resubmit"
+                            )
+                        self._observe(prior, known)
+                        known_orders.append(known)
                     return Submission(
-                        proposal_id=proposal_id, broker_order=known, recovered_after_ambiguity=True
+                        proposal_id=proposal_id,
+                        broker_order=known_orders[0],
+                        recovered_after_ambiguity=True,
+                        broker_orders=tuple(known_orders) if len(known_orders) > 1 else (),
                     )
+                self._assert_entry_variant()
+                self._assert_playbook(alert.playbook)
                 await self._verify_account()
                 async with asyncio.timeout(30):
                     inputs = FreshInputs.model_validate(await self.source.refresh(proposal.symbol))
+                    self._arrival_quotes[proposal.symbol] = inputs.market
                 if (
                     inputs.portfolio.account_id != self.modes.account_id
                     or inputs.portfolio.account_id != proposal.account_id
@@ -917,11 +1136,12 @@ class AlpacaExecutor:
                     raise ExecutionDisabledError(
                         "AX-25 existing position or pending order blocks duplicate entry"
                     )
-                client_id = "vws-" + proposal_id.hex
-                if await self._lookup(client_id) is not None:
-                    raise ReconciliationError(
-                        "An unrecorded order already uses this proposal client ID"
-                    )
+                requests = self._entry_requests(proposal)
+                for planned in requests:
+                    if await self._lookup(planned.client_order_id) is not None:
+                        raise ReconciliationError(
+                            "An unrecorded order already uses this proposal client ID"
+                        )
                 if (
                     proposal.stop_price is None
                     or proposal.target_price is None
@@ -935,6 +1155,8 @@ class AlpacaExecutor:
                 def submit_guard() -> None:
                     try:
                         self._assert_ops()
+                        self._assert_entry_variant()
+                        self._assert_playbook(alert.playbook)
                     except ExecutionDisabledError as error:
                         raise EntryAdmissionRevoked(str(error)) from None
                     instant = ensure_utc(self.state.clock.now())
@@ -959,17 +1181,6 @@ class AlpacaExecutor:
                     assert_auto_binding(self.settings, self.store)
 
                 submit_guard()
-                request = ExactLimit(
-                    symbol=proposal.symbol,
-                    qty=proposal.qty,
-                    side=OrderSide.BUY,
-                    time_in_force=TimeInForce.GTC,
-                    order_class=OrderClass.BRACKET,
-                    client_order_id=client_id,
-                    limit_price=proposal.limit_price,
-                    take_profit=ExactTakeProfit(limit_price=proposal.target_price),
-                    stop_loss=ExactStopLoss(stop_price=proposal.stop_price),
-                )
                 with transaction(self.state.engine) as session:
                     control = session.get(SystemControl, 1)
                     mode, paused = self.modes.in_session(session)
@@ -995,6 +1206,10 @@ class AlpacaExecutor:
                         snapshot_hash=verdict.snapshot_hash,
                         compliance_input_hash=assessment.input_hash,
                         qty=proposal.qty,
+                        exit_variant=self.config.exits.variant,
+                        hold_sessions=cast(
+                            Literal[10, 20, 30], self.config.evaluation.max_hold_sessions
+                        ),
                         checked_at=verdict.evaluated_at,
                         risk_results=verdict.results,
                         compliance_results=assessment.results,
@@ -1015,26 +1230,31 @@ class AlpacaExecutor:
                         reason="AUTO_APPROVED" if click is None else "AUTO_HYBRID_APPROVED",
                         broker_order_id=None,
                     )
-                    instruction = self.state.ledger.append_in_session(
-                        session,
-                        ExecutionOrderRecord,
-                        order_id=order.id,
-                        parent_execution_id=None,
-                        client_order_id=client_id,
-                        account_id=self.modes.account_id,
-                        environment=self.environment,
-                        symbol=proposal.symbol,
-                        role="ENTRY",
-                        side="BUY",
-                        order_type="LIMIT",
-                        qty=proposal.qty,
-                        limit_price=proposal.limit_price,
-                        stop_price=proposal.stop_price,
-                        target_price=proposal.target_price,
-                        time_in_force="GTC",
-                        config_hash=self.settings.config_hash,
-                        valid_until=proposal.expires_at,
-                    )
+                    instructions = []
+                    for request in requests:
+                        instruction = self.state.ledger.append_in_session(
+                            session,
+                            ExecutionOrderRecord,
+                            order_id=order.id,
+                            parent_execution_id=None,
+                            client_order_id=request.client_order_id,
+                            account_id=self.modes.account_id,
+                            environment=self.environment,
+                            symbol=proposal.symbol,
+                            role="ENTRY",
+                            side="BUY",
+                            order_type="LIMIT",
+                            qty=request.qty,
+                            limit_price=proposal.limit_price,
+                            stop_price=proposal.stop_price,
+                            target_price=None
+                            if request.take_profit is None
+                            else request.take_profit.limit_price,
+                            time_in_force="GTC",
+                            config_hash=self.settings.config_hash,
+                            valid_until=proposal.expires_at,
+                        )
+                        instructions.append(instruction)
                     self.state.ledger.append_in_session(
                         session,
                         OrderEvent,
@@ -1044,7 +1264,15 @@ class AlpacaExecutor:
                         broker_order_id=None,
                     )
                 try:
-                    broker, recovered = await self._submit(instruction, request, guard=submit_guard)
+                    submitted = []
+                    recovered = False
+                    for instruction, request in zip(instructions, requests, strict=True):
+                        broker, ambiguous = await self._submit(
+                            instruction, request, guard=submit_guard
+                        )
+                        recovered = recovered or ambiguous
+                        self._register_children(instruction, broker)
+                        submitted.append(broker)
                 except EntryAdmissionRevoked:
                     self.state.ledger.append(
                         OrderEvent,
@@ -1063,7 +1291,6 @@ class AlpacaExecutor:
                         broker_order_id=None,
                     )
                     raise
-                self._register_children(instruction, broker)
                 await self._trade_notice(
                     f"{self.environment} · Submitted {self._quantity(proposal.qty)} {proposal.symbol} LIMIT ${proposal.limit_price:.2f}; broker stop verification pending.",
                     False,
@@ -1071,8 +1298,9 @@ class AlpacaExecutor:
                 )
                 return Submission(
                     proposal_id=proposal_id,
-                    broker_order=broker,
+                    broker_order=submitted[0],
                     recovered_after_ambiguity=recovered,
+                    broker_orders=tuple(submitted) if len(submitted) > 1 else (),
                 )
             except ExecutionDisabledError as error:
                 self.state.ledger.append(
@@ -1117,7 +1345,13 @@ class AlpacaExecutor:
 
     def _register_children(self, parent: ExecutionOrderRecord, broker: BrokerOrder) -> None:
         """AX-31: generated child IDs are accepted only from the proved bracket."""
-        if parent.role != "ENTRY":
+        if parent.role == "REPAIR" and broker.order_class == "oco":
+            with DatabaseSession(self.state.engine) as session:
+                held_entry = session.get(ExecutionOrderRecord, parent.parent_execution_id)
+            if held_entry is None or held_entry.role != "ENTRY":
+                raise ReconciliationError("EX-05: OCO stop child lost its held entry")
+            parent = held_entry
+        elif parent.role != "ENTRY":
             return
         for child in broker.legs:
             with DatabaseSession(self.state.engine) as session:
@@ -1193,18 +1427,22 @@ class AlpacaExecutor:
             broker = looked_up
         if instruction.role in {"STOP", "TARGET"}:
             with DatabaseSession(self.state.engine) as session:
-                parent = (
-                    bindings(session).get(instruction.parent_execution_id)
-                    if instruction.parent_execution_id
-                    else None
+                parents = tuple(
+                    row
+                    for row in bindings(session).values()
+                    if any(
+                        leg.order_id == broker.order_id
+                        and leg.client_order_id == broker.client_order_id
+                        for leg in row.legs
+                    )
                 )
-            if parent is None:
+            if len(parents) != 1:
                 raise ReconciliationError("Generated broker child has no proved parent")
             broker = BrokerOrder.model_validate(
-                broker.model_copy(update={"parent_id": parent.order_id})
+                broker.model_copy(update={"parent_id": parents[0].order_id})
             )
         self._observe(instruction, broker)
-        if instruction.role == "ENTRY":
+        if instruction.role == "ENTRY" or broker.order_class == "oco":
             self._register_children(instruction, broker)
         return broker
 
@@ -1229,6 +1467,96 @@ class AlpacaExecutor:
             positions[symbol] = _whole(row.get("qty"), positive=True)
         return positions
 
+    async def record_paper_cancel_semantics(self, oto_entry_id: UUID, oco_exit_id: UUID) -> None:
+        """EX-06: fresh, read-only verification of an explicit integration exercise.
+
+        The caller supplies already-recorded paper roots. This cannot manufacture
+        orders, cancel a held stop, or certify live service from stored observations.
+        """
+        from backend.execution.stop_readiness import CancelSemanticsProof
+
+        if not self.settings.paper_trading or self.modes.effective != "AUTO_PAPER":
+            raise ExecutionDisabledError("EX-06: explicit AUTO_PAPER integration only")
+        async with account_lock(self.modes.account_id, "PAPER"):
+            self.state.ledger.verify_chain()
+            await self._verify_account()
+            with DatabaseSession(self.state.engine) as session:
+                oto = session.get(ExecutionOrderRecord, oto_entry_id)
+                oco = session.get(ExecutionOrderRecord, oco_exit_id)
+                if (
+                    oto is None
+                    or oco is None
+                    or oto.role != "ENTRY"
+                    or oco.role != "REPAIR"
+                    or any(
+                        row.account_id != self.modes.account_id
+                        or row.environment != "PAPER"
+                        or row.config_hash != self.settings.config_hash
+                        for row in (oto, oco)
+                    )
+                ):
+                    raise DataIntegrityError("EX-06: bound canonical paper roots required")
+            for root in (oto, oco):
+                with DatabaseSession(self.state.engine) as session:
+                    prior = bindings(session).get(root.id)
+                if prior is None:
+                    raise DataIntegrityError("EX-06: previously bound paper root required")
+                # VERIFIED pinned SDK 0.44.0: nested=True is required to inspect
+                # fresh generated legs, rather than trusting saved child lists.
+                root_id = prior.order_id
+
+                def read_nested_root(order_id: UUID = root_id) -> Any:
+                    return self.client.get_order_by_id(
+                        order_id, filter=GetOrderByIdRequest(nested=True)
+                    )
+
+                raw = await self.worker.attempt(read_nested_root)
+                broker = parse_order(raw)
+                self._observe(root, broker)
+                self._register_children(root, broker)
+            with DatabaseSession(self.state.engine) as session:
+                proved = bindings(session)
+                parent = proved.get(oto.id)
+                target = proved.get(oco.id)
+                if parent is None or target is None:
+                    raise DataIntegrityError("EX-06: fresh paper roots unavailable")
+                stops = tuple(
+                    session.scalars(
+                        select(ExecutionOrderRecord).where(
+                            ExecutionOrderRecord.role == "STOP",
+                            ExecutionOrderRecord.parent_execution_id.in_(
+                                (oto.id, oco.parent_execution_id)
+                            ),
+                        )
+                    )
+                )
+                matched = tuple(
+                    next((row for row in stops if row.client_order_id == leg.client_order_id), None)
+                    for root in (parent, target)
+                    for leg in root.legs
+                    if leg.order_type == "stop"
+                )
+                if len(matched) != 2 or any(row is None for row in matched):
+                    raise DataIntegrityError("EX-06: two recorded generated stop legs required")
+            first, second = (cast(ExecutionOrderRecord, row) for row in matched)
+            await self._read_bound(first)
+            await self._read_bound(second)
+            proof = CancelSemanticsProof(
+                account_id=self.modes.account_id,
+                yaml_hash=self.config.config_hash,
+                config_hash=self.settings.config_hash,
+                oto_entry_id=oto.id,
+                oto_stop_id=first.id,
+                oco_exit_id=oco.id,
+                oco_stop_id=second.id,
+                observed_at=self.state.clock.now(),
+            )
+            # The shared append validator checks the actual canceled statuses,
+            # parent identities and pinned SDK binding before publishing proof.
+            self.state.ledger.append(
+                SecurityEvent, kind="PAPER_CANCEL_SEMANTICS", detail=proof.model_dump(mode="json")
+            )
+
     async def _open_orders(self) -> tuple[BrokerOrder, ...]:
         # VERIFY: pinned GetOrdersRequest, OPEN + nested; a full page is not proof
         # of completeness and fails closed instead of hiding additional orders.
@@ -1242,6 +1570,14 @@ class AlpacaExecutor:
         return tuple(parse_order(row) for row in raw)
 
     async def _cancel_confirmed(
+        self, instruction: ExecutionOrderRecord, broker: BrokerOrder, *, deadline_seconds: int = 30
+    ) -> BrokerOrder:
+        if type(deadline_seconds) is not int or not 1 <= deadline_seconds <= 30:
+            raise ProviderError("Cancel confirmation requires a bounded deadline")
+        async with asyncio.timeout(deadline_seconds):
+            return await self._cancel_and_poll(instruction, broker)
+
+    async def _cancel_and_poll(
         self, instruction: ExecutionOrderRecord, broker: BrokerOrder
     ) -> BrokerOrder:
         if not broker.is_open:
@@ -1281,7 +1617,15 @@ class AlpacaExecutor:
                 )
         return checked
 
-    async def _repair_stop(self, entry: ExecutionOrderRecord, qty: int) -> None:
+    async def _repair_stop(
+        self,
+        entry: ExecutionOrderRecord,
+        qty: int,
+        *,
+        approval: StopRaiseApproval | None = None,
+        repair: bool = False,
+        repair_level: Decimal | None = None,
+    ) -> BrokerOrder:
         """AX-27/30: protective SELL is independent of entry state and mode."""
         if qty <= 0 or entry.stop_price is None:
             raise ReconciliationError("Stop repair has no verified positive held shares or level")
@@ -1289,6 +1633,11 @@ class AlpacaExecutor:
         broker_qty = (await self._positions()).get(entry.symbol, 0)
         with DatabaseSession(self.state.engine) as session:
             held = held_quantity(session, entry.id)
+            level = current_stop(session, entry) if approval is None else approval.new_stop
+            if repair_level is not None:
+                if approval is None or not repair or not approval.old_stop <= repair_level <= level:
+                    raise ReconciliationError("EX-05: repair cannot lower proved protection")
+                level = repair_level
             attempts = tuple(
                 session.scalars(
                     select(ExecutionOrderRecord).where(
@@ -1299,7 +1648,12 @@ class AlpacaExecutor:
             )
         if qty != held or qty > broker_qty:
             raise ReconciliationError("Protective sell exceeds verified managed broker shares")
-        client_id = f"vws-x-{entry.client_order_id.removeprefix('vws-')}-{len(attempts) + 1}"
+        target = entry.target_price if approval is not None and not repair else None
+        client_id = (
+            f"vws-x-{entry.client_order_id.removeprefix('vws-')}-{len(attempts) + 1}"
+            if approval is None
+            else "vws-m-" + approval.raise_id.hex + ("-r" if repair else "")
+        )
         if await self._lookup(client_id) is not None:
             raise ReconciliationError("New stop client ID already exists without a local intent")
         instruction = self.state.ledger.append(
@@ -1312,22 +1666,36 @@ class AlpacaExecutor:
             symbol=entry.symbol,
             role="REPAIR",
             side="SELL",
-            order_type="STOP",
+            order_type="STOP" if target is None else "LIMIT",
             qty=qty,
-            limit_price=None,
-            stop_price=entry.stop_price,
-            target_price=None,
+            limit_price=target,
+            stop_price=level,
+            target_price=target,
             time_in_force="GTC",
             config_hash=self.settings.config_hash,
             valid_until=None,
         )
-        request = ExactStop(
-            symbol=entry.symbol,
-            qty=qty,
-            side=OrderSide.SELL,
-            time_in_force=TimeInForce.GTC,
-            client_order_id=client_id,
-            stop_price=entry.stop_price,
+        request: ExactLimit | ExactStop = (
+            ExactStop(
+                symbol=entry.symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC,
+                client_order_id=client_id,
+                stop_price=level,
+            )
+            if target is None
+            else ExactLimit(
+                symbol=entry.symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC,
+                client_order_id=client_id,
+                order_class=OrderClass.OCO,
+                limit_price=target,
+                take_profit=ExactTakeProfit(limit_price=target),
+                stop_loss=ExactStopLoss(stop_price=level),
+            )
         )
 
         def protect_guard() -> None:
@@ -1335,6 +1703,14 @@ class AlpacaExecutor:
             with DatabaseSession(self.state.engine) as session:
                 if held_quantity(session, entry.id) != qty:
                     raise ReconciliationError("Held shares changed before protective submit")
+            if (
+                approval is not None
+                and not repair
+                and not timedelta(0)
+                <= (self.state.clock.now() - approval.quote_at)
+                <= timedelta(seconds=self.settings.stale_quote_seconds)
+            ):
+                raise EntryAdmissionRevoked("EX-05: stop-raise quote expired before submit")
 
         try:
             await self._submit(instruction, request, guard=protect_guard)
@@ -1345,11 +1721,22 @@ class AlpacaExecutor:
                 or confirmed.status in {"held", "suspended", "pending_cancel"}
             ):
                 raise ReconciliationError("Submitted protective stop is not confirmed active")
-            await self._trade_notice(
-                f"{self.environment} · Stop repaired for {self._quantity(qty)} {entry.symbol} at ${entry.stop_price:.2f} (at broker).",
-                True,
-                entry.order_id,
-            )
+            if target is not None and not any(
+                child.order_type == "stop"
+                and child.is_open
+                and child.status not in {"held", "suspended", "pending_cancel"}
+                and child.stop_price == level
+                and child.qty - child.filled_qty == qty
+                for child in confirmed.legs
+            ):
+                raise ReconciliationError("EX-05: OCO stop child is not confirmed active")
+            if approval is None:
+                await self._trade_notice(
+                    f"{self.environment} · Stop repaired for {self._quantity(qty)} {entry.symbol} at ${level:.2f} (at broker).",
+                    True,
+                    entry.order_id,
+                )
+            return confirmed
         except Exception as error:
             self.state.halt_for_error(error)
             await self._trade_notice(
@@ -1362,6 +1749,7 @@ class AlpacaExecutor:
     async def _ensure_stop(self, entry: ExecutionOrderRecord, qty: int) -> None:
         with DatabaseSession(self.state.engine) as session:
             proved = bindings(session)
+            level = current_stop(session, entry)
             children = tuple(
                 row
                 for row in session.scalars(
@@ -1384,10 +1772,11 @@ class AlpacaExecutor:
             (row, order)
             for row, order in opened
             if row.role in {"STOP", "REPAIR"}
+            and order.order_type == "stop"
             and order.status not in {"held", "suspended", "pending_cancel"}
         ]
         covered = sum(order.qty - order.filled_qty for _, order in active)
-        if covered == qty and all(order.stop_price == entry.stop_price for _, order in active):
+        if covered == qty and all(order.stop_price == level for _, order in active):
             return
         # Clear known old sell reservations, including inactive bracket legs,
         # before one exact repair. Canceling a group leg may cancel its sibling.
@@ -1406,6 +1795,7 @@ class AlpacaExecutor:
     async def _fresh_exit_inputs(self, entry: ExecutionOrderRecord) -> FreshInputs:
         async with asyncio.timeout(30):
             inputs = FreshInputs.model_validate(await self.source.refresh(entry.symbol))
+            self._arrival_quotes[entry.symbol] = inputs.market
         now = ensure_utc(self.state.clock.now())
         if (
             inputs.portfolio.account_id != self.modes.account_id
@@ -1421,7 +1811,9 @@ class AlpacaExecutor:
             )
         return inputs
 
-    async def _cancel_sells(self, entry: ExecutionOrderRecord) -> None:
+    async def _cancel_sells(
+        self, entry: ExecutionOrderRecord, *, deadline_seconds: int = 30
+    ) -> None:
         with DatabaseSession(self.state.engine) as session:
             proved = bindings(session)
             rows = tuple(
@@ -1436,7 +1828,7 @@ class AlpacaExecutor:
         for row in rows:
             current = await self._read_bound(row)
             if current is not None and current.is_open:
-                await self._cancel_confirmed(row, current)
+                await self._cancel_confirmed(row, current, deadline_seconds=deadline_seconds)
             elif current is None and not self._confirmed_absence(row):
                 raise ReconciliationError(
                     "An unknown sell outcome prevents a conflicting stop or replacement"
@@ -1453,6 +1845,131 @@ class AlpacaExecutor:
                 if evidence.execution_order_id == instruction.id:
                     return evidence.outcome in {"NOT_SENT", "REJECTED"}
         return False
+
+    def _held_entry(self, entry: ExecutionOrderRecord) -> HeldEntry:
+        with DatabaseSession(self.state.engine) as session:
+            original = session.get(Order, entry.order_id)
+            approval = (
+                None
+                if original is None
+                else approval_evidence(session, original.proposal_id, entry.seq)
+            )
+            fills = tuple(
+                session.scalars(
+                    select(ExecutionFillRecord)
+                    .where(ExecutionFillRecord.execution_order_id == entry.id)
+                    .order_by(ExecutionFillRecord.filled_at)
+                    .limit(100001)
+                )
+            )
+        if (
+            approval is None
+            or not fills
+            or len(fills) > 100000
+            or entry.stop_price is None
+            or entry.limit_price is None
+        ):
+            raise ReconciliationError(
+                "EX: held entry lacks its original approval or captured fills"
+            )
+        with localcontext() as precision:
+            precision.prec = 80
+            cost = sum((row.price * row.qty for row in fills), Decimal(0))
+        return HeldEntry(
+            entry_id=entry.id,
+            account_id=entry.account_id,
+            environment=self.modes.environment,
+            symbol=entry.symbol,
+            first_fill=fills[0].filled_at,
+            filled_qty=sum(row.qty for row in fills),
+            entry_cost=cost,
+            entry_limit=entry.limit_price,
+            initial_stop=entry.stop_price,
+            variant=approval.exit_variant,
+            hold_sessions=approval.hold_sessions,
+        )
+
+    def _record_held_quote(self, held: HeldEntry, inputs: FreshInputs) -> None:
+        if inputs.market.last_price_ts < held.first_fill:
+            return
+        observed = HeldQuoteObservation(
+            entry_id=held.entry_id,
+            account_id=held.account_id,
+            environment=held.environment,
+            symbol=held.symbol,
+            price=inputs.market.last_price,
+            trade_at=inputs.market.last_price_ts,
+            known_at=self.state.clock.now(),
+        )
+        payload = observed.model_dump(mode="json")
+        with DatabaseSession(self.state.engine) as session:
+            latest = session.scalar(
+                select(SecurityEvent)
+                .where(
+                    SecurityEvent.kind == "HELD_QUOTE_OBSERVED",
+                    SecurityEvent.detail["entry_id"].as_string() == str(held.entry_id),
+                )
+                .order_by(SecurityEvent.seq.desc())
+                .limit(1)
+            )
+        if latest is not None:
+            prior = HeldQuoteObservation.recorded(latest.detail)
+            if (prior.trade_at, prior.price) == (observed.trade_at, observed.price):
+                return
+        self.state.ledger.append(SecurityEvent, kind="HELD_QUOTE_OBSERVED", detail=payload)
+        from backend.evaluation.tca_store import record_arrival
+
+        with DatabaseSession(self.state.engine) as session:
+            active = bindings(session)
+            protections = tuple(
+                session.scalars(
+                    select(ExecutionOrderRecord)
+                    .where(
+                        ExecutionOrderRecord.parent_execution_id == held.entry_id,
+                        ExecutionOrderRecord.order_type == "STOP",
+                    )
+                    .limit(1001)
+                )
+            )
+            if len(protections) > 1000:
+                raise DataIntegrityError("XA-01: stop quote inventory exceeds its bound")
+        for instruction in protections:
+            proved = active.get(instruction.id)
+            if (
+                proved is not None
+                and proved.is_open
+                and proved.status not in {"held", "suspended", "pending_cancel"}
+            ):
+                record_arrival(
+                    self.state.ledger, instruction, inputs.market, self.settings.stale_quote_seconds
+                )
+
+    async def _held_observation(
+        self, entry: ExecutionOrderRecord, inputs: FreshInputs
+    ) -> HeldExitObservation:
+        held = self._held_entry(entry)
+        self._record_held_quote(held, inputs)
+        hook = self.held_exit_observation
+        if hook is None:
+            raise DataIntegrityError("EX: completed held-exit observation unavailable")
+        async with asyncio.timeout(30):
+            observation = HeldExitObservation.model_validate(await hook(held, inputs))
+        if (
+            observation.entry != held
+            or observation.known_at
+            < self.calendar.session_close(observation.session)
+            + timedelta(minutes=self.config.schedule.daily_scan_delay_minutes)
+            or observation.known_at > self.state.clock.now()
+            or observation.session
+            != self.calendar.last_completed_session(
+                self.state.clock.now()
+                - timedelta(minutes=self.config.schedule.daily_scan_delay_minutes)
+            )
+        ):
+            raise DataIntegrityError(
+                "EX: held-exit evidence has another entry, future or stale session"
+            )
+        return observation
 
     async def _exit_step(self, entry: ExecutionOrderRecord, qty: int) -> bool:
         """AX-29/30: one initial DAY limit, at most three fixed reprices.
@@ -1487,9 +2004,24 @@ class AlpacaExecutor:
             inputs = await self._fresh_exit_inputs(entry)
             if first_fill is None:
                 raise ReconciliationError("Exit has no captured entry fill")
+            held_policy = self._held_entry(entry)
+            values = self.config.model_dump(mode="python")
+            values["evaluation"]["max_hold_sessions"] = held_policy.hold_sessions
+            entry_policy = YamlConfig.model_validate(values)
             reason = automatic_exit_reason(
-                self.settings, self.config, self.calendar, first_fill, inputs.market, now
+                self.settings, entry_policy, self.calendar, first_fill, inputs.market, now
             )
+            if reason is None and held_policy.variant == "TRAIL_EMA20":
+                observation = await self._held_observation(entry, inputs)
+                if observation.ema_signal and now >= self.calendar.session_open(
+                    self.calendar.add_sessions(observation.session, 1)
+                ):
+                    self.state.ledger.append(
+                        SecurityEvent,
+                        kind="HELD_EXIT_SIGNAL",
+                        detail=observation.model_dump(mode="json"),
+                    )
+                    reason = "EMA20"
             if reason is None or (
                 cycle is not None
                 and cycle.state == "FAILED"
@@ -1686,6 +2218,11 @@ class AlpacaExecutor:
                 continue
             broker = await self._read_bound(instruction)
             if broker is None:
+                if instruction.role != "ENTRY" and self._confirmed_absence(instruction):
+                    with DatabaseSession(self.state.engine) as session:
+                        if filled_quantity(session, instruction.id) != 0:
+                            raise ReconciliationError("Absent sell intent has captured fills")
+                    continue
                 with DatabaseSession(self.state.engine) as session:
                     latest = session.scalar(
                         select(OrderEvent)
@@ -1720,6 +2257,16 @@ class AlpacaExecutor:
             with DatabaseSession(self.state.engine) as session:
                 if broker.filled_qty != filled_quantity(session, instruction.id):
                     raise ReconciliationError("Broker order fills differ from captured activities")
+        self.state.ledger.append(
+            SecurityEvent,
+            kind="AUTO_RECONCILED",
+            detail={
+                "account_id": self.modes.account_id,
+                "environment": self.environment,
+                "config_hash": self.settings.config_hash,
+                "yaml_hash": self.config.config_hash,
+            },
+        )
         return held
 
     async def _recover_verified_protection(self, *, protection_only: bool = False) -> None:
@@ -1879,6 +2426,7 @@ class AlpacaExecutor:
                             held_quantity(session, entry.id),
                             unit_cost=average_cost,
                             exit_reason=None if cycle is None else cycle.reason,
+                            protective_level=current_stop(session, entry),
                         ),
                     )
                 )
@@ -2046,10 +2594,306 @@ class AlpacaExecutor:
         # Confirm or repair stops before optional fresh exit analysis. Missing
         # quotes or expired entry prerequisites must never suppress protection.
         if qty and not active:
+            await self._resume_stop_moves(entry, qty)
             await self._ensure_stop(entry, qty)
         exiting = await self._exit_step(entry, qty)
         if qty and active and not exiting:
             await self._ensure_stop(entry, qty)
+        if qty and not exiting:
+            await self._raise_step(entry, qty)
+
+    def _stop_moved(
+        self,
+        plan: StopRaiseApproval,
+        status: Literal["APPLIED", "REPAIRED", "FAILED", "CANCEL_UNCONFIRMED"],
+        level: Decimal | None,
+        *,
+        started_ns: int | None = None,
+    ) -> None:
+        now = ensure_utc(self.state.clock.now())
+        elapsed = now - plan.checked_at
+        clock_ms = (elapsed.days * 86400 + elapsed.seconds) * 1000 + elapsed.microseconds // 1000
+        physical_ms = 0 if started_ns is None else (monotonic_ns() - started_ns) // 1000000
+        movement = StopMoved(
+            approval=plan,
+            status=status,
+            confirmed_stop=level,
+            window_ms=max(clock_ms, physical_ms),
+            completed_at=now,
+        )
+        self.state.ledger.append(
+            SecurityEvent, kind="STOP_MOVED", detail=movement.model_dump(mode="json")
+        )
+        if movement.window_ms > 30000:
+            self.state.ledger.append(
+                SecurityEvent,
+                kind="STOP_WINDOW_EXCEEDED",
+                detail={
+                    "raise_id": str(plan.raise_id),
+                    "account_id": plan.account_id,
+                    "environment": plan.environment,
+                    "window_ms": movement.window_ms,
+                },
+            )
+
+    async def _raise_repair(self, entry: ExecutionOrderRecord, plan: StopRaiseApproval) -> Decimal:
+        """Repair only after every conflicting sell has a confirmed terminal result."""
+        if self.worker.has_pending_attempts:
+            raise ReconciliationError(
+                "EX-05: unresolved physical attempt forbids a conflicting repair"
+            )
+        with DatabaseSession(self.state.engine) as session:
+            children = tuple(
+                session.scalars(
+                    select(ExecutionOrderRecord).where(
+                        ExecutionOrderRecord.parent_execution_id == entry.id
+                    )
+                )
+            )
+        confirmed_stops = []
+        for child in children:
+            broker = await self._read_bound(child)
+            if broker is None and not self._confirmed_absence(child):
+                raise ReconciliationError("EX-05: unknown sell outcome forbids overlapping repair")
+            if (
+                broker is not None
+                and broker.is_open
+                and broker.order_type == "stop"
+                and broker.status not in {"held", "suspended", "pending_cancel"}
+            ):
+                confirmed_stops.append(broker)
+        if (
+            len(confirmed_stops) == 1
+            and confirmed_stops[0].qty - confirmed_stops[0].filled_qty == plan.qty
+            and confirmed_stops[0].stop_price in {plan.old_stop, plan.new_stop}
+        ):
+            return confirmed_stops[0].stop_price
+        await self._cancel_sells(entry, deadline_seconds=10)
+        level = plan.old_stop
+        try:
+            inputs = await self._fresh_exit_inputs(entry)
+            if plan.new_stop < inputs.market.last_price:
+                level = plan.new_stop
+        except ExecutionDisabledError:
+            # Protect at the proved old level when a fresh quote is unavailable.
+            pass
+        identity = "vws-m-" + plan.raise_id.hex + "-r"
+        with DatabaseSession(self.state.engine) as session:
+            previous = session.scalar(
+                select(ExecutionOrderRecord).where(ExecutionOrderRecord.client_order_id == identity)
+            )
+        if previous is not None:
+            confirmed = await self._read_bound(previous)
+            if confirmed is None or not confirmed.is_open or confirmed.stop_price != level:
+                raise ReconciliationError("EX-05: durable repair cannot be repeated")
+        else:
+            confirmed = await self._repair_stop(
+                entry, plan.qty, approval=plan, repair=True, repair_level=level
+            )
+        if confirmed.status in {"held", "suspended", "pending_cancel"}:
+            raise ReconciliationError("EX-05: repair is not confirmed active")
+        return level
+
+    async def _resume_stop_moves(self, entry: ExecutionOrderRecord, qty: int) -> None:
+        with DatabaseSession(self.state.engine) as session:
+            approvals = stop_approvals(session, entry)
+            completed = {row.approval.raise_id for row in moved_stops(session, entry)}
+        for plan in approvals:
+            if plan.raise_id in completed:
+                continue
+            if plan.qty != qty:
+                raise ReconciliationError("EX-05: unfinished stop raise has changed held shares")
+            with DatabaseSession(self.state.engine) as session:
+                instruction = session.scalar(
+                    select(ExecutionOrderRecord).where(
+                        ExecutionOrderRecord.client_order_id == "vws-m-" + plan.raise_id.hex
+                    )
+                )
+            if instruction is not None:
+                confirmed = await self._read_bound(instruction)
+                if (
+                    confirmed is not None
+                    and confirmed.is_open
+                    and confirmed.status not in {"held", "suspended", "pending_cancel"}
+                    and (
+                        confirmed.stop_price == plan.new_stop
+                        or any(
+                            child.order_type == "stop"
+                            and child.is_open
+                            and child.status not in {"held", "suspended", "pending_cancel"}
+                            and child.stop_price == plan.new_stop
+                            and child.qty - child.filled_qty == plan.qty
+                            for child in confirmed.legs
+                        )
+                    )
+                ):
+                    self._stop_moved(plan, "APPLIED", plan.new_stop)
+                    continue
+            try:
+                level = await self._raise_repair(entry, plan)
+                self._stop_moved(plan, "REPAIRED", level)
+            except Exception:
+                self._stop_moved(plan, "FAILED", None)
+                raise
+            self.state.escalate(
+                SystemState.HALTED, "EX-05 interrupted stop raise repaired; audited reset required"
+            )
+
+    def _split_profit_taken(self, entry: ExecutionOrderRecord) -> bool:
+        if not entry.client_order_id.endswith("-b"):
+            return False
+        with DatabaseSession(self.state.engine) as session:
+            sibling = session.scalar(
+                select(ExecutionOrderRecord).where(
+                    ExecutionOrderRecord.order_id == entry.order_id,
+                    ExecutionOrderRecord.client_order_id == entry.client_order_id[:-1] + "a",
+                    ExecutionOrderRecord.role == "ENTRY",
+                )
+            )
+            if sibling is None or filled_quantity(session, sibling.id) != sibling.qty:
+                return False
+            targets = tuple(
+                session.scalars(
+                    select(ExecutionOrderRecord).where(
+                        ExecutionOrderRecord.parent_execution_id == sibling.id,
+                        ExecutionOrderRecord.role == "TARGET",
+                    )
+                )
+            )
+            return sum(filled_quantity(session, row.id) for row in targets) == sibling.qty
+
+    async def _raise_step(self, entry: ExecutionOrderRecord, qty: int) -> None:
+        held = self._held_entry(entry)
+        if held.variant != "SPLIT_1R_TRAIL" or not self._split_profit_taken(entry):
+            return
+        now = ensure_utc(self.state.clock.now())
+        today = now.astimezone(ZoneInfo("America/New_York")).date()
+        if not self.calendar.is_open(now) or not (
+            self.calendar.session_open(today) + timedelta(minutes=30)
+            <= now
+            < self.calendar.session_close(today) - timedelta(minutes=30)
+        ):
+            return
+        with DatabaseSession(self.state.engine) as session:
+            prior = stop_approvals(session, entry)
+            level = current_stop(session, entry)
+        preceding = self.calendar.previous_sessions(today, 1)[0]
+        if any(row.session == preceding for row in prior):
+            return
+        if self.modes.effective == "MANUAL":
+            with DatabaseSession(self.state.engine) as session:
+                if (
+                    session.scalar(
+                        select(SecurityEvent).where(
+                            SecurityEvent.kind == "STOP_RAISE_SUGGESTED",
+                            SecurityEvent.detail["entry_id"].as_string() == str(entry.id),
+                            SecurityEvent.detail["session"].as_string() == preceding.isoformat(),
+                        )
+                    )
+                    is not None
+                ):
+                    return
+        inputs = await self._fresh_exit_inputs(entry)
+        observed = await self._held_observation(entry, inputs)
+        plan = stop_raise_plan(
+            held,
+            observed,
+            self.calendar,
+            now,
+            raise_id=uuid4(),
+            qty=qty,
+            old_stop=level,
+            last_trade=inputs.market.last_price,
+            quote_at=inputs.market.last_price_ts,
+            stale_quote_seconds=self.settings.stale_quote_seconds,
+            trail_atr_mult=self.config.ex.trail_atr_mult,
+            config_hash=self.settings.config_hash,
+            yaml_hash=self.config.config_hash,
+        )
+        if plan is None:
+            return
+        if self.modes.effective == "MANUAL":
+            self.state.ledger.append(
+                SecurityEvent, kind="STOP_RAISE_SUGGESTED", detail=plan.model_dump(mode="json")
+            )
+            await self._trade_notice(
+                f"{self.environment} · {entry.symbol}: Raise stop to ${plan.new_stop:.2f}. Manual suggestion for {self._quantity(qty)} held shares.",
+                False,
+                entry.order_id,
+            )
+            return
+        if self.environment == "LIVE":
+            self._assert_live_raises()
+            if self.entry_variant_allowed is None or self.entry_variant_allowed() is not True:
+                raise ExecutionDisabledError(
+                    "EX-06: live stop raises require current WORKING evidence"
+                )
+        await self._verify_account()
+        broker_qty = (await self._positions()).get(entry.symbol, 0)
+        with DatabaseSession(self.state.engine) as session:
+            other = sum(
+                held_quantity(session, row.id)
+                for row in session.scalars(
+                    select(ExecutionOrderRecord).where(
+                        ExecutionOrderRecord.role == "ENTRY",
+                        ExecutionOrderRecord.symbol == entry.symbol,
+                        ExecutionOrderRecord.id != entry.id,
+                    )
+                )
+            )
+        if broker_qty - other != qty:
+            raise ReconciliationError(
+                "EX-05: allocated broker quantity differs from managed held shares"
+            )
+        self.state.ledger.append(
+            SecurityEvent, kind="STOP_RAISE_APPROVAL", detail=plan.model_dump(mode="json")
+        )
+        started = monotonic_ns()
+        try:
+            async with asyncio.timeout(10):
+                await self._cancel_sells(entry, deadline_seconds=10)
+        except Exception as error:
+            self._stop_moved(plan, "CANCEL_UNCONFIRMED", None, started_ns=started)
+            self.state.halt_for_error(error)
+            await self._trade_notice(
+                f"{self.environment} · HALTED: {entry.symbol} stop cancellation unconfirmed; inspect broker protection urgently.",
+                True,
+                entry.order_id,
+            )
+            raise ReconciliationError(
+                "EX-05: cancellation unconfirmed; no conflicting sell"
+            ) from None
+        try:
+            await self._repair_stop(entry, qty, approval=plan)
+            self._stop_moved(plan, "APPLIED", plan.new_stop, started_ns=started)
+            await self._trade_notice(
+                f"{self.environment} · Raised {entry.symbol} stop to ${plan.new_stop:.2f} (at broker).",
+                False,
+                entry.order_id,
+            )
+        except Exception as error:
+            try:
+                repaired = await self._raise_repair(entry, plan)
+                self._stop_moved(plan, "REPAIRED", repaired, started_ns=started)
+            except Exception:
+                self._stop_moved(plan, "FAILED", None, started_ns=started)
+                self.state.halt_for_error(error)
+                await self._trade_notice(
+                    f"{self.environment} · HALTED: {entry.symbol} raised stop and repair unconfirmed; inspect broker protection urgently.",
+                    True,
+                    entry.order_id,
+                )
+                raise ReconciliationError(
+                    "EX-05: raise and repair could not be confirmed"
+                ) from None
+            self.state.escalate(
+                SystemState.HALTED, "EX-05 failed stop raise repaired; audited reset required"
+            )
+            await self._trade_notice(
+                f"{self.environment} · HALTED: {entry.symbol} stop raise failed; protection restored at ${repaired:.2f} (at broker).",
+                True,
+                entry.order_id,
+            )
 
     async def close(self) -> None:
         await self.worker.aclose()

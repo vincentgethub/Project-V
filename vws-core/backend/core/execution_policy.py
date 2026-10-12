@@ -32,9 +32,12 @@ ALLOWED_EXECUTOR_NAMES: Final[frozenset[str]] = frozenset(
         "StopLossRequest",
         "submit_order",
         "cancel_order_by_id",
+        "OTO",
+        "OCO",
     }
 )
 ORDER_HTTP_PATH: Final[str] = "/v2/orders"
+ISOLATED_ORDER_CLASSES: Final[frozenset[str]] = frozenset({"OTO", "OCO"})
 ORDER_HTTP_FACTORY_NAMES: Final[frozenset[str]] = frozenset({"make_order_session", "OrderSession"})
 
 BANNED_EXECUTION_METHODS: Final[frozenset[str]] = frozenset(

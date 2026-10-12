@@ -15,10 +15,12 @@ from backend.core.config import Settings
 from backend.core.database import (
     Alert,
     AlertEvent,
+    DataSnapshot,
     ExecutionOrderRecord,
     Order,
     ResearchReport,
     RiskDecision,
+    SecurityEvent,
     Signal,
     transaction,
 )
@@ -27,12 +29,15 @@ from backend.core.ledger import Ledger
 from backend.data.data_layer import _provider_money
 from backend.data.market_calendar import MarketCalendar
 from backend.domain.models import FrozenModel, SetupCandidate
+from backend.evaluation.filter_shadows import FilterShadow
+from backend.evaluation.filter_shadows import filters as reduction_filters
 from backend.evaluation.outcomes import Disposition, OutcomeSetup
 from backend.evaluation.provenance import EvaluationProvenance
 from backend.evaluation.weekly import ReportContext
 
 NY = ZoneInfo("America/New_York")
 SHADOW_NAMESPACE = UUID("cfa2f9b5-d014-49bd-88e5-d03a5857d21f")
+MAX_TRACKED_SETUPS = 100000
 
 
 class TrackedSetup(FrozenModel):
@@ -68,10 +73,10 @@ def collect_tracked_setups(
                         Order.source == "SIGNAL",
                     )
                     .order_by(Order.seq)
-                    .limit(100001)
+                    .limit(MAX_TRACKED_SETUPS + 1)
                 )
             )
-            if len(orders) > 100000:
+            if len(orders) > MAX_TRACKED_SETUPS:
                 raise DataIntegrityError("EV-01: tracker proposal count exceeds its bound")
             for order in orders:
                 signal = session.get(Signal, order.signal_id)
@@ -147,22 +152,29 @@ def collect_tracked_setups(
                         "REVALIDATION_FAILED": "REVALIDATION_FAILED",
                     }
                     status = mapping[event.state]
-                    automatic = session.scalar(
-                        select(ExecutionOrderRecord).where(
-                            ExecutionOrderRecord.order_id == order.id,
-                            ExecutionOrderRecord.role == "ENTRY",
+                    automatic = tuple(
+                        session.scalars(
+                            select(ExecutionOrderRecord)
+                            .where(
+                                ExecutionOrderRecord.order_id == order.id,
+                                ExecutionOrderRecord.role == "ENTRY",
+                            )
+                            .limit(3)
                         )
                     )
-                    if automatic is not None:
-                        if (
-                            automatic.account_id != scope.account_id
-                            or automatic.environment != scope.cohort
-                            or automatic.config_hash != provenance.settings_hash
-                            or automatic.created_at > now
-                            or type(automatic.qty) is not int
-                            or not 1 <= automatic.qty <= order.qty
-                            or (automatic.limit_price, automatic.stop_price, automatic.target_price)
-                            != (order.limit_price, order.stop_price, order.target_price)
+                    if automatic:
+                        from backend.execution.storage import entry_quantity
+
+                        if len(automatic) > 2 or any(
+                            row.account_id != scope.account_id
+                            or row.environment != scope.cohort
+                            or row.config_hash != provenance.settings_hash
+                            or row.created_at > now
+                            or type(row.qty) is not int
+                            or not 1 <= row.qty <= order.qty
+                            or (row.limit_price, row.stop_price)
+                            != (order.limit_price, order.stop_price)
+                            for row in automatic
                         ):
                             raise ValueError(
                                 "auto tracker intent has unbound account, mode, quantity or levels"
@@ -170,7 +182,10 @@ def collect_tracked_setups(
                         # This is approval of the hypothetical setup, never a
                         # claim that its broker order actually filled.
                         status = "APPROVED"
-                        approved_qty = automatic.qty
+                        quantity = entry_quantity(session, order.id)
+                        if quantity is None or not 1 <= quantity <= order.qty:
+                            raise ValueError("EX-01: bound aggregate entry quantity is unavailable")
+                        approved_qty = quantity
                     fact = session.scalar(
                         select(ResearchReport)
                         .where(
@@ -202,6 +217,8 @@ def collect_tracked_setups(
                         raise ValueError("CRO shadow risk evidence is unbound or future")
                     status = "CRO_VETO"
                     identity = uuid5(SHADOW_NAMESPACE, order.proposal_id.hex)
+                    if candidate.size_evidence is not None:
+                        approved_qty = candidate.size_evidence.base_qty
                 valid = provenance.expires_at.astimezone(NY).date()
                 if not calendar.is_session(valid):
                     raise ValueError("tracker validity is not an XNYS session")
@@ -225,6 +242,85 @@ def collect_tracked_setups(
                         ),
                     )
                 )
+                factors = candidate.size_evidence
+                if factors is not None and (
+                    factors.base_qty > approved_qty or status == "CRO_VETO"
+                ):
+                    filters = reduction_filters(
+                        factors, accepted_qty=0 if status == "CRO_VETO" else approved_qty
+                    )
+                    for filtered in filters:
+                        if filtered == status:
+                            continue  # The original CRO-veto cohort already records this cause.
+                        # Overlapping counterfactuals retain one immutable base.
+                        # They are hypothetical outcomes, never approvals/fills.
+                        shadow = OutcomeSetup.model_validate(
+                            {
+                                **setups[-1].setup.model_dump(),
+                                "alert_id": uuid5(
+                                    SHADOW_NAMESPACE, f"{order.proposal_id}/{filtered}"
+                                ),
+                                "disposition": filtered,
+                                "qty": factors.base_qty,
+                            }
+                        )
+                        setups.append(TrackedSetup(setup=shadow, provenance=provenance))
+            records = tuple(
+                session.scalars(
+                    select(SecurityEvent)
+                    .where(SecurityEvent.kind == "FILTER_SHADOW")
+                    .order_by(SecurityEvent.seq)
+                    .limit(MAX_TRACKED_SETUPS + 1)
+                )
+            )
+            if len(records) > MAX_TRACKED_SETUPS:
+                raise DataIntegrityError("ER-04: filtered setup inventory exceeds its bound")
+            for filter_event in records:
+                zero_shadow = FilterShadow.recorded(filter_event.detail)
+                if (
+                    zero_shadow.scope.account_id != scope.account_id
+                    or zero_shadow.scope.environment != scope.cohort
+                ):
+                    continue
+                candidate, provenance = zero_shadow.candidate, zero_shadow.provenance
+                day = candidate.as_of.astimezone(NY).date()
+                if not scope.start <= day <= scope.end:
+                    continue
+                source = session.get(DataSnapshot, zero_shadow.data_snapshot_id)
+                if (
+                    source is None
+                    or source.symbol != candidate.symbol
+                    or source.seq >= filter_event.seq
+                    or source.fetched_at > candidate.as_of
+                    or candidate.as_of > filter_event.created_at
+                    or filter_event.created_at > now
+                    or provenance.settings_hash != policy.config_hash
+                    or provenance.yaml_hash != scope.config_sha256
+                ):
+                    raise DataIntegrityError("ER-04: filter source/configuration is unbound")
+                for name in zero_shadow.cohorts:
+                    setups.append(
+                        TrackedSetup(
+                            provenance=provenance,
+                            setup=OutcomeSetup(
+                                alert_id=uuid5(SHADOW_NAMESPACE, f"{zero_shadow.identity}/{name}"),
+                                symbol=candidate.symbol,
+                                playbook=candidate.playbook,
+                                cohort=scope.cohort,
+                                disposition=name,
+                                fundamentals_status=FrameworkStatus.INCOMPLETE,
+                                score=candidate.score,
+                                qty=zero_shadow.factors.base_qty,
+                                limit=candidate.entry_price,
+                                stop=candidate.stop_price,
+                                target=candidate.target_price,
+                                decision_session=day,
+                                valid_until_session=provenance.expires_at.astimezone(NY).date(),
+                            ),
+                        )
+                    )
+        if len(setups) > MAX_TRACKED_SETUPS:
+            raise DataIntegrityError("ER-04: alert plus counterfactual count exceeds its bound")
         return tuple(
             sorted(
                 setups,

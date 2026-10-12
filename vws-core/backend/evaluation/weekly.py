@@ -18,12 +18,15 @@ from backend.data.history import Digest, FrozenHistory, canonical_bytes, validat
 from backend.data.market_calendar import MarketCalendar
 from backend.domain.models import FrozenModel, Identifier, Money, Playbook, SessionDate
 from backend.domain.tax_profile import TAX_ESTIMATE_NOTICE, TaxProfile
+from backend.evaluation.calibrated_costs import CostCalibration
 from backend.evaluation.costs import Exact, FeeSchedule, Note, after_tax_year, cost_policy_sha256
 from backend.evaluation.dividends import NOTICE as DISTRIBUTION_NOTICE
 from backend.evaluation.edge import EdgeCard, EdgeKey, summarize_edge
 from backend.evaluation.equity import _selected, build_equity_curve
+from backend.evaluation.fill_quality import DriftCheck, QualityBucket
 from backend.evaluation.outcomes import Cohort, Outcome
 from backend.evaluation.security_summary import WeeklySecurity, render_security
+from backend.evaluation.universe import PIT_NOTICE
 from backend.indicators.statistics import BootstrapEstimate
 from backend.ops.anchors import controlled_path
 
@@ -57,6 +60,7 @@ class ReportContext(FrozenModel):
     config_sha256: Digest
     initial_equity: Money | None = Field(default=None, gt=0)
     synthetic: bool = Field(default=False, strict=True)
+    universe_sha256: Digest | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def ordered(self) -> Self:
@@ -98,6 +102,13 @@ class WeeklyReport(FrozenModel):
     filters: tuple[FilterComparison, ...] = Field(max_length=1024)
     notes: tuple[Note, ...] = Field(min_length=4, max_length=30)
     security: WeeklySecurity | None = None
+    fill_quality: tuple[QualityBucket, ...] = Field(
+        default=(), max_length=36, exclude_if=lambda v: not v
+    )
+    calibration: CostCalibration = Field(
+        default_factory=CostCalibration, exclude_if=lambda v: v.scope is None
+    )
+    drift: tuple[DriftCheck, ...] = Field(default=(), max_length=4, exclude_if=lambda v: not v)
 
     @classmethod
     def from_recorded(cls, payload: dict[str, Any]) -> WeeklyReport:
@@ -107,6 +118,8 @@ class WeeklyReport(FrozenModel):
             for name in ("start", "end"):
                 context[name] = date.fromisoformat(context[name])
             values["context"] = context
+            if "calibration" in values:
+                values["calibration"] = CostCalibration.recorded(values["calibration"])
             if values.get("security") is not None:
                 security = dict(values["security"])
                 for name in ("start", "as_of"):
@@ -140,6 +153,31 @@ class WeeklyReport(FrozenModel):
 
     @model_validator(mode="after")
     def bound_cards(self) -> Self:
+        if self.drift and (
+            self.context.cohort != "PAPER"
+            or any(row.scope.account_id != self.context.account_id for row in self.drift)
+            or len({row.playbook for row in self.drift}) != len(self.drift)
+        ):
+            raise ValueError(
+                "XA-02: paper drift must bind to unique playbooks and one paper account"
+            )
+        if (
+            self.calibration.scope is not None
+            and self.context.cohort in {"PAPER", "LIVE"}
+            and (
+                self.calibration.scope.account_id != self.context.account_id
+                or self.calibration.scope.environment != self.context.cohort
+            )
+        ):
+            raise ValueError(
+                "XA-01: report calibration cannot mix physical accounts or environments"
+            )
+        if any(
+            row.scope.account_id != self.context.account_id
+            or row.scope.environment != self.context.cohort
+            for row in self.fill_quality
+        ):
+            raise ValueError("XA-01: monthly quality table cannot mix physical account cohorts")
         keys = tuple(_key(card.key) for card in self.cards)
         if keys != tuple(sorted(set(keys))) or len(self.equity_notes) != len(self.cards):
             raise ValueError("ER: report cards must be unique, ordered and have equity notes")
@@ -162,7 +200,11 @@ class WeeklyReport(FrozenModel):
             or TAX_ESTIMATE_NOTICE not in self.notes
         ):
             raise ValueError("EV-02: fixed result, source, dividend and tax disclosures required")
-        if self.context.cohort.startswith("REPLAY") and SURVIVORSHIP_NOTICE not in self.notes:
+        if (
+            self.context.cohort.startswith("REPLAY")
+            and (PIT_NOTICE if self.context.universe_sha256 is not None else SURVIVORSHIP_NOTICE)
+            not in self.notes
+        ):
             raise ValueError("EV-03: replay reports require the survivorship warning")
         if (SYNTHETIC_NOTICE in self.notes) != self.context.synthetic:
             raise ValueError("EV-03: synthetic evidence must keep its source label")
@@ -217,6 +259,7 @@ def build_weekly_report(
     tax_profile: TaxProfile,
     *,
     security: WeeklySecurity | None = None,
+    calibration: CostCalibration | None = None,
 ) -> WeeklyReport:
     """One card per playbook/variant/status, plus explicit fundamental subgroups.
 
@@ -327,7 +370,9 @@ def build_weekly_report(
             if bound.start in spy and bound.end in spy:
                 with localcontext() as precision:
                     precision.prec = 256
-                    spy_return = (spy[bound.end] / spy[bound.start] - 1) * 100
+                    spy_return = ((spy[bound.end] / spy[bound.start] - 1) * 100).quantize(
+                        Decimal("0.000001")
+                    )
         notes = [
             DISCLAIMER,
             SOURCE_NOTICE,
@@ -337,11 +382,14 @@ def build_weekly_report(
             "Fundamental subgroups overlap the overall rows; never sum the two views.",
             "Commission plan unverified; modeled fees round each component up per trade.",
             "No spread measurement uses the liquidity floor; fees before the first dated row use its rates.",
+            "SIP/IEX cross-check uses the same vendor; IEX is partial volume, not independent confirmation.",
         ]
         if bound.end > fees.review_due:
             notes.append("Fee schedule review overdue; rates remain estimates")
         if bound.cohort.startswith("REPLAY"):
-            notes.append(SURVIVORSHIP_NOTICE)
+            notes.append(PIT_NOTICE if bound.universe_sha256 is not None else SURVIVORSHIP_NOTICE)
+            if bound.universe_sha256 is not None:
+                notes.append("Historical membership SHA256: " + bound.universe_sha256)
         if bound.synthetic:
             notes.append(SYNTHETIC_NOTICE)
         return WeeklyReport(
@@ -350,6 +398,7 @@ def build_weekly_report(
             fee_schedule_sha256=fees.sha256,
             cost_policy_sha256=cost_policy_sha256(costs),
             tax_profile=taxes,
+            calibration=calibration or CostCalibration(),
             cards=tuple(cards),
             equity_notes=tuple(equity_notes),
             spy_buy_hold_pct=spy_return,
@@ -433,6 +482,23 @@ def render_weekly(report: WeeklyReport, *, mask_amounts: bool = False) -> str:
             f"Rough ST year {estimate.year} · {estimate.key.playbook.value}/{estimate.key.variant}/{estimate.key.disposition}: {amount}"
         )
     lines.extend(bound.notes[1:])
+    for row in bound.fill_quality:
+        lines.append(
+            f"Fill quality {row.month} {row.bucket}: n={row.n}; UNAVAILABLE={row.unavailable}; arrival p50={_number(row.p50_bps)} bps; p90={_number(row.p90_bps)} bps; stop p90={_number(row.stop_p90_bps)} bps; cost floor={_number(row.calibrated_half_spread_bps)} bps"
+        )
+    if bound.calibration.scope is not None:
+        lines.append("Actual fill cost calibration SHA-256: " + bound.calibration.sha256)
+    for drift_check in bound.drift:
+        label = (
+            "EDGE DRIFT"
+            if drift_check.flag is True
+            else "clear"
+            if drift_check.flag is False
+            else "UNVERIFIED"
+        )
+        lines.append(
+            f"{drift_check.playbook.value}: {label} · {len(drift_check.paper)} actual paper trades vs {len(drift_check.oos)} current registered OOS trades. No settings change automatically."
+        )
     lines.extend(render_security(bound.security, masked=mask_amounts))
     return "\n".join(lines)
 
@@ -573,6 +639,29 @@ def report_csv(report: WeeklyReport) -> bytes:
                 "n": comparison.filtered_n,
                 "expectancy_r": comparison.filtered_expectancy_r,
                 "notes": f"Taken n={comparison.taken_n}; expectancy_R={comparison.taken_expectancy_r}",
+            }
+        )
+    for quality in bound.fill_quality:
+        row(
+            {
+                "record_type": "fill_quality",
+                "variant": quality.bucket,
+                "n": quality.n,
+                "notes": (
+                    f"month={quality.month}; unavailable={quality.unavailable}; "
+                    f"p50_bps={quality.p50_bps}; p90_bps={quality.p90_bps}; "
+                    f"stop_p90_bps={quality.stop_p90_bps}; "
+                    f"calibrated_half_spread_bps={quality.calibrated_half_spread_bps}"
+                ),
+            }
+        )
+    for drift in bound.drift:
+        row(
+            {
+                "record_type": "edge_drift",
+                "playbook": drift.playbook.value,
+                "n": len(drift.paper),
+                "notes": f"flag={drift.flag}; current OOS n={len(drift.oos)}; physical paper only; no automatic changes",
             }
         )
     return output.getvalue().encode("utf-8")

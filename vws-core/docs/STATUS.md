@@ -15,6 +15,174 @@ docs/FINAL_REPORT.md with per-stage gates, the final cumulative offline/replay
 result, every unverified prerequisite, unmet spec IDs, known risks and exact
 setup/doctor/paper-start commands; then stop. No AUTO_LIVE or live trading.
 
+## Stage V GREEN OFFLINE - October 12, 2026
+
+K is committed locally as `381f9a4`. V's final offline gate uses **5,179
+distinct safety passes** and the explicitly documented full-plus-binding
+coverage union below: **100%, 7,589 statements / 2,584 branches**. The final
+fixed 20-symbol/seven-year replay passed **one case, four deselected, one warning,
+196.99s overall; 168.317s timed**, 443 decisions. Proof SHA256:
+`10a9dd59bbc413fe6c854ccb1a86d5aaca1d13984d6b37f0f44012222756347c`.
+The current 100-symbol warm scan passed **one case, one deselected, one warning,
+9.42s overall; 2.367455s timed**. Distinct available passes including those two
+performance cases: **5,181**. The eight-variant walk-forward speed acceptance
+is **UNVERIFIED**, with the incomplete 949.845s / 19-window measurement below;
+Amendment 05 acceptance explicitly permits that status with timings.
+The 59 skips are 57 unavailable PostgreSQL cases and two unavailable explicit
+paper integrations. Neither those checks nor actual broker stop raises, filings,
+delisted-history availability, host security, backup/drill and remote CI pass
+by inference. Ruff/format/strict types, all five hooks, the AST positive controls,
+production Bandit, pinned runtime/development audits and wheel build pass.
+MANUAL paper and ALPACA-only state remain default; live remains locked behind
+READY, five healthy feed sessions and the independent host prerequisites.
+Stage W is next. The diagnostics below are historical and superseded by this
+final gate; they are retained to explain failures, repairs and the evidence union.
+
+Initial implementation:
+Initial fixed configuration, QV registry/holdout/trial accounting, QV statistical
+functions, RS comparisons, exact reduction-only sizing and CRO-14 are implemented.
+The CRO/card/executor contracts now require fourteen rules for new entries.
+Historical thirteen-rule execution approval records remain readable for held
+exits and stop protection; new executor admissions require all fourteen.
+The updated CRO/boundary/journal regression gate passed **189 cases, one warning,
+28.61s**. Initial attempts failed on old thirteen-rule/index assumptions, then
+on the journal's thirteen-rule bound; those are corrected. Exit/earnings runtime
+variants, scoped fill-quality collection/calibration, readiness publication,
+historical membership and reporting are now implemented; final gates remain open. No validated
+variant or READY verdict is claimed. Defaults and live locks remain intact.
+
+Earlier V implementation and boundary diagnostics:
+
+The first full non-performance diagnostic completed with **4,880 passed, 16
+failed, 59 skipped, one deselected, two warnings, 1,912.86s**. Its legacy auto
+tracker, earnings-rule indexing, hypothetical cohort and K sizing fixtures were
+repaired and passed focused reruns; the root/project CI copies were synchronized.
+This is not a successful full-suite result. Required complete evaluation/risk
+coverage remains open. New independent query faults cover physical identity,
+missing approvals, account/policy binding, forged grades, incident inventories,
+PnL session continuity, conservative costs and fixed validation windows.
+The three new risk-overlay modules, physical trades, verdict model and universe
+parser have complete diagnostic branch coverage; this does not certify the suite.
+
+October 12 continuation: the V component diagnostic passed **435 tests, three
+deselected, one warning, 527.06s**. Reporting/grade boundaries passed **41 tests,
+one warning, 61.25s**. Exact receipt/runner boundaries passed **28 tests, one
+warning, 43.75s**. These selections overlap; do not add their counts. Further
+split-exit checks found and fixed two reporting defects: replay filter shadows
+and ledger weekly outcomes lacked the configured exit-variant label; readiness
+fallback also selected only baseline outcomes. Replay now retains the unsized
+base on a full CRO veto and replaces its provisional CRO size-cap shadow,
+avoiding duplicate causes. Approval/order quantities do not change. The complete
+replay-boundary selection passed **13 tests, one warning, 10.78s**.
+
+Production Bandit found ten assertion warnings during this continuation; all
+were repaired using existing validated preconditions, type narrowing, or explicit
+typed errors. The repeated production scan has **zero findings and zero errors**.
+Ruff lint/format and strict mypy pass **395 authored files**; GD-07 AST positive
+controls pass. Full-suite reruns remain diagnostic until run on the final frozen
+source with complete required branch coverage. A focused 201-case diagnostic had
+200 passes and a test-local import failure; its import is corrected. No complete
+full-suite PASS is claimed and V remains open; W has not started.
+
+The interrupted full diagnostic finished with **5,158 passed, one failed, 59
+skipped, three deselected, two warnings, 43,003.98s recorded wall time**. Required
+branch coverage reached **99.40%**, so this gate is RED. The recorded wall time
+includes the interrupted run; it is not a performance-budget measurement.
+PF-01 exposed a Wilder ATR half-cent discrepancy (101.135 became 101.13 in the
+pandas path, 101.14 in the reference). pandas' alpha-to-center-of-mass conversion
+changed 1/6 to 0.16666666666666663. Explicit EMA/Wilder centers preserve the
+specified coefficients; the twelve indicator cases and concrete regression
+pass. Randomized equivalence now exercises 1,000 examples; final rerun pending.
+Additional replay/report checks cover bounded overlapping zero-size shadows,
+strict queued upward stops across a split, actual remaining-share protection,
+fractional pending reservations, a pool-produced preparation, and complete
+holdout-boundary folds. Current gates remain diagnostic; no green V claim.
+
+The current evaluation selection passed **709 cases, one unavailable paper
+integration skipped, two performance cases deselected, one warning, 1,077.42s**.
+It is a component gate, not the full safety suite. Five pre-commit hooks pass;
+current runtime/development audits cover **62/141 pins**, zero known findings.
+The ATR coefficient fix also requires the explicit PF-02 cache version bump
+`pf1-v1` to `pf1-v2`; old caches are left untouched and never selected. The
+changed cache-version test, 1,000-example indicator property, and replay binding
+selection passed **31 cases, 19 deselected, one warning, 21.56s**. The running
+full diagnostic imported the preceding cache tag; this small tag/test change
+needs that separate, explicit evidence rather than a claim that its full run
+used the new tag. Required critical files have not changed during that run.
+
+The completed full non-performance run passed **5,179 tests, 59 skipped,
+three deselected, two warnings, 11,004.16s recorded wall time**. It has no test
+failures, but its original coverage gate is **RED at 99.98%**: replay.py line
+194 / branch 183→194. That binding refusal is exercised by the separately
+completed 31-case selection above. The explicit full-plus-binding evidence
+union reaches **100%: 7,589 statements / 2,584 branches, zero missing lines or
+partial branches** (`data/v-final-union-coverage.json`). Those selections
+overlap; the distinct safety count remains 5,179, not 5,210. The full run
+predates the small cache-tag/test change, as disclosed above. Its recorded
+wall time includes the interrupted interval and is not a speed measurement.
+All five final pre-commit hooks pass after using the project virtual environment
+in PATH. The initial hook launch found the Windows Python shortcut and failed;
+no hook or host security policy was disabled. The installable wheel builds
+successfully. The subsequently completed isolated replay and warm scan are
+recorded in the final gate above.
+
+| IDs | Code | Evidence / remaining work |
+| --- | --- | --- |
+| QV-01..05/07 | evaluation/registry.py, walkforward.py, validation_runner.py; vws/validation_cli.py | test_v_validation.py, test_v_connections.py, test_v_availability.py: registration, cumulative trials, folds, one-use holdout and revalidated OOS evidence. Host commands are supplied; eight-variant speed remains explicitly UNVERIFIED with measured timings. |
+| QV-02/06 | evaluation/universe.py, registry.py, ledger_source.py; vws/replay_cli.py | test_v_holdout_guard.py, test_v_causality.py, test_v_universe.py: sealed history, ordinary holdout refusal, inclusive-add/exclusive-remove membership; CSV contents bound into registration and reports. Incomplete delisted history refuses; actual provider availability UNVERIFIED. |
+| PR-01..05 / SZ-01 | risk/overlays.py, portfolio_sizing.py; agents/setup_hunter.py, swarm_runner.py; ops/k_runtime.py; notifications/callbacks.py | Recorded single-product reductions precede CRO; fresh manual approval refuses a changed quantity, fresh automatic sizing caps quantity and open risk; immutable ENTRY_SIZE_CHECK evidence. 29 affected admission/tracker tests pass, 43.83s, one warning. |
+| RS-01..05 / SZ-02 / ER-04 | risk/relative_strength.py, portfolio_sizing.py; evaluation/filter_shadows.py, ledger_inputs.py | test_v_risk.py, test_v_filter_shadows.py, test_auto_evaluation.py: exact product reductions, all-adjusted ranks, conservative missing evidence; separate overlapping unsized RS/PR/SZ/CRO cohorts including zero-size candidates. |
+| EX-01..06 | execution/alpaca_executor.py, exit_variants.py, stop_evidence.py, stop_readiness.py; evaluation/outcomes.py | test_v_exits.py, test_v_stop_raises.py, test_v_held_exits.py, test_v_stop_readiness.py: all four exits, A/B aggregate quantity, causal stop moves, cancellation ambiguity, restart and held protection. Actual paper OTO/OCO cancel integration and 30 raises UNVERIFIED. |
+| EG-01..04 | data/earnings_reports.py, frozen_filings.py; agents/earnings_gap.py; evaluation/availability.py | test_v_earnings_wiring.py, test_v_connections.py: default-off, stock-only, known report time, causal gap-period lows, paired COMPANYFACTS/SUBMISSIONS and isolated WORKING grade. Actual SEC fields UNVERIFIED. |
+| GV-01..05 | evaluation/verdict.py, verdict_source.py, physical.py; execution/live_guard.py; vws/runtime_cli.py, execution_cli.py | test_v_verdict_quality.py, test_v_verdict_source.py: every READY/STOP boundary, actual paper priority, current-policy trade binding, no synthetic top-up, missing incident telemetry UNVERIFIED, monthly/private publication, stale verdict refusal. Explicit live-host preflight computes a PAPER verdict; independent AX gates/phrase remain. |
+| XA-01/02 | evaluation/fill_quality.py, tca_store.py, calibrated_costs.py, physical.py; evaluation/publication.py | test_v_tca_capture.py, test_v_verdict_quality.py: canonical fill identity, known arrival quotes only, model-vs-arrival slippage, monthly p50/p90, monotone scoped cost context reused by replay/QV/reports; separate current-policy paper/OOS drift. |
+| DQ-02 / CM-07 | data/feed_crosscheck.py, data_layer.py; ops/desk_source.py, doctor.py | test_v_secondary_feed.py, test_v_verdict_quality.py, test_v_verdict_source.py: separate immutable IEX cache, connected third-flag SUSPECT propagation, repeated-session dedupe, exact thresholds and p90 stop warning; same-vendor disclosure. Actual feeds UNVERIFIED. |
+| PF-04/06 | vws/profile_cli.py; evaluation/replay.py, validation_runner.py | test_v_profile.py, test_replay_cli.py, test_v_performance.py: explicit offline profiling, no credentials/DB, worker-count hash equivalence. Final 20x7 replay passed in 168.317s; 100-symbol warm scan passed in 2.367455s. Eight-variant speed is explicitly UNVERIFIED after an incomplete over-budget run, never PASS. CI timings run separately without coverage overhead. |
+
+V components: 51 foundation/risk/registry cases passed (8.24s); 40 connection/
+registry cases passed (15.27s); 70 corrected runtime/replay cases passed (51.84s,
+one warning); 41 holdout/quality cases passed (5.50s). These overlap and are not
+summed into a full-suite count. The first runtime run had six failures (missing
+SPY fixtures and a repeating benchmark percentage exceeding the precision bound).
+SPY fixtures were completed and the displayed benchmark percentage now rounds to
+six decimals. Three later split fixtures also lacked SPY; the repaired split/
+holdout subset passed 11 cases (10.91s). Ruff's duplicate fixture import is fixed.
+
+The first PF-04 replay gate **failed**: one failed / four deselected, 346.85s total,
+**319.504s timed**, 443 decisions, hash
+`6da8da124a09b5011ea0c4542a81b116bc8bb605362db63e41070d268e659588`.
+Evidence: data/v-replay-perf.xml and .txt. The 180-second limit is unchanged.
+cProfile then showed 880 repeated sizing calls consuming 568.537s of its 712.270s
+instrumented replay. That diagnostic failed the timing assertion as expected;
+instrumented timing is not a replacement benchmark. Immutable market frames now
+validate complete price inputs and compute EMA/breadth/volatility once per completed
+session; RS uses its checked 127 endpoints. Fresh portfolio correlation, scores,
+ramp, events, cash, CRO and outcomes are never reused. Connected frames are replaced
+when the completed batch or policy hash changes. Date indexes are built once.
+The corrected **unprofiled replay PASSED**: one passed / four deselected,
+133.29s total; **98.925s timed**, 443 decisions, **the identical hash above**.
+Evidence: data/v-replay-perf-repair.xml/.txt. 125 affected indicator/sizing/runtime/
+causality cases passed, one warning, 68.56s (data/v-market-memo.xml).
+Typing briefly could not load a mypy DLL due to Windows Application Control;
+an ordinary retry started normally, exposed four typing issues, and the corrected
+source passed 354 authored files. No security policy or dependency was changed.
+The PF-04 host profile scan/replay commands now write parent-process top-20
+diagnostics. Their first profile/progress subset passed 18 cases (12.19s, two
+warnings); the fake test's unnecessary owner-composition import was then removed.
+The latest typing check passes 356 authored files; Ruff check/format pass.
+V is not green; full integration and new whole-stage coverage remain pending.
+The prescribed eight-variant/20-symbol/seven-year walk-forward reached its
+budget boundary with **19 windows completed in 949.845s**, no completed result:
+one xfailed, one deselected, one warning, 1,002.36s total. PF-04 speed is
+**UNVERIFIED**, as explicitly permitted by Amendment 05 acceptance, never PASS.
+The follow-up uncached two-session profile recorded 77,599,522 function calls
+in 27.631s: repeated immutable-history validation and weekly-report construction
+dominate (26.332s cumulative Pydantic validation). No parameter combinations,
+new performance dependencies or weakened boundaries were introduced. Reproduce:
+`.venv\Scripts\python.exe -m pytest -q -s -m perf --no-cov backend/tests/test_v_performance.py -k eight_explicit --basetemp data/v-perf-walkforward-temp`.
+Artifacts: data/v-perf-walkforward.log and its dedicated temporary hotspot profile.
+No real filing/account/credential/service was accessed by these offline tests.
+
 ## Stage K GREEN OFFLINE - October 9, 2026
 
 Stage I is committed locally as `3ff4ce0`. K's frozen production source passed

@@ -32,6 +32,7 @@ from backend.core.execution_policy import (
     HTTP_CLIENT_TYPES,
     HTTP_URL_PATTERN,
     INBOUND_NETWORK_CALLS,
+    ISOLATED_ORDER_CLASSES,
     MONEY_ENDPOINT_WORDS,
     MUTATING_HTTP_METHODS,
     ORDER_HTTP_FACTORY_NAMES,
@@ -73,7 +74,12 @@ def _prohibited_member(name: str) -> bool:
     normalized = re.sub(r"([a-z])([A-Z])", r"\1_\2", normalized).lower()
     words = set(normalized.split("_"))
     mutates_money = bool(words & MONEY_ENDPOINT_WORDS) and bool(words & TRANSFER_CREATION_WORDS)
-    return name in BANNED_EXECUTION_METHODS or name in BANNED_ORDER_REQUESTS or mutates_money
+    return (
+        name in BANNED_EXECUTION_METHODS
+        or name in BANNED_ORDER_REQUESTS
+        or name in ISOLATED_ORDER_CLASSES
+        or mutates_money
+    )
 
 
 def _references(node: ast.AST, aliases: dict[str, frozenset[str]]) -> frozenset[str]:

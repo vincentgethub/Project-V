@@ -87,7 +87,7 @@ class RiskBoundary:
         """R-02/R-03: an altered verdict cannot become passing audit evidence."""
         checked = Verdict.model_validate(verdict)
         identifiers = tuple(result.rule_id for result in checked.results)
-        expected = tuple(f"CRO-{number:02d}" for number in range(1, 14))
+        expected = tuple(f"CRO-{number:02d}" for number in range(1, 15))
         if (
             checked.proposal_id != proposal.proposal_id
             or checked.config_hash != self.cro.config.config_hash
@@ -112,11 +112,11 @@ class RiskBoundary:
             required = expected if proposal.intent in {Intent.ENTRY, Intent.ADD} else expected[:2]
             if identifiers != required or checked.snapshot_hash != snapshot_hash(snapshot):
                 raise DataIntegrityError("R-02: approval lacks complete bound rule evidence")
-            blocking = checked.results[:12] if len(required) == 13 else checked.results
+            blocking = tuple(row for row in checked.results if row.rule_id != "CRO-13")
             if any(not result.passed or result.severity != Severity.BLOCK for result in blocking):
                 raise DataIntegrityError("R-02: approval has altered blocking-rule evidence")
-            if len(required) == 13:
-                earnings = checked.results[-1]
+            if len(required) == 14:
+                earnings = checked.results[12]
                 if market is None or earnings != earnings_rule(
                     market, ensure_utc(self.clock.now()), self.cro.config, self.cro.calendar
                 ):

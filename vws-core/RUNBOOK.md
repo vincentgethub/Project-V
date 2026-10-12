@@ -417,3 +417,69 @@ statement or reconstructed historical month-end holdings/tax report.
 
 `python -m vws ops secrets set NAME` uses the existing audited native keyring
 rotation path and prompts without echo. Enter FRED only in `vws setup`.
+
+## Reading the edge report and the verdict
+
+Stage V remains in progress. See docs/VALIDATION.md for the registered test
+procedure and its assumptions. No actual WORKING strategy or READY verdict has
+been established. Hypothetical/past results; not indicative of future returns.
+
+Read the cohort first: physical paper fills, the hypothetical alert tracker,
+in-sample replay and out-of-sample replay are different evidence. Read the number
+of resolved trades, after-cost average R, its confidence range and drawdown
+together. UNPROVEN or INSUFFICIENT is not a positive result. WORKING needs the
+specified minimum sample, positive lower bound, profit factor and, for OOS,
+deflated Sharpe. Missing observations never count as passes.
+
+Registration requires sealed history and financial filings plus explicit starting
+cash assumptions. From vws-core, after setup and ledger verification:
+
+```powershell
+python -m vws validate register --history data/history --initial-equity 10000 --checking-balance 11500
+python -m vws validate walkforward --family CONFIDENCE --history data/history --initial-equity 10000 --checking-balance 11500 --workers 3
+```
+
+Those cash figures are hypothetical examples; supply your intended assumptions.
+Do not run a final holdout just to preview the tool. It consumes a one-use test
+after the exact host phrase. EXITS includes baseline, split-at-1R, split with an
+upward trail, EMA20 signal exit, and the fixed 10/20/30-session time stops.
+Registration hashes bind reports and prevent changing inputs during a run.
+
+For diagnostics without owner configuration:
+
+```powershell
+python -m vws profile scan --end 2026-10-02 --symbols NVDA --offline-fixtures
+python -m vws profile replay --start 2026-09-01 --end 2026-10-02 --symbols NVDA --offline-fixtures --workers 1
+```
+
+These write cProfile top-20 text and .pstats files under data/profiles. Parent
+profiles exclude worker CPU; their timings are diagnostics, not performance
+acceptance. Fake inputs cannot establish an edge. The full performance gate
+remains `python -m pytest backend/tests/test_replay_cli.py -m perf --no-cov -q -s`.
+
+READY requires every sample, drawdown, benchmark, incident, security and drill
+condition. STOP conditions take precedence. The verdict never enables a mode;
+the independent live unlock and feed-history requirements remain mandatory.
+
+`/verdict` recomputes the informational PAPER verdict in the private chat. The
+first-session monthly check waits for the completed daily-bar delay. In paper
+mode the live-only security conditions remain UNVERIFIED. The existing explicit
+host `ops enable-live` preflight can recompute against qualified PAPER history
+using the prepared live host's current security observations. It still requires
+every separate AX prerequisite and the exact phrase before recording an unlock.
+Do not run that command during this build; AUTO_LIVE stays locked.
+
+For the paper cancel-semantics check, first configure a disposable AUTO_PAPER
+account through setup and use already canceled OTO and OCO roots from your paper
+drill. The following integration test performs authenticated GETs only; it sends
+no orders or cancels. Missing evidence is UNVERIFIED.
+
+```powershell
+python -m pytest -m integration backend/tests/test_v_paper_cancel_integration.py --paper-integration-env-file C:\PRIVATE\paper.env --paper-cancel-order-ids EXISTING_OTO_ROOT_UUID,EXISTING_OCO_ROOT_UUID
+```
+
+AUTO_LIVE trail stops additionally need 30 successful paper raises, zero failures
+and no unprotected window over 30 seconds, under the current variant/policy.
+When a cancel is ambiguous, an overlapping sell is unsafe: halt, notify urgently
+and look up the existing broker identity before any repair. Held exits and valid
+stop protection remain available during entry halts.

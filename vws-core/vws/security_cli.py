@@ -29,6 +29,7 @@ from backend.core.logging import configure_logging
 from backend.core.notifier import ConsoleNotifier
 from backend.core.system_state import SystemStateStore
 from backend.domain.instruments import InstrumentRegistry
+from backend.execution.stop_readiness import live_raise_reasons
 from backend.net.egress import EgressPolicy, SDKSocketGuard, build_allowlist
 from backend.net.http import configure_network, make_client
 from backend.ops.anchors import LedgerAnchors
@@ -672,6 +673,8 @@ async def doctor_result(context: SecurityContext, store: SecretStore) -> DoctorR
                     doctor.account_id,
                     context.config_hash,
                     security_reasons=security_reasons,
+                    exit_reasons=lambda: live_raise_reasons(context.ledger, config),
+                    verdict_hash=lambda: config.config_hash,
                     drill_ready=lambda: verified_drill(
                         PROJECT, context.settings, store, context.ledger.clock.now(), 45
                     ),

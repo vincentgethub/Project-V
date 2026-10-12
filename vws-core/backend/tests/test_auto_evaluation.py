@@ -35,31 +35,34 @@ async def test_AX_50_auto_approval_is_tracked_with_submitted_quantity(
         # change, and this test never enables or simulates a live connection.
         monkeypatch.setattr(h.state.ledger, "verify_chain", lambda: {})
         monkeypatch.setattr(h.state.ledger, "_verify_in_session", lambda _: None)
-        original = Session.scalar
+        original = Session.scalars
 
-        def scalar(session: Session, statement: Any, *args: Any, **kwargs: Any) -> Any:
-            row = original(session, statement, *args, **kwargs)
-            if (
-                statement.column_descriptions[0]["entity"] is ExecutionOrderRecord
-                and row is not None
-            ):
+        def scalars(session: Session, statement: Any, *args: Any, **kwargs: Any) -> Any:
+            rows = original(session, statement, *args, **kwargs)
+            if statement.column_descriptions[0]["entity"] is not ExecutionOrderRecord:
+                return rows
+            result = []
+            for row in rows:
                 cloned = SimpleNamespace(**row.__dict__)
                 cloned.qty = 1
-                return cloned
-            return row
+                result.append(cloned)
+            return result
 
-        monkeypatch.setattr(Session, "scalar", scalar)
+        monkeypatch.setattr(Session, "scalars", scalars)
     rows = collect_outcome_setups(h.state.ledger, h.settings, scope(h), built.calendar)
-    assert len(rows) == 1 and rows[0].disposition == "APPROVED"
-    assert rows[0].qty == (1 if projection == "reduced" else h.request.candidate.qty)
+    primary = next(row for row in rows if row.disposition == "APPROVED")
+    assert len(rows) == 2 and len({row.alert_id for row in rows}) == 2
+    assert next(row for row in rows if row.disposition == "CRO_VETO").qty > primary.qty
+    assert primary.qty == (1 if projection == "reduced" else h.request.candidate.qty)
     assert len(client.posts) == 1
-    assert rows[0].limit == h.request.candidate.entry_price
+    assert primary.limit == h.request.candidate.entry_price
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("harness", [AUTO], indirect=True)
 @pytest.mark.parametrize(
-    "fault", ["account", "cohort", "config", "future", "qty", "bool", "levels"]
+    "fault",
+    ["account", "cohort", "config", "future", "qty", "bool", "levels", "inventory", "aggregate"],
 )
 async def test_EV_01_auto_tracker_refuses_unbound_intent_projection(
     harness: Harness, monkeypatch: pytest.MonkeyPatch, fault: str
@@ -73,12 +76,20 @@ async def test_EV_01_auto_tracker_refuses_unbound_intent_projection(
     # detached results isolate the additional query-boundary checks here.
     monkeypatch.setattr(h.state.ledger, "verify_chain", lambda: {})
     monkeypatch.setattr(h.state.ledger, "_verify_in_session", lambda _: None)
-    original = Session.scalar
+    original = Session.scalars
+    if fault == "aggregate":
+        from backend.execution import storage
 
-    def scalar(session: Session, statement: Any, *args: Any, **kwargs: Any) -> Any:
-        row = original(session, statement, *args, **kwargs)
-        if statement.column_descriptions[0]["entity"] is not ExecutionOrderRecord or row is None:
-            return row
+        monkeypatch.setattr(storage, "entry_quantity", lambda *a: None)
+
+    def scalars(session: Session, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        rows = original(session, statement, *args, **kwargs)
+        if statement.column_descriptions[0]["entity"] is not ExecutionOrderRecord:
+            return rows
+        projected = [alter(row) for row in rows]
+        return projected * 3 if fault == "inventory" else projected
+
+    def alter(row: Any) -> Any:
         cloned = SimpleNamespace(**row.__dict__)
         if fault == "account":
             cloned.account_id = "other-paper-account"
@@ -96,6 +107,6 @@ async def test_EV_01_auto_tracker_refuses_unbound_intent_projection(
             cloned.stop_price += Decimal("0.01")
         return cloned
 
-    monkeypatch.setattr(Session, "scalar", scalar)
+    monkeypatch.setattr(Session, "scalars", scalars)
     with pytest.raises(DataIntegrityError, match="tracker"):
         collect_outcome_setups(h.state.ledger, h.settings, scope(h), built.calendar)

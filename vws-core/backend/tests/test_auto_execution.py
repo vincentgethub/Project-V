@@ -67,6 +67,7 @@ class FakeTradingClient:
         self.lookups: list[str] = []
         self.orders: dict[str, dict[str, Any]] = {}
         self.failure: str | None = None
+        self.raise_fault: str | None = None
         self.positions: list[dict[str, Any]] = []
 
     def get_account(self) -> dict[str, Any]:
@@ -87,6 +88,14 @@ class FakeTradingClient:
 
     def submit_order(self, order_data: ExactLimit | ExactStop) -> dict[str, Any]:
         fields = order_data.to_request_fields()
+        if fields["client_order_id"].startswith("vws-m-"):
+            self.failure = None
+            if self.raise_fault == "reject-once":
+                self.failure, self.raise_fault = "reject", None
+            elif self.raise_fault == "reject-both":
+                self.failure = "reject"
+            elif self.raise_fault in {"accepted-timeout", "ambiguous-missing"}:
+                self.failure = self.raise_fault
         self.posts.append(fields)
         if self.failure == "reject":
             raise api_error(422)
@@ -100,7 +109,14 @@ class FakeTradingClient:
             "submitted_at": self.h.clock.now().isoformat(),
             "legs": None,
         }
-        if "take_profit" in fields:
+        if fields.get("order_class") == "oco":
+            raw["limit_price"] = fields["take_profit"]["limit_price"]
+        if "stop_loss" in fields:
+            specifications = (
+                (("limit", fields["take_profit"]), ("stop", fields["stop_loss"]))
+                if "take_profit" in fields and fields["order_class"] != "oco"
+                else (("stop", fields["stop_loss"]),)
+            )
             raw["legs"] = [
                 {
                     "id": str(uuid4()),
@@ -110,14 +126,14 @@ class FakeTradingClient:
                     "type": kind,
                     "qty": fields["qty"],
                     "filled_qty": "0",
-                    "status": "held",
+                    "status": "new" if fields["order_class"] == "oco" else "held",
                     "time_in_force": "gtc",
                     "order_class": "simple",
                     "legs": None,
                     "submitted_at": raw["submitted_at"],
                     **price,
                 }
-                for kind, price in (("limit", fields["take_profit"]), ("stop", fields["stop_loss"]))
+                for kind, price in specifications
             ]
         self.orders[fields["client_order_id"]] = raw
         if self.failure == "accepted-timeout":
@@ -125,6 +141,8 @@ class FakeTradingClient:
         return raw
 
     def cancel_order_by_id(self, order_id: UUID | str) -> None:
+        if self.raise_fault == "cancel":
+            raise TimeoutError("offline unconfirmed cancellation")
         for raw in self.orders.values():
             if raw["id"] == str(order_id):
                 raw["status"] = "canceled"
@@ -138,7 +156,7 @@ class FakeTradingClient:
                     return
         raise api_error(404)
 
-    def get_order_by_id(self, order_id: UUID | str) -> dict[str, Any]:
+    def get_order_by_id(self, order_id: UUID | str, filter: object = None) -> dict[str, Any]:
         for raw in self.orders.values():
             if raw["id"] == str(order_id):
                 return raw
@@ -196,6 +214,7 @@ def executor(
         policy=EgressPolicy(build_allowlist(mode=settings.execution_mode), h.state.ledger),
         notify=notify,
         client=client,
+        entry_variant_allowed=lambda: True,  # Explicit offline fixture; never production admission.
     )
 
 

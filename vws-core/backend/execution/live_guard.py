@@ -40,6 +40,8 @@ class LiveGuard:
         feeds_healthy: Callable[[], bool] | None = None,
         security_reasons: Callable[[], tuple[str, ...]] | None = None,
         drill_ready: Callable[[], bool] | None = None,
+        exit_reasons: Callable[[], tuple[str, ...]] | None = None,
+        verdict_hash: Callable[[], str] | None = None,
     ) -> None:
         self.settings = Settings.validated_copy(settings)
         self.state, self.calendar, self.account_id = state, calendar, account_id
@@ -50,6 +52,47 @@ class LiveGuard:
         )
         self.security_reasons = security_reasons
         self.drill_ready = drill_ready
+        self.exit_reasons = exit_reasons
+        self.verdict_hash = verdict_hash or effective_hash
+
+    def verdict_ready(self) -> bool:
+        """GV-05: use the same uniquely qualified paper account as AX-40."""
+        from backend.evaluation.verdict import latest_ready
+
+        paper, _ = self._history()
+        return paper is not None and latest_ready(self.state.ledger, paper, self.verdict_hash())
+
+    def qualified_paper_account(self) -> str | None:
+        """Read-only selection; all unlock prerequisites remain independently checked."""
+        return self._history()[0]
+
+    def verdict_text(self) -> str:
+        from backend.evaluation.verdict import ReadinessVerdict
+
+        paper, _ = self._history()
+        if paper is None:
+            return "NOT YET · Qualified paper account and current READY verdict are UNVERIFIED."
+        with Session(self.state.engine) as session:
+            rows = tuple(
+                session.scalars(
+                    select(SecurityEvent)
+                    .where(SecurityEvent.kind == "VERDICT")
+                    .order_by(SecurityEvent.seq.desc())
+                    .limit(1001)
+                )
+            )
+        if len(rows) > 1000:
+            raise ConfigurationError("GV-05: verdict inventory exceeds its bound")
+        for row in rows:
+            verdict = ReadinessVerdict.recorded(row.detail)
+            if verdict.inputs.scope.account_id == paper:
+                if verdict.inputs.config_sha256 != self.verdict_hash() or not self.verdict_ready():
+                    return (
+                        "Current readiness: NOT YET · Stored evidence is not a current READY verdict.\n"
+                        + verdict.text()
+                    )
+                return verdict.text()
+        return "NOT YET · No readiness verdict is recorded for the qualified paper account."
 
     def _history(self) -> tuple[str | None, list[str]]:
         self.state.ledger.verify_chain()
@@ -148,11 +191,13 @@ class LiveGuard:
     def reasons(self, *, require_unlock: bool = True) -> tuple[str, ...]:
         require_live_limits(self.settings)
         paper, findings = self._history()
+        if self.exit_reasons is not None:
+            findings.extend(self.exit_reasons())
         if self.security_reasons is None:
             findings.append("Amendment 03 section 10: live security evidence is unavailable")
         else:
             findings.extend(self.security_reasons())
-        if self.validation_ready is None or self.validation_ready() is not True:
+        if (self.validation_ready or self.verdict_ready)() is not True:
             findings.append(
                 "Amendment 05: registered validation must produce a current READY verdict"
             )

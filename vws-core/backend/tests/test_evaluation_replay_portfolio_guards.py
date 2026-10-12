@@ -135,7 +135,7 @@ def test_EV_split_reservations_and_held_shares_use_whole_native_units(
     ratio = D(2) if fault == "pending_integer" else D(".01")
     action = KnownSplit(symbol="NVDA", effective_session=day, new_shares_per_old=ratio)
     series: list[HistorySeries] = []
-    for symbol in golden.request().symbols:
+    for symbol in (*golden.request().symbols, "SPY"):
         native = inputs[0].bundle.for_symbol(symbol, "RAW")
         adjusted = tuple(
             Bar.model_validate(

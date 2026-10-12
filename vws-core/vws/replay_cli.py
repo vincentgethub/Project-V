@@ -99,10 +99,16 @@ def execute(
         else equity + settings.checking_buffer_usd
     )
     reserved = sum(settings.reserved_obligations_usd, Decimal(0))
+    from backend.evaluation.universe import load as load_universe
+
+    universe = load_universe(project / "config/universe_history.csv", registry.symbols)
     seed = ReplayRequest(
         start=start,
         end=end,
-        symbols=tuple(sorted(symbols or config.watchlist[:20])),
+        symbols=tuple(
+            sorted(symbols or (config.watchlist[:20] if universe is None else universe.symbols))
+        ),
+        universe=universe,
         initial_equity=equity,
         synthetic=offline_fixtures,
         funding=DeployableCapital(
@@ -115,7 +121,9 @@ def execute(
             else CapitalStatus.BUFFER_BREACH,
         ),
     )
-    if not set(seed.symbols).issubset(config.watchlist):
+    if not set(seed.symbols).issubset(
+        registry.symbols if universe is not None else config.watchlist
+    ):
         raise ConfigurationError("EV-03: requested symbols are outside the configured watchlist")
     calendar = MarketCalendar(
         start=min(date(1990, 1, 1), start - timedelta(days=450)),
@@ -143,6 +151,21 @@ def execute(
                 cache_root=cache_root,
             )
     else:
+        from backend.evaluation.registry import refuse_registered_holdout
+        from vws.security_cli import open_context
+
+        # Amendment 05 supersedes the old closed-DB promise for real history:
+        # an ordinary run must consult the immutable holdout registration.
+        context = open_context(env_file)
+        try:
+            refuse_registered_holdout(context.ledger, seed.start, seed.end)
+            from backend.evaluation.calibrated_costs import snapshot as cost_snapshot
+
+            calibration = cost_snapshot(
+                context.ledger, "PAPER" if settings.paper_trading else "LIVE"
+            )
+        finally:
+            context.engine.dispose()
         result = replay(
             seed,
             load_history(history_root, calendar),
@@ -154,6 +177,7 @@ def execute(
             fees,
             workers=workers,
             cache_root=cache_root,
+            calibration=calibration,
         )
     proof, json_path, csv_path = _write(report_root, result)
     print(render_weekly(result.report, mask_amounts=settings.telegram_mask_amounts))

@@ -288,18 +288,19 @@ class Ledger:
                     broker_order_id=None,
                 )
             elif isinstance(record, ExecutionFillRecord):
-                from backend.execution.storage import filled_quantity
+                from backend.execution.storage import entry_filled_quantity, entry_quantity
 
                 instruction = session.get(ExecutionOrderRecord, record.execution_order_id)
                 if instruction is None:
                     raise LedgerIntegrityError("Execution fill instruction is missing")
                 if instruction.role == "ENTRY":
-                    total = filled_quantity(session, instruction.id)
+                    total = entry_filled_quantity(session, instruction.order_id)
+                    expected = entry_quantity(session, instruction.order_id)
                     self.append_in_session(
                         session,
                         OrderEvent,
                         order_id=instruction.order_id,
-                        state="FILLED" if total == instruction.qty else "PARTIALLY_FILLED",
+                        state="FILLED" if total == expected else "PARTIALLY_FILLED",
                         reason="observed auto entry fill recorded",
                         broker_order_id=None,
                     )
@@ -342,6 +343,9 @@ class Ledger:
                 "EXECUTION_SUBMIT_OUTCOME",
                 "AUTO_EXIT_CYCLE",
                 "AUTO_EXIT_APPROVAL",
+                "STOP_RAISE_APPROVAL",
+                "STOP_MOVED",
+                "PAPER_CANCEL_SEMANTICS",
             }
         ):
             from backend.execution.storage import validate_record as validate_execution_record
@@ -393,7 +397,7 @@ class Ledger:
                 fill.qty
                 for fill in session.scalars(select(Fill).where(Fill.order_id == record.order_id))
             )
-            from backend.execution.storage import entry_quantity, filled_quantity
+            from backend.execution.storage import entry_filled_quantity, entry_quantity
 
             execution = session.scalar(
                 select(ExecutionOrderRecord).where(
@@ -403,7 +407,7 @@ class Ledger:
             )
             expected_qty = entry_quantity(session, order.id) or order.qty
             if execution is not None:
-                total += filled_quantity(session, execution.id)
+                total += entry_filled_quantity(session, order.id)
             if record.state == "FILLED" and total != expected_qty:
                 raise LedgerIntegrityError(
                     "FILLED event requires the complete observed fill quantity"
@@ -1044,6 +1048,9 @@ class Ledger:
                     "EXECUTION_SUBMIT_OUTCOME",
                     "AUTO_EXIT_CYCLE",
                     "AUTO_EXIT_APPROVAL",
+                    "STOP_RAISE_APPROVAL",
+                    "STOP_MOVED",
+                    "PAPER_CANCEL_SEMANTICS",
                 }
             ):
                 from backend.execution.storage import validate_record as validate_execution_record
@@ -1071,9 +1078,12 @@ class Ledger:
         executions = {
             record.id: record for record in records if isinstance(record, ExecutionOrderRecord)
         }
-        execution_quantities = {
-            record.order_id: record.qty for record in executions.values() if record.role == "ENTRY"
-        }
+        execution_quantities: dict[UUID, int] = {}
+        for execution in executions.values():
+            if execution.role == "ENTRY":
+                execution_quantities[execution.order_id] = (
+                    execution_quantities.get(execution.order_id, 0) + execution.qty
+                )
         for original_order in orders.values():
             signal = signals.get(original_order.signal_id)
             if (

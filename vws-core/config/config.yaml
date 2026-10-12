@@ -79,7 +79,36 @@ cm:
   max_participation: 0.01
 evaluation:
   max_hold_sessions: 20
+qv:
+  holdout_months: 18
+  test_months: 6
+  min_train_trades: 50
+  max_variants_per_family: 8
+  max_variants_total: 24
+  bootstrap_resamples: 10000
+  seed: 20261006
+pr:
+  corr_threshold: 0.70
+  corr_lookback: 60
+  corr_multipliers: [1.0, 0.75, 0.5, 0.25]
+  vol_anchor: 0.16
+rs:
+  sector_filter: annotate
+  top_n_sectors: 4
+  min_stock_percentile: 0
+  use_breadth: false
+exits: {variant: BASELINE}
+ex: {trail_atr_mult: 3.0}
+gv:
+  min_paper_trades: 50
+  min_sessions: 60
+  max_drawdown: 0.10
+  benchmark_sharpe_tolerance: 0.2
+  no_halt_sessions: 20
+  drill_max_age_days: 31
+  ready_max_age_days: 35
 playbooks:
+  enabled: [TREND_50EMA, BASE_BREAKOUT, ANCHORED_VWAP_RECLAIM]
   TREND_50EMA:
     criteria_weights:
       trend: 0.20

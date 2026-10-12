@@ -53,7 +53,7 @@ def inputs(tmp_path: Path, calendar: MarketCalendar) -> tuple[FrozenHistory, Fro
         HistoryBundle(
             series=tuple(
                 HistorySeries(symbol=symbol, adjustment=adj, bars=(*bars, *tail))
-                for symbol in symbols
+                for symbol in (*symbols, "SPY")
                 for adj in ("ALL", "RAW", "SPLIT")
             )
         ),
@@ -181,6 +181,20 @@ def test_EV_03_drawdown_cancels_pending_entries_and_still_records_held_stop(
             HistorySeries(symbol=symbol, adjustment=adj, bars=(*prefix, *tail))
             for adj in ("ALL", "RAW", "SPLIT")
         )
+    spy = tuple(
+        Bar(
+            timestamp=bar.timestamp,
+            open=D(100),
+            high=D(101),
+            low=D(99),
+            close=D(100),
+            volume=10000000,
+        )
+        for bar in series[0].bars
+    )
+    series.extend(
+        HistorySeries(symbol="SPY", adjustment=adj, bars=spy) for adj in ("ALL", "RAW", "SPLIT")
+    )
     frozen = seal_history(tmp_path, HistoryBundle(series=tuple(series)), calendar)
     facts = seal_filings(
         tmp_path,

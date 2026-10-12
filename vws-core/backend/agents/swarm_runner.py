@@ -59,6 +59,7 @@ from backend.core.errors import (
 from backend.core.ledger import Ledger
 from backend.core.system_state import SystemState, SystemStateStore
 from backend.data.data_layer import AsyncAlpacaMarketData, Bar, _bars_digest
+from backend.data.earnings_reports import EarningsReport
 from backend.data.historical_spread import SpreadMeasurement
 from backend.data.news import NewsProvider, NewsProviderName, NewsResult
 from backend.data.sec_edgar import SecPayload
@@ -73,6 +74,7 @@ from backend.domain.models import (
     FrozenModel,
     Intent,
     MarketContext,
+    Playbook,
     PortfolioSnapshot,
     ProposalSource,
     ProviderStatus,
@@ -179,10 +181,16 @@ class SwarmRunner:
         ):
             raise ConfigurationError("GD-08: offline research requires an in-memory ledger")
         self.offline = offline
+        self.playbook_allowed: Callable[[Playbook], bool] | None = None
+        self.earnings_report_source: (
+            Callable[[str, datetime], Awaitable[tuple[EarningsReport, ...]]] | None
+        ) = None
         if not offline and risk.marks is None:
             raise ConfigurationError("GD-03: connected research requires persisted financial marks")
 
-    def _verify_candidate(self, request: ResearchRequest, now: datetime) -> tuple[Bar, ...]:
+    def _verify_candidate(
+        self, request: ResearchRequest, now: datetime, reports: tuple[EarningsReport, ...] = ()
+    ) -> tuple[Bar, ...]:
         """Rebuild the entire immutable incremental bar cache, then re-score.
 
         The caller's source UUID caps the cache at that recorded revision. A
@@ -248,16 +256,75 @@ class SwarmRunner:
                 if existing is not None and existing != bar:
                     raise DataIntegrityError("GD-03: conflicting immutable bar revisions")
                 by_session[bar.session_date] = bar
+        spy_bars: tuple[Bar, ...] = ()
+        stock_returns: tuple[Bar, ...] | None = None
+        if c.playbook == Playbook.EARNINGS_GAP:
+            spy_bars = self._recorded_returns("SPY", c.as_of)
+            stock_returns = self._recorded_returns(c.symbol, c.as_of)
         rebuilt = self.hunter.hunt(
             c.symbol,
             tuple(by_session[d] for d in sorted(by_session)),
             request.portfolio,
             request.market,
             c.as_of,
+            earnings_reports=reports,
+            spy_bars=spy_bars,
+            stock_return_bars=stock_returns,
         )
         if c not in rebuilt.candidates:
             raise DataIntegrityError("GD-03: candidate score/levels/size differ from recorded bars")
         return tuple(by_session[d] for d in sorted(by_session))
+
+    def _recorded_returns(self, symbol: str, as_of: datetime) -> tuple[Bar, ...]:
+        """EG-03: reconstruct bounded immutable ALL revisions, without a refetch."""
+        from backend.data.split_cache import current_epochs
+
+        with Session(self.ledger.engine) as session:
+            floor = current_epochs(session, as_of).get(symbol, 0)
+            records = tuple(
+                session.scalars(
+                    select(DataSnapshot)
+                    .where(
+                        DataSnapshot.symbol == symbol,
+                        DataSnapshot.adjustment == "ALL",
+                        DataSnapshot.timeframe == "1Day",
+                        DataSnapshot.feed == ("FAKE" if self.offline else "SIP"),
+                        DataSnapshot.fetched_at <= as_of,
+                        DataSnapshot.seq > floor,
+                    )
+                    .order_by(DataSnapshot.seq)
+                    .limit(10001)
+                )
+            )
+        if not records or len(records) > 10000:
+            raise DataIntegrityError("EG-03: bounded recorded return evidence unavailable")
+        merged: dict[date, Bar] = {}
+        count = 0
+        for record in records:
+            bars = tuple(AsyncAlpacaMarketData._cached_bar(row) for row in record.bars)
+            count += len(bars)
+            if (
+                not bars
+                or count > 100000
+                or len(bars) != record.bar_count
+                or record.sha256 != _bars_digest(bars)[0]
+                or record.range_start != bars[0].timestamp
+                or record.range_end != bars[-1].timestamp
+            ):
+                raise DataIntegrityError("EG-03: return digest/range differs")
+            previous = None
+            for bar in bars:
+                bar.validate_integrity()
+                if previous is not None and bar.session_date <= previous:
+                    raise DataIntegrityError("EG-03: return sessions are unordered")
+                previous = bar.session_date
+                close = self.risk.cro.calendar.session_close(bar.session_date)
+                if close + timedelta(seconds=0 if self.offline else 960) > record.fetched_at:
+                    raise DataIntegrityError("EG-03: incomplete recorded return session")
+                if bar.session_date in merged and merged[bar.session_date] != bar:
+                    raise DataIntegrityError("EG-03: conflicting return revisions")
+                merged[bar.session_date] = bar
+        return tuple(merged[day] for day in sorted(merged))
 
     async def _bounded(self, call: Callable[[], Awaitable[object]]) -> object:
         async with asyncio.timeout(self.timeout_seconds):
@@ -362,6 +429,14 @@ class SwarmRunner:
             precision.prec = 80
             dollars = sorted(bar.close * bar.volume for bar in bars[-20:])
             median = (dollars[9] + dollars[10]) / 2
+        from backend.evaluation.calibrated_costs import snapshot as cost_snapshot
+        from backend.ops.trading_controls import ControlScope
+
+        cost_scope = ControlScope(
+            account_id=request.portfolio.account_id,
+            environment="PAPER" if self.settings.paper_trading else "LIVE",
+        )
+        calibration = cost_snapshot(self.ledger, cost_scope.environment, scope=cost_scope)
         provenance = EvaluationProvenance(
             cohort="PAPER" if self.settings.paper_trading else "LIVE",
             expires_at=proposal_expiry(
@@ -370,11 +445,13 @@ class SwarmRunner:
             yaml_hash=self.config.config_hash,
             settings_hash=self.settings.config_hash,
             evidence_session=bars[-1].session_date,
-            cost_context=CostContext(
-                median_dollar_volume_20=median,
-                atr14=atr14,
-                policy=self.config.cm,
-                measured_half_spread_bps=None if spread is None else spread.half_spread_bps,
+            cost_context=calibration.context(
+                CostContext(
+                    median_dollar_volume_20=median,
+                    atr14=atr14,
+                    policy=self.config.cm,
+                    measured_half_spread_bps=None if spread is None else spread.half_spread_bps,
+                )
             ),
             initial_equity=request.portfolio.equity,
             spread_measurement=spread,
@@ -407,6 +484,7 @@ class SwarmRunner:
             stop_price=c.stop_price,
             target_price=c.target_price,
             source=ProposalSource.SIGNAL,
+            size_evidence=c.size_evidence,
             created_at=now,
             expires_at=proposal_expiry(
                 now, self.settings.proposal_ttl_sessions, self.risk.cro.calendar
@@ -414,7 +492,7 @@ class SwarmRunner:
         )
         self.ledger.append(
             Order,
-            **p.model_dump(exclude={"created_at", "expires_at"}),
+            **p.model_dump(exclude={"created_at", "expires_at", "size_evidence"}),
             client_order_id="vws-research-" + p.proposal_id.hex,
             order_type="LIMIT",
         )
@@ -457,12 +535,43 @@ class SwarmRunner:
         now = ensure_utc(self.clock.now())
         c = request.candidate
         self.ledger.verify_chain()
+        if c.playbook == Playbook.EARNINGS_GAP:
+            if "EARNINGS_GAP" not in self.config.enabled_playbooks:
+                return SwarmResult(status="DROPPED", reasons=("EG-01: earnings-gap is disabled",))
+            if self.settings.execution_mode != "MANUAL" and (
+                self.playbook_allowed is None or self.playbook_allowed(c.playbook) is not True
+            ):
+                return SwarmResult(
+                    status="DROPPED",
+                    reasons=("EG-01: AUTO earnings-gap requires registered WORKING validation",),
+                )
         if (
             c.symbol not in self.config.watchlist
             and not (request.manual_only and c.symbol in self.risk.cro.registry.symbols)
         ) or not timedelta(0) <= now - c.as_of <= timedelta(seconds=self.timeout_seconds):
             raise DataIntegrityError("GD-03: candidate is outside the current cycle/watchlist")
-        bars = self._verify_candidate(request, now)
+        reports: tuple[EarningsReport, ...] = ()
+        if c.playbook == Playbook.EARNINGS_GAP:
+            if self.earnings_report_source is None:
+                return SwarmResult(
+                    status="DROPPED", reasons=("EG-02: past report evidence unavailable",)
+                )
+            async with asyncio.timeout(self.timeout_seconds):
+                reports = await self.earnings_report_source(c.symbol, c.as_of)
+            if not isinstance(reports, tuple) or len(reports) > 5000:
+                raise DataIntegrityError("EG-02: bounded immutable past report evidence required")
+            reports = tuple(EarningsReport.model_validate(item) for item in reports)
+        bars = self._verify_candidate(request, now, reports)
+        if reports:
+            self.ledger.append(
+                SecurityEvent,
+                kind="EARNINGS_GAP_EVIDENCE",
+                detail={
+                    "symbol": c.symbol,
+                    "as_of": c.as_of.isoformat(),
+                    "reports": [item.model_dump(mode="json") for item in reports],
+                },
+            )
         if not score_eligible(c.score, self.settings.min_setup_score):
             self.ledger.append(
                 SecurityEvent,

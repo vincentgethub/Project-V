@@ -31,7 +31,7 @@ def bars(prices: tuple[Decimal, ...]) -> tuple[Bar, ...]:
     )
 
 
-@settings(max_examples=60, deadline=None)
+@settings(max_examples=1000, deadline=None)
 @given(
     st.lists(st.integers(min_value=1, max_value=100000), min_size=1, max_size=300),
     st.integers(min_value=1, max_value=30),
@@ -40,6 +40,7 @@ def test_PF_01_exact_quantized_equivalence(cents: list[int], period: int) -> Non
     prices = tuple(D(value) / 100 for value in cents)
     observed = bars(prices)
     assert vectorized.ema(prices, period) == reference.ema(prices, period)
+    assert vectorized.ema_last(prices, period) == reference.ema(prices, period)[-1]
     assert vectorized.rsi(prices, period) == reference.rsi(prices, period)
     assert vectorized.atr(observed, period) == reference.atr(observed, period)
     assert vectorized.rvol(tuple(bar.volume for bar in observed), period) == reference.rvol(
@@ -72,6 +73,12 @@ def test_PF_01_wilder_first_fourteen_sma_golden() -> None:
     assert vectorized.rvol((0,) * 30) == (None,) * 30
 
 
+def test_PF_01_wilder_half_cent_uses_the_defined_coefficient() -> None:
+    observed = bars(tuple(D(value) / 100 for value in (260, 360, 991, 260, 6900, 38334, 180, 941)))
+    assert reference.atr(observed, 6)[-1] == D("101.14")
+    assert vectorized.atr(observed, 6) == reference.atr(observed, 6)
+
+
 def test_PF_01_no_future_values_enter_prefix() -> None:
     prices = tuple(D(100 + index) for index in range(220))
     for operation in (vectorized.ema, reference.ema):
@@ -85,6 +92,8 @@ def test_PF_01_no_future_values_enter_prefix() -> None:
     "operation,arguments",
     [
         (vectorized.ema, ((D(1),), True)),
+        (vectorized.ema_last, ((D(1),), True)),
+        (vectorized.ema_last, ((1.0,), 20)),
         (vectorized.rsi, ((1.0,),)),
         (vectorized.atr, ((),)),
         (vectorized.macd, ((D(1),), 26, 12)),

@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from backend.agents.anchors import select_anchor
+from backend.core.config import YamlConfig
 from backend.core.errors import DataIntegrityError
 from backend.core.system_state import SystemState
 from backend.data.data_layer import AsyncAlpacaMarketData, Bar
@@ -38,10 +39,15 @@ class HistorySource:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("harness", [{"proposal_ttl_sessions": 3}], indirect=True)
+@pytest.mark.parametrize("variant", ["BASELINE", "SPLIT_1R", "SPLIT_1R_TRAIL"])
 async def test_EV_actual_ledger_weekly_source_retains_decision_costs(
-    harness: Harness, tmp_path: Path
+    harness: Harness, tmp_path: Path, variant: str
 ) -> None:
     h = harness
+    values = h.config.model_dump()
+    values["exits"]["variant"] = variant
+    h.config = YamlConfig.model_validate(values)
+    h.swarm.config = h.swarm.hunter.config = h.config
     cal = h.swarm.risk.cro.calendar
     day = h.clock.now().date()
     evidence_day = cal.previous_sessions(day, 1)[0]
@@ -98,22 +104,27 @@ async def test_EV_actual_ledger_weekly_source_retains_decision_costs(
     h.clock.current = datetime(2026, 10, 5, 22, tzinfo=UTC)
     bound = await source.weekly_inputs()
     tracked = collect_tracked_setups(h.state.ledger, h.settings, context, cal)
-    assert len(tracked) == len(bound.outcomes) == 1
+    assert len(tracked) == len(bound.outcomes) == 2
+    assert {row.setup.disposition for row in tracked} == {"PENDING", "CRO_VETO"}
     proof = tracked[0].provenance
     assert proof.spread_measurement == spread
     assert proof.cost_context.measured_half_spread_bps == D(25)
     original_atr = h.swarm.hunter.memo.calculate("NVDA", bars, select_anchor(bars)[0]).atr14[-1]
     assert proof.cost_context.atr14 == original_atr
     assert bound.context.initial_equity == D(10000)
-    outcome = bound.outcomes[0]
+    outcome = next(row for row in bound.outcomes if row.setup.disposition == "PENDING")
     assert outcome.entry_fill is not None and outcome.entry_fill.half_spread_bps == D(25)
-    assert outcome.exit_session is not None and outcome.exit_session <= context.end
+    assert outcome.setup.variant == ("baseline" if variant == "BASELINE" else variant)
+    if variant == "SPLIT_1R_TRAIL":
+        assert outcome.status == "OPEN" and outcome.partial_exits
+    else:
+        assert outcome.exit_session is not None and outcome.exit_session <= context.end
     notices = Notices()
     publisher = WeeklyPublisher(
         h.state, h.settings, h.config, context.account_id, cal, tmp_path, source, notices.notify
     )
     counts = await publisher()
-    assert counts.counts["resolved"] == 1 and notices.calls
+    assert counts.counts["resolved"] == int(outcome.status == "RESOLVED") and notices.calls
     h.state.ledger.verify_chain()
 
 

@@ -73,7 +73,9 @@ jobs:
           git diff-tree --root --no-commit-id --name-only -r HEAD > /tmp/vws-changed-files.txt
           python -c "from pathlib import Path; from vws.progress import read_progress, require_progress_update; read_progress(); require_progress_update(tuple(Path('/tmp/vws-changed-files.txt').read_text().splitlines()))"
       - name: Offline tests and complete risk/state/fundamentals/card/tax branch coverage
-        run: python -m pytest -q --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing
+        run: python -m pytest -q -m 'not perf' --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing
+      - name: Prescribed synthetic performance workloads without coverage overhead
+        run: python -m pytest -q -s -m perf --no-cov backend/tests/test_replay_cli.py backend/tests/test_v_performance.py
       - name: Build non-root container from synthetic configuration
         run: |
           cp .env.example .env

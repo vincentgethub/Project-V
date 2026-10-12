@@ -58,9 +58,17 @@ class CostContext(FrozenModel):
     measured_half_spread_bps: Exact | None = Field(default=None, ge=0, le=10000)
     atr14: Money = Field(ge=0)
     policy: CostModelConfig = Field(default_factory=CostModelConfig)
+    calibrated_half_spread_bps: Exact | None = Field(
+        default=None, ge=0, le=10000, exclude_if=lambda v: v is None
+    )
+    calibration_sha256: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{64}$", exclude_if=lambda v: v is None
+    )
 
     @model_validator(mode="after")
     def cent_atr(self) -> Self:
+        if (self.calibrated_half_spread_bps is None) != (self.calibration_sha256 is None):
+            raise ValueError("XA-01: cost calibration requires its immutable snapshot hash")
         with localcontext() as precision:
             precision.prec = 256
             if self.atr14 != self.atr14.quantize(CENT):
@@ -114,7 +122,11 @@ def half_spread(ctx: CostContext) -> tuple[Decimal, tuple[str, ...]]:
         else (floors.mid if volume is not None and volume >= 50_000_000 else floors.low)
     )
     notes = ("ADV20 unavailable; lowest-liquidity spread floor used",) if volume is None else ()
-    return max(floor, checked.measured_half_spread_bps or _ZERO), notes
+    return max(
+        floor,
+        checked.measured_half_spread_bps or _ZERO,
+        checked.calibrated_half_spread_bps or _ZERO,
+    ), notes
 
 
 def estimate_fill(order: CostOrder, bar: Bar, ctx: CostContext) -> FillResult:
@@ -154,7 +166,10 @@ def estimate_fill(order: CostOrder, bar: Bar, ctx: CostContext) -> FillResult:
             fraction = spread / _BPS
             if intent.kind == "ENTRY":
                 if observed.open <= level:
-                    price, reason = min(observed.open * (1 + fraction), level), "OPEN_WITH_SPREAD"
+                    price, reason = (
+                        arrival_reference(intent, observed.open, context),
+                        "OPEN_WITH_SPREAD",
+                    )
                 elif observed.low <= level - CENT:
                     price, reason = level, "TRADE_THROUGH"
                 quantity = min(
@@ -170,11 +185,13 @@ def estimate_fill(order: CostOrder, bar: Bar, ctx: CostContext) -> FillResult:
             elif intent.kind == "STOP":
                 if observed.low <= level:
                     if observed.open < level:
-                        price, reason = observed.open * (1 - fraction), "GAP_STOP"
+                        price, reason = (
+                            arrival_reference(intent, observed.open, context),
+                            "GAP_STOP",
+                        )
                     else:
                         price, reason = (
-                            level * (1 - fraction)
-                            - context.policy.stop_slip_atr_frac * context.atr14,
+                            arrival_reference(intent, observed.open, context),
                             "STOP",
                         )
             elif intent.kind == "TARGET":
@@ -208,6 +225,36 @@ def estimate_fill(order: CostOrder, bar: Bar, ctx: CostContext) -> FillResult:
         raise
     except Exception:
         raise DataIntegrityError("CM: malformed fill inputs cannot produce an outcome") from None
+
+
+def arrival_reference(order: CostOrder, arrival: Decimal, ctx: CostContext) -> Decimal:
+    """XA-01: the same CM price rules at a known quote, excluding fill probability.
+
+    This reference does not assert a trade-through or participation fill occurred.
+    """
+    intent, context = CostOrder.model_validate(order), CostContext.model_validate(ctx)
+    quote = validate_cent_price(arrival)
+    spread = half_spread(context)[0] / _BPS
+    with localcontext() as precision:
+        precision.prec = 256
+        level = cast(Decimal, intent.level)
+        if intent.kind == "ENTRY":
+            result = min(quote * (1 + spread), level) if quote <= level else level
+        elif intent.kind == "STOP":
+            result = (
+                quote * (1 - spread)
+                if quote < level
+                else level * (1 - spread) - context.policy.stop_slip_atr_frac * context.atr14
+            )
+        elif intent.kind == "TARGET":
+            result = level
+        else:
+            result = quote * (1 - spread)
+        return validate_cent_price(
+            result.quantize(
+                CENT, rounding=ROUND_CEILING if intent.side == Side.BUY else ROUND_FLOOR
+            )
+        )
 
 
 class FeeRow(FrozenModel):

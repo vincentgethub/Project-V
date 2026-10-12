@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from typing import Self, cast
+from typing import Literal, Self, cast
 
 from pydantic import Field, model_validator
 
@@ -29,13 +29,19 @@ class FilingEntry(FrozenModel):
     fetched_at: UTCDateTime
     data_sha256: Digest
     bytes: int = Field(strict=True, gt=0, le=MAX_FILE)
-    filename: str = Field(strict=True, pattern=r"^[A-Z][A-Z0-9.]{0,14}_companyfacts\.json$")
+    filename: str = Field(
+        strict=True, pattern=r"^[A-Z][A-Z0-9.]{0,14}_(companyfacts|submissions)\.json$"
+    )
 
     @model_validator(mode="after")
     def bound_name(self) -> Self:
-        if self.filename != f"{self.symbol}_companyfacts.json":
+        if self.filename != f"{self.symbol}_{self.kind.lower()}.json":
             raise ValueError("EV-03: filing filename differs from issuer")
         return self
+
+    @property
+    def kind(self) -> Literal["COMPANYFACTS", "SUBMISSIONS"]:
+        return "SUBMISSIONS" if self.filename.endswith("_submissions.json") else "COMPANYFACTS"
 
 
 class FilingsManifest(FrozenModel):
@@ -44,7 +50,7 @@ class FilingsManifest(FrozenModel):
 
     @model_validator(mode="after")
     def ordered(self) -> Self:
-        symbols = tuple(entry.symbol for entry in self.entries)
+        symbols = tuple((entry.symbol, entry.kind) for entry in self.entries)
         if (
             symbols != tuple(sorted(set(symbols)))
             or sum(entry.bytes for entry in self.entries) > MAX_TOTAL
@@ -63,8 +69,12 @@ class FilingEvidence(FrozenModel):
 
     @model_validator(mode="after")
     def companyfacts(self) -> Self:
-        if self.payload.kind != "COMPANYFACTS" or self.payload.cik is None:
-            raise ValueError("EV-03: issuer companyfacts required")
+        if self.payload.kind not in {"COMPANYFACTS", "SUBMISSIONS"} or self.payload.cik is None:
+            raise ValueError("EV-03/EG-02: bound companyfacts or submissions required")
+        if self.payload.kind == "SUBMISSIONS":
+            from backend.data.earnings_reports import sec_reports
+
+            sec_reports(self.symbol, self.payload.parsed(), self.payload.fetched_at)
         return self
 
 
@@ -76,7 +86,11 @@ class FrozenFilings(FrozenModel):
     def bound_manifest(self) -> Self:
         if len(self.manifest.entries) != len(self.evidence):
             raise ValueError("EV-03: filing manifest count differs")
+        issuers: dict[str, str] = {}
         for entry, item in zip(self.manifest.entries, self.evidence, strict=True):
+            if entry.symbol in issuers and issuers[entry.symbol] != entry.cik:
+                raise ValueError("EG-02: frozen filing kinds disagree on issuer CIK")
+            issuers[entry.symbol] = entry.cik
             payload = item.payload
             if (entry.symbol, entry.cik, entry.fetched_at, entry.data_sha256, entry.bytes) != (
                 item.symbol,
@@ -86,10 +100,21 @@ class FrozenFilings(FrozenModel):
                 len(payload.raw),
             ):
                 raise ValueError("EV-03: frozen issuer evidence differs from manifest")
+            if entry.kind != payload.kind:
+                raise ValueError("EG-02: frozen filing kind differs from its named manifest")
         return self
 
-    def for_symbol(self, symbol: str) -> SecPayload | None:
-        return next((item.payload for item in self.evidence if item.symbol == symbol), None)
+    def for_symbol(
+        self, symbol: str, kind: Literal["COMPANYFACTS", "SUBMISSIONS"] = "COMPANYFACTS"
+    ) -> SecPayload | None:
+        return next(
+            (
+                item.payload
+                for item in self.evidence
+                if item.symbol == symbol and item.payload.kind == kind
+            ),
+            None,
+        )
 
 
 def seal_filings(root: Path, evidence: tuple[FilingEvidence, ...]) -> FrozenFilings:
@@ -100,7 +125,7 @@ def seal_filings(root: Path, evidence: tuple[FilingEvidence, ...]) -> FrozenFili
         rows = tuple(
             sorted(
                 (FilingEvidence.model_validate(item) for item in evidence),
-                key=lambda item: item.symbol,
+                key=lambda item: (item.symbol, item.payload.kind),
             )
         )
         entries = tuple(
@@ -110,7 +135,7 @@ def seal_filings(root: Path, evidence: tuple[FilingEvidence, ...]) -> FrozenFili
                 fetched_at=item.payload.fetched_at,
                 data_sha256=item.payload.data_sha256,
                 bytes=len(item.payload.raw),
-                filename=f"{item.symbol}_companyfacts.json",
+                filename=f"{item.symbol}_{item.payload.kind.lower()}.json",
             )
             for item in rows
         )
@@ -154,7 +179,7 @@ def load_filings(root: Path) -> FrozenFilings:
                 FilingEvidence(
                     symbol=entry.symbol,
                     payload=SecPayload(
-                        kind="COMPANYFACTS",
+                        kind=entry.kind,
                         cik=entry.cik,
                         fetched_at=entry.fetched_at,
                         raw=raw,

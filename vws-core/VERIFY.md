@@ -1,3 +1,49 @@
+# Stage V GREEN OFFLINE - 2026-10-12
+
+Latest safety run: **5,179 passed, 59 skipped, three perf deselected, two warnings,
+11,004.16s recorded wall time**, no test failures. Its original coverage gate
+is RED at 99.98% (replay binding refusal). The completed 31-case cache/indicator/
+binding selection covers that branch on unchanged critical source, including
+the documented cache version update to `pf1-v2` after the full run imported
+the preceding tag. The explicit evidence union reaches **100%: 7,589 statements /
+2,584 branches, no missing or partial**. Counts overlap; safety passes stay
+5,179. Artifacts: `data/v-stage-final.xml`, `data/v-current-binding.log`,
+`data/v-final-union-coverage.json`. Wall time includes the interrupted interval;
+it is not a performance measurement. A fresh full-source gate follows W.
+
+Isolated fixed replay: **one passed / four deselected / one warning, 196.99s
+overall; 168.317s timed**, 443 decisions; SHA256
+`10a9dd59bbc413fe6c854ccb1a86d5aaca1d13984d6b37f0f44012222756347c`.
+Warm 100-symbol scan: **one passed / one deselected / one warning, 9.42s overall;
+2.367455s timed**. Distinct available passes including these: **5,181**.
+Ruff/format/strict types, five pre-commit hooks, AST controls, production Bandit,
+both pinned audits (62/141 active pins, zero known vulnerabilities), pip check
+and wheel build pass. The first hook launch failed because PATH selected the
+Windows Python shortcut; the project virtual environment rerun passes.
+
+**UNVERIFIED:** 57 PostgreSQL checks, both explicit paper integrations,
+OTO/OCO cancellation semantics and 30 failure-free real paper stop raises,
+delisted/provider history, actual owner services/host protections/backup/drill,
+Linux mutation/Docker and remote CI. The prescribed eight-variant/20-symbol/
+seven-year walk-forward completed 19 windows in 949.845s without a result;
+PF-04 speed is UNVERIFIED under Amendment 05's explicit acceptance exception.
+No thresholds, variant combinations or risk limits were optimized or relaxed.
+MANUAL_CSV acceptance remains DEFERRED by the owner on October 8, 2026.
+
+Reproduce from vws-core (PowerShell, no real dotenv or credentials):
+```powershell
+.venv\Scripts\python.exe -m pytest -q -m 'not perf' --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing
+.venv\Scripts\python.exe -m pytest -q -s -m perf --no-cov backend/tests/test_replay_cli.py
+.venv\Scripts\python.exe -m pytest -q -s -m perf --no-cov backend/tests/test_v_performance.py -k warm_daily_scan
+.venv\Scripts\python.exe -m pytest -q -s -m perf --no-cov backend/tests/test_v_performance.py -k eight_explicit --basetemp data/v-perf-walkforward-temp
+.venv\Scripts\python.exe -m pytest -q -m integration backend/tests/test_v_paper_cancel_integration.py --paper-integration-env-file C:\PRIVATE\paper.env --paper-cancel-order-ids PAPER_OTO_ROOT_UUID,PAPER_OCO_ROOT_UUID
+```
+The last command only reads two existing canceled paper roots and nested legs;
+it never creates or cancels an order. Public paper configuration is explicit,
+keys stay in native keyring, and real evidence is still UNVERIFIED. Existing
+PostgreSQL, Docker and Linux mutation reproduction commands below remain valid.
+No push or remote change occurred. AUTO_LIVE was neither enabled nor run.
+
 # Stage I GREEN OFFLINE - 2026-10-09
 
 The full offline run passed 4,503 cases, skipped 58, deselected one perf case

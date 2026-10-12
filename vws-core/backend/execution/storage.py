@@ -34,6 +34,7 @@ from backend.execution.models import (
     ExitCycleEvidence,
     SubmitOutcome,
 )
+from backend.execution.stop_evidence import authorized_stop, child_root, validate_stop_event
 
 
 def approval_evidence(
@@ -86,13 +87,15 @@ def exit_approvals(
 
 
 def entry_quantity(session: Session, order_id: UUID) -> int | None:
-    row = session.scalar(
-        select(ExecutionOrderRecord).where(
-            ExecutionOrderRecord.order_id == order_id,
-            ExecutionOrderRecord.role == "ENTRY",
+    rows = tuple(
+        session.scalars(
+            select(ExecutionOrderRecord).where(
+                ExecutionOrderRecord.order_id == order_id,
+                ExecutionOrderRecord.role == "ENTRY",
+            )
         )
     )
-    return None if row is None else row.qty
+    return None if not rows else sum(row.qty for row in rows)
 
 
 def filled_quantity(session: Session, execution_id: UUID, *, before_seq: int | None = None) -> int:
@@ -112,6 +115,17 @@ def held_quantity(session: Session, entry_id: UUID, *, before_seq: int | None = 
         )
     )
     return bought - sum(filled_quantity(session, row.id, before_seq=before_seq) for row in children)
+
+
+def entry_filled_quantity(session: Session, order_id: UUID) -> int:
+    return sum(
+        filled_quantity(session, row.id)
+        for row in session.scalars(
+            select(ExecutionOrderRecord).where(
+                ExecutionOrderRecord.order_id == order_id, ExecutionOrderRecord.role == "ENTRY"
+            )
+        )
+    )
 
 
 def validate_record(session: Session, record: LedgerRecord) -> None:
@@ -146,31 +160,70 @@ def validate_record(session: Session, record: LedgerRecord) -> None:
                 .order_by(OrderEvent.seq.desc())
                 .limit(1)
             )
-            prior = session.scalar(
-                select(ExecutionOrderRecord).where(
-                    ExecutionOrderRecord.order_id == original.id,
-                    ExecutionOrderRecord.role == "ENTRY",
-                    ExecutionOrderRecord.seq < record.seq,
+            priors = tuple(
+                session.scalars(
+                    select(ExecutionOrderRecord).where(
+                        ExecutionOrderRecord.order_id == original.id,
+                        ExecutionOrderRecord.role == "ENTRY",
+                        ExecutionOrderRecord.seq < record.seq,
+                    )
                 )
             )
+            split = evidence is not None and evidence.exit_variant in {"SPLIT_1R", "SPLIT_1R_TRAIL"}
+            base_id = "vws-" + original.proposal_id.hex
+            expected_id, expected_qty, expected_target = (
+                base_id,
+                None if evidence is None else evidence.qty,
+                original.target_price,
+            )
+            if split and evidence is not None:
+                leg_a = record.client_order_id == base_id + "-a"
+                expected_id = base_id + ("-a" if leg_a else "-b")
+                expected_qty = evidence.qty // 2 if leg_a else evidence.qty - evidence.qty // 2
+                if original.stop_price is None:
+                    raise LedgerIntegrityError("EX-01: split proposal has no stop")
+                expected_target = (
+                    original.limit_price + (original.limit_price - original.stop_price)
+                    if leg_a
+                    else (
+                        None if evidence.exit_variant == "SPLIT_1R_TRAIL" else original.target_price
+                    )
+                )
+                if (
+                    evidence.qty < 2
+                    or (leg_a and priors)
+                    or (
+                        not leg_a
+                        and (len(priors) != 1 or priors[0].client_order_id != base_id + "-a")
+                    )
+                ):
+                    raise LedgerIntegrityError("EX-01: exactly one A followed by one B required")
             if (
                 parent is not None
                 or record.parent_execution_id is not None
-                or prior is not None
+                or (not split and bool(priors))
                 or latest is None
                 or latest.state != "APPROVED"
                 or record.side != "BUY"
-                or record.client_order_id != "vws-" + original.proposal_id.hex
+                or record.client_order_id != expected_id
                 or record.order_type != "LIMIT"
                 or record.limit_price != original.limit_price
                 or record.stop_price != original.stop_price
-                or record.target_price != original.target_price
-                or record.target_price is None
+                or record.target_price != expected_target
+                or (
+                    record.target_price is None
+                    and not (
+                        split
+                        and evidence is not None
+                        and evidence.exit_variant == "SPLIT_1R_TRAIL"
+                        and record.client_order_id.endswith("-b")
+                    )
+                )
                 or record.time_in_force != "GTC"
                 or record.valid_until is None
                 or record.valid_until <= record.created_at
                 or evidence is None
-                or evidence.qty != record.qty
+                or expected_qty != record.qty
                 or evidence.account_id != record.account_id
                 or evidence.environment != record.environment
                 or evidence.config_hash != record.config_hash
@@ -190,10 +243,19 @@ def validate_record(session: Session, record: LedgerRecord) -> None:
             ):
                 raise LedgerIntegrityError("Exit or stop is not bound to a managed entry")
             if record.role in {"STOP", "REPAIR"}:
+                oco = record.role == "REPAIR" and record.order_type == "LIMIT"
                 if (
-                    record.order_type != "STOP"
-                    or record.stop_price != parent.stop_price
-                    or record.limit_price is not None
+                    (record.order_type != "STOP" and not oco)
+                    or not authorized_stop(session, parent, record)
+                    or (not oco and record.limit_price is not None)
+                    or (
+                        oco
+                        and (
+                            parent.target_price is None
+                            or record.limit_price != parent.target_price
+                            or record.target_price != parent.target_price
+                        )
+                    )
                     or record.time_in_force != "GTC"
                 ):
                     raise LedgerIntegrityError(
@@ -206,7 +268,10 @@ def validate_record(session: Session, record: LedgerRecord) -> None:
             ):
                 raise LedgerIntegrityError("Target differs from recorded broker bracket")
             if record.role in {"STOP", "TARGET"}:
-                proved = bindings(session, before_seq=record.seq).get(parent.id)
+                root = child_root(session, parent, record.client_order_id, record.seq)
+                proved = (
+                    None if root is None else bindings(session, before_seq=record.seq).get(root.id)
+                )
                 if proved is None or not any(
                     leg.client_order_id == record.client_order_id for leg in proved.legs
                 ):
@@ -244,6 +309,17 @@ def validate_record(session: Session, record: LedgerRecord) -> None:
                         raise LedgerIntegrityError(
                             "Exit instruction differs from fixed-reason authorization"
                         )
+    elif isinstance(record, SecurityEvent) and record.kind == "PAPER_CANCEL_SEMANTICS":
+        from backend.execution.stop_readiness import CancelSemanticsProof, verify_cancel_semantics
+
+        proof = CancelSemanticsProof.recorded(record.detail)
+        if proof.observed_at != ensure_utc(record.ts) or proof.observed_at > record.created_at:
+            raise LedgerIntegrityError(
+                "EX-06: cancellation integration evidence is future or misdated"
+            )
+        verify_cancel_semantics(session, proof, before_seq=record.seq)
+    elif isinstance(record, SecurityEvent) and record.kind in {"STOP_RAISE_APPROVAL", "STOP_MOVED"}:
+        validate_stop_event(session, record)
     elif isinstance(record, ExecutionFillRecord):
         intent = session.get(ExecutionOrderRecord, record.execution_order_id)
         proved = bindings(session, before_seq=record.seq).get(record.execution_order_id)
@@ -436,8 +512,9 @@ def validate_record(session: Session, record: LedgerRecord) -> None:
             raise LedgerIntegrityError(
                 "Broker resized an order without matching recorded held shares"
             )
+        expected_class = "oto" if intent.target_price is None else "bracket"
         if intent.role == "ENTRY" and (
-            broker.order_class != "bracket"
+            broker.order_class != expected_class
             or any(
                 (leg.order_type == "stop" and leg.stop_price != intent.stop_price)
                 or (leg.order_type == "limit" and leg.limit_price != intent.target_price)
@@ -445,6 +522,17 @@ def validate_record(session: Session, record: LedgerRecord) -> None:
             )
         ):
             raise LedgerIntegrityError("Broker bracket differs from the approved protective levels")
+        if (
+            intent.role == "REPAIR"
+            and intent.order_type == "LIMIT"
+            and (
+                broker.order_class != "oco"
+                or len(broker.legs) != 1
+                or broker.legs[0].order_type != "stop"
+                or broker.legs[0].stop_price != intent.stop_price
+            )
+        ):
+            raise LedgerIntegrityError("EX-05: OCO differs from exact protected exit intent")
         old = prior_bindings.get(intent.id)
         if old is not None and (
             old.order_id != broker.order_id
@@ -460,13 +548,17 @@ def validate_record(session: Session, record: LedgerRecord) -> None:
         ):
             raise LedgerIntegrityError("One broker order is bound to multiple intents")
         if intent.role in {"STOP", "TARGET"}:
-            proved_parent = (
-                prior_bindings.get(intent.parent_execution_id)
-                if intent.parent_execution_id is not None
-                else None
+            held_entry = session.get(ExecutionOrderRecord, intent.parent_execution_id)
+            root = (
+                None
+                if held_entry is None
+                else child_root(session, held_entry, intent.client_order_id, record.seq)
             )
+            proved_parent = prior_bindings.get(root.id) if root is not None else None
             if proved_parent is None or not any(
-                leg.order_id == broker.order_id and leg.client_order_id == broker.client_order_id
+                leg.order_id == broker.order_id
+                and leg.client_order_id == broker.client_order_id
+                and broker.parent_id == proved_parent.order_id
                 for leg in proved_parent.legs
             ):
                 raise LedgerIntegrityError("Child broker identity is not proved by its bracket")

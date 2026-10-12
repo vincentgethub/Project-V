@@ -19,7 +19,7 @@ from backend.domain.models import (
 )
 from backend.risk.risk_cro import earnings_rule
 
-ExitReason = Literal["TIME", "EARNINGS", "SUSPECT"]
+ExitReason = Literal["TIME", "EARNINGS", "SUSPECT", "EMA20"]
 
 
 def exit_limit(last_price: Decimal, offset: Decimal) -> Decimal:
@@ -133,6 +133,16 @@ def live_ceiling_reasons(
     ):
         raise ConfigurationError("Live ceilings are unavailable")
     reasons: list[str] = []
+    from backend.risk.overlays import open_risk
+
+    if proposal.stop_price is None:
+        raise DataIntegrityError("AX-42: live entry stop is unavailable")
+    total_risk = open_risk(portfolio) + (proposal.limit_price - proposal.stop_price) * proposal.qty
+    if (
+        total_risk
+        > min(settings.live_max_open_risk, settings.portfolio_max_open_risk) * portfolio.equity
+    ):
+        reasons.append("AX-42: live total open-risk ceiling")
     notional = proposal.qty * proposal.limit_price
     if notional > min(notional_cap, settings.max_single_stock_weight * portfolio.equity):
         reasons.append("AX-42: live order notional ceiling")

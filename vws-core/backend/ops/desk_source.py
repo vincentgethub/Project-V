@@ -36,21 +36,28 @@ from backend.core.database import (
     TicketEvent,
     TradeTicket,
 )
-from backend.core.errors import ConfigurationError, DataIntegrityError
+from backend.core.errors import ConfigurationError, DataIntegrityError, ProviderError
 from backend.core.system_state import SystemStateStore
 from backend.data.async_reader import AsyncAlpacaReader
 from backend.data.boundary import ReadBoundary
 from backend.data.corporate_actions import CorporateActionsProvider
 from backend.data.data_layer import AsyncAlpacaMarketData, BatchBars, _eligible_session
 from backend.data.earnings import EarningsProvider
-from backend.data.history import load_history
+from backend.data.earnings_reports import EarningsReport
+from backend.data.history import HistorySeries, load_history
 from backend.data.market_calendar import MarketCalendar
 from backend.data.news import NewsProvider
 from backend.data.sec_edgar import SecEdgarProvider, SecPayload
 from backend.domain.instruments import InstrumentRegistry
-from backend.domain.models import MarketContext, MarketStatus
+from backend.domain.models import AssetClass, MarketContext, MarketStatus
 from backend.evaluation.ledger_source import WeeklyHistory
 from backend.evaluation.weekly import ReportContext
+from backend.execution.exit_variants import (
+    HeldEntry,
+    HeldExitObservation,
+    HeldQuoteObservation,
+    observe_held_exit,
+)
 from backend.notifications.callbacks import FreshInputs
 from backend.ops.account_context import AccountContext
 
@@ -144,6 +151,59 @@ class ConnectedDeskSource:
             result = await self.market.completed_daily_evidence(
                 selected, start, benchmarks=benchmarks, corporate_actions=actions
             )
+            from backend.agents.indicators import atr
+            from backend.core.errors import ProviderError
+            from backend.data.feed_crosscheck import record as record_crosscheck
+
+            try:
+                secondary = await self.market.secondary_completed_bars(
+                    tuple(sorted(set(selected) | set(benchmarks))), tail
+                )
+                suspect = set()
+                for row in secondary:
+                    primary = result.for_symbol(row.symbol)
+                    value = atr(primary)[-1]
+                    if value is None:
+                        raise DataIntegrityError("DQ-02: primary ATR evidence unavailable")
+                    check = await asyncio.to_thread(
+                        record_crosscheck,
+                        self.state.ledger,
+                        self.calendar,
+                        row.symbol,
+                        primary[-1],
+                        row.bars[-1],
+                        value,
+                    )
+                    if check.status == MarketStatus.SUSPECT:
+                        suspect.add(row.symbol)
+                        await asyncio.to_thread(
+                            self.market._status.mark_suspect,
+                            row.symbol,
+                            "DQ-02: three consecutive SIP/IEX cross-check warnings",
+                        )
+                if suspect:
+                    result = BatchBars.model_validate(
+                        {
+                            **result.model_dump(),
+                            "entries": tuple(
+                                type(row).model_validate(
+                                    {**row.model_dump(), "status": MarketStatus.SUSPECT}
+                                )
+                                if row.symbol in suspect
+                                else row
+                                for row in result.entries
+                            ),
+                        }
+                    )
+            except ProviderError:
+                self.state.ledger.append(
+                    SecurityEvent,
+                    kind="FEED_CROSSCHECK_UNAVAILABLE",
+                    detail={
+                        "session": tail.isoformat(),
+                        "reason": "secondary IEX evidence unavailable",
+                    },
+                )
             self._batch = BatchBars.model_validate(result)
             return self._batch
 
@@ -169,6 +229,62 @@ class ConnectedDeskSource:
             market=MarketContext.model_validate(
                 {**facts.model_dump(), "earnings": earnings, "next_earnings_date": earnings.date}
             ),
+        )
+
+    async def held_exit_observation(
+        self, entry: HeldEntry, inputs: FreshInputs
+    ) -> HeldExitObservation:
+        held, fresh = HeldEntry.model_validate(entry), FreshInputs.model_validate(inputs)
+        if (
+            held.account_id != self.boundary.account_id
+            or fresh.portfolio.account_id != self.boundary.account_id
+        ):
+            raise DataIntegrityError("EX: held exit belongs to another account")
+        batch = await self.daily((held.symbol,))
+        series = next(
+            (
+                row
+                for row in batch.entries
+                if row.symbol == held.symbol
+                and row.adjustment == "SPLIT"
+                and row.status == MarketStatus.OK
+            ),
+            None,
+        )
+        if series is None:
+            raise DataIntegrityError("EX: completed split-based held exit data unavailable")
+        with Session(self.state.engine) as session:
+            records = tuple(
+                session.scalars(
+                    select(SecurityEvent)
+                    .where(
+                        SecurityEvent.kind == "HELD_QUOTE_OBSERVED",
+                        SecurityEvent.detail["entry_id"].as_string() == str(held.entry_id),
+                    )
+                    .order_by(SecurityEvent.seq)
+                    .limit(100001)
+                )
+            )
+        if len(records) > 100000:
+            raise DataIntegrityError("EX: held peak inventory exceeds its bound")
+        peaks = tuple(
+            HeldQuoteObservation.recorded(row.detail)
+            for row in records
+            if row.detail.get("entry_id") == str(held.entry_id)
+        )
+        return observe_held_exit(
+            held,
+            HistorySeries(symbol=held.symbol, adjustment="SPLIT", bars=series.bars),
+            self.calendar,
+            self.clock.now(),
+            scan_delay_minutes=self.config.schedule.daily_scan_delay_minutes,
+            last_trade=fresh.market.last_price
+            if fresh.market.last_price_ts >= held.first_fill
+            else None,
+            trade_at=fresh.market.last_price_ts
+            if fresh.market.last_price_ts >= held.first_fill
+            else None,
+            verified_peaks=peaks,
         )
 
     async def refresh(self, symbol: str) -> FreshInputs:
@@ -227,7 +343,17 @@ class ConnectedDeskSource:
             )
             if scanned.status.value != "OK":
                 continue
-            hunted = self.hunter.hunt(symbol, bars, account.snapshot, quote.market, now)
+            reports = await self.past_earnings(symbol, now)
+            hunted = self.hunter.hunt(
+                symbol,
+                bars,
+                account.snapshot,
+                quote.market,
+                now,
+                earnings_reports=reports,
+                spy_bars=batch.for_symbol("SPY", "ALL"),
+                stock_return_bars=batch.for_symbol(symbol, "ALL"),
+            )
             with Session(self.state.engine) as session:
                 snapshot = session.scalar(
                     select(DataSnapshot)
@@ -242,6 +368,63 @@ class ConnectedDeskSource:
             if snapshot is None:
                 raise DataIntegrityError("Completed daily source lacks immutable SPLIT provenance")
             for drop in hunted.drops:
+                if drop.filtered_candidate is not None and drop.reductions is not None:
+                    from uuid import uuid5
+
+                    from backend.agents.expiry import proposal_expiry
+                    from backend.agents.indicators import atr
+                    from backend.evaluation.calibrated_costs import snapshot as cost_snapshot
+                    from backend.evaluation.costs import CostContext
+                    from backend.evaluation.filter_shadows import NAMESPACE, FilterShadow
+                    from backend.evaluation.filter_shadows import record as record_shadow
+                    from backend.evaluation.provenance import EvaluationProvenance
+                    from backend.ops.trading_controls import ControlScope
+
+                    candidate = drop.filtered_candidate
+                    evidence_atr = atr(bars)[-1]
+                    if evidence_atr is None:
+                        raise DataIntegrityError("ER-04: filter ATR unavailable")
+                    dollars = sorted(bar.close * bar.volume for bar in bars[-20:])
+                    scope = ControlScope(
+                        account_id=account.snapshot.account_id,
+                        environment="PAPER" if self.settings.paper_trading else "LIVE",
+                    )
+                    proof = EvaluationProvenance(
+                        cohort=scope.environment,
+                        expires_at=proposal_expiry(
+                            now, self.settings.proposal_ttl_sessions, self.calendar
+                        ),
+                        yaml_hash=self.config.config_hash,
+                        settings_hash=self.settings.config_hash,
+                        evidence_session=bars[-1].session_date,
+                        initial_equity=account.snapshot.equity,
+                        cost_context=cost_snapshot(
+                            self.state.ledger, scope.environment, scope=scope
+                        ).context(
+                            CostContext(
+                                median_dollar_volume_20=(dollars[9] + dollars[10]) / 2,
+                                atr14=evidence_atr,
+                                policy=self.config.cm,
+                            )
+                        ),
+                    )
+                    identity = uuid5(
+                        NAMESPACE,
+                        f"{scope.account_id}/{scope.environment}/{snapshot.id}/{candidate.playbook}/{candidate.as_of}/{proof.yaml_hash}",
+                    )
+                    await asyncio.to_thread(
+                        record_shadow,
+                        self.state.ledger,
+                        FilterShadow(
+                            identity=identity,
+                            scope=scope,
+                            data_snapshot_id=snapshot.id,
+                            candidate=candidate,
+                            factors=drop.reductions,
+                            provenance=proof,
+                            cro_cap=drop.filtered_cro_cap,
+                        ),
+                    )
                 self.state.ledger.append(
                     SecurityEvent,
                     kind="HUNTER_DROPPED",
@@ -285,6 +468,11 @@ class ConnectedDeskSource:
             fresh.portfolio,
             fresh.market,
             ensure_utc(self.clock.now()),
+            earnings_reports=await self.past_earnings(
+                request.candidate.symbol, ensure_utc(self.clock.now())
+            ),
+            spy_bars=batch.for_symbol("SPY", "ALL"),
+            stock_return_bars=batch.for_symbol(request.candidate.symbol, "ALL"),
         )
         candidate = next(
             (row for row in hunted.candidates if row.playbook == request.candidate.playbook), None
@@ -303,6 +491,29 @@ class ConnectedDeskSource:
             history=fresh.history,
             tax_accounts=fresh.tax_accounts,
         )
+
+    async def past_earnings(self, symbol: str, as_of: datetime) -> tuple[EarningsReport, ...]:
+        if (
+            "EARNINGS_GAP" not in self.config.enabled_playbooks
+            or self.registry.get(symbol).asset_class != AssetClass.STOCK
+        ):
+            return ()
+        if self.sec is None:
+            self.state.ledger.append(
+                SecurityEvent,
+                kind="EARNINGS_REPORTS_UNAVAILABLE",
+                detail={"symbol": symbol, "reason": "SEC submissions not configured"},
+            )
+            return ()
+        try:
+            return await self.sec.earnings_reports(symbol, as_of)
+        except ProviderError:
+            self.state.ledger.append(
+                SecurityEvent,
+                kind="EARNINGS_REPORTS_UNAVAILABLE",
+                detail={"symbol": symbol, "reason": "SEC submissions read unavailable"},
+            )
+            return ()
 
     async def get(self, symbol: str, as_of: datetime) -> PeerStrength:
         batch = await self.daily((symbol,))

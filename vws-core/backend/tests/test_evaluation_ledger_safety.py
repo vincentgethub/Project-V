@@ -164,6 +164,9 @@ async def test_EV_absent_evidence_never_creates_a_cro_veto_or_framework_pass(
         h.state.ledger, h.settings, golden.scope(h), h.swarm.risk.cro.calendar
     )
     if fault == "missing_fact":
-        assert len(rows) == 1 and rows[0].setup.fundamentals_status.value == "INCOMPLETE"
+        assert len(rows) == 2 and all(
+            row.setup.fundamentals_status.value == "INCOMPLETE" for row in rows
+        )
+        assert {row.setup.disposition for row in rows} == {"PENDING", "CRO_VETO"}
     else:
         assert rows == ()

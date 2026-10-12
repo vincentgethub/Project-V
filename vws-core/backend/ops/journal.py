@@ -52,6 +52,7 @@ WHY = {
     "CRO-11": "An event blackout blocks a new entry",
     "CRO-12": "Checking-buffer and funding evidence must be available",
     "CRO-13": "Earnings are inside the configured blackout",
+    "CRO-14": "Total held, pending and new stop risk exceeds the portfolio cap",
     "CMP-01": "A recent loss sale can create a forward wash-sale risk",
     "CMP-02": "A potential wash sale needs review",
     "CMP-03": "Sale proceeds have not settled",
@@ -83,7 +84,7 @@ class JournalEntry(FrozenModel):
     framework_status: FrameworkStatus
     fundamentals_json: str | None = Field(default=None, strict=True, max_length=65536)
     news_ids: tuple[str, ...] = Field(default=(), max_length=100)
-    cro: tuple[JournalRule, ...] = Field(max_length=13)
+    cro: tuple[JournalRule, ...] = Field(max_length=14)
     compliance: tuple[JournalRule, ...] = Field(max_length=7)
     outcome_json: str | None = Field(default=None, strict=True, max_length=65536)
 

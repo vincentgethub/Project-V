@@ -5,6 +5,7 @@ import shutil
 import sys
 from collections.abc import Awaitable, Callable
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
@@ -17,10 +18,13 @@ from backend.core.clock import Clock, ensure_utc
 from backend.core.config import MANUAL_CSV_DISABLED_MESSAGE, Settings, YamlConfig
 from backend.core.database import SecurityEvent, transaction
 from backend.core.errors import DataIntegrityError
+from backend.core.ledger import Ledger
 from backend.core.system_state import SystemStateStore
 from backend.data.broker_clock import BrokerTimeVerifier
 from backend.data.market_calendar import MarketCalendar
 from backend.domain.models import FrozenModel
+from backend.evaluation.availability import GradeStore
+from backend.execution.stop_readiness import live_raise_reasons
 from backend.ops.host import HostFinding
 from backend.ops.read_checks import PaperAccountCheck
 from backend.ops.security import SecurityOps
@@ -60,6 +64,46 @@ class DoctorResult(FrozenModel):
 
     def lines(self) -> tuple[str, ...]:
         return tuple(f"{row.status}: {row.message} Fix: {row.fix}" for row in self.checks)
+
+
+def stop_slippage_check(ledger: Ledger, settings: Settings, account_id: str | None) -> Check:
+    """CM-07: read verified physical fills; no calibration or broker writes."""
+    from backend.evaluation.fill_quality import monthly
+    from backend.evaluation.tca_store import inventory
+    from backend.ops.trading_controls import ControlScope
+
+    values: list[Decimal] = []
+    try:
+        if account_id is not None:
+            scope = ControlScope(
+                account_id=account_id, environment="PAPER" if settings.paper_trading else "LIVE"
+            )
+            fills = inventory(ledger, scope)
+            months = sorted(
+                {
+                    row.filled_at.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m")
+                    for row in fills
+                }
+            )[-12:]
+            for month in months:
+                for bucket in ("HIGH", "MID", "LOW"):
+                    result = monthly(scope, month, bucket, fills, Decimal(0))
+                    if result.stop_p90_bps is not None:
+                        values.append(result.stop_p90_bps)
+        exceeded = bool(values) and max(values) > settings.stop_slippage_buffer * 10000
+    except Exception:
+        values, exceeded = [], False
+    return Check(
+        name="stop_slippage",
+        status="UNVERIFIED" if not values else "WARN" if exceeded else "PASS",
+        required=False,
+        message="CM-07: verified stop-fill p90 exceeds the configured risk buffer."
+        if exceeded
+        else "CM-07: verified stop-fill p90 is within the configured risk buffer."
+        if values
+        else "CM-07: stop-fill arrival evidence is UNVERIFIED.",
+        fix="Review the monthly fill-quality table; missing quotes are excluded and no risk setting changes automatically.",
+    )
 
 
 class DoctorReads(Protocol):
@@ -376,6 +420,74 @@ class Doctor:
                     fix="Keep off, or explicitly configure the documented provider and rates.",
                 )
             )
+        try:
+            working = GradeStore(self.state.ledger, self.settings, self.config).exit_working()
+        except Exception:
+            working = False
+        checks.append(
+            Check(
+                name="exit_validation",
+                status="PASS" if working else "UNVERIFIED",
+                required=self.settings.execution_mode != "MANUAL",
+                message=f"EX-06: {self.config.exits.variant} exit validation "
+                + (
+                    "is WORKING."
+                    if working
+                    else "is UNVERIFIED; new tickets and auto entries are refused."
+                ),
+                fix="Register EXITS and run its fixed walk-forward validation; review the OOS grade before changing a setting.",
+            )
+        )
+        if "EARNINGS_GAP" in self.config.enabled_playbooks:
+            try:
+                earnings_working = GradeStore(
+                    self.state.ledger, self.settings, self.config
+                ).earnings_working()
+            except Exception:
+                earnings_working = False
+            manual = self.settings.execution_mode == "MANUAL"
+            checks.append(
+                Check(
+                    name="earnings_gap",
+                    status="WARN" if manual else "PASS" if earnings_working else "UNVERIFIED",
+                    required=not manual,
+                    message="EG-01: optional earnings-gap enabled; MANUAL evidence needs review."
+                    if manual
+                    else "EG-01: earnings-gap alone has registered WORKING OOS validation."
+                    if earnings_working
+                    else "EG-01: earnings-gap OOS grade is UNVERIFIED; AUTO entries refused.",
+                    fix="Freeze submissions and ALL tapes, register PLAYBOOK and validate the earnings-gap-only variant.",
+                )
+            )
+        if self.config.rs.use_breadth and len(self.config.watchlist) < 50:
+            checks.append(
+                Check(
+                    name="breadth",
+                    status="WARN",
+                    required=False,
+                    message="RS-04: breadth is noisy below 50 watchlist symbols.",
+                    fix="Review the small-sample warning; breadth never relaxes a CRO rule.",
+                )
+            )
+        if (
+            self.settings.execution_mode == "AUTO_LIVE"
+            and self.config.exits.variant == "SPLIT_1R_TRAIL"
+        ):
+            findings = live_raise_reasons(self.state.ledger, self.config)
+            checks.append(
+                Check(
+                    name="live_stop_raises",
+                    status="RED" if findings else "PASS",
+                    required=True,
+                    message=(
+                        "; ".join(findings)
+                        if findings
+                        else "EX-06: paper raises and pinned OCO/OTO cancellation evidence verified."
+                    )[:280],
+                    fix="Complete at least 30 failure-free AUTO_PAPER raises with windows at most 30 seconds and the explicit paper integration test.",
+                )
+            )
+        checks.append(stop_slippage_check(self.state.ledger, self.settings, self.account_id))
         # H stores the owner key only in setup. Stage W owns actual daily feed
         # health and policy. Presence alone cannot certify a healthy feed.
         checks.append(

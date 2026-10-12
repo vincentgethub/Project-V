@@ -66,14 +66,19 @@ def checked_context(context: CardContext, settings: Settings) -> CardContext:
         or p.symbol != item.fundamentals.symbol
         or p.symbol != item.news.symbol
         or p.account_id != item.snapshot.account_id
+        or p.size_evidence != c.size_evidence
         or (p.qty, p.limit_price, p.stop_price, p.target_price)
         != (c.qty, c.entry_price, c.stop_price, c.target_price)
         or v.proposal_id != p.proposal_id
         or v.snapshot_hash != snapshot_hash(item.snapshot)
         or v.config_hash != settings.config_hash
         or v.decision != Decision.APPROVED
-        or tuple(row.rule_id for row in v.results) != tuple(f"CRO-{i:02d}" for i in range(1, 14))
-        or any(not row.passed or row.severity.value != "BLOCK" for row in v.results[:12])
+        or tuple(row.rule_id for row in v.results) != tuple(f"CRO-{i:02d}" for i in range(1, 15))
+        or any(
+            not row.passed or row.severity.value != "BLOCK"
+            for row in v.results
+            if row.rule_id != "CRO-13"
+        )
         or item.compliance.proposal_id != p.proposal_id
         or item.compliance.config_hash != settings.config_hash
         or item.compliance.snapshot_hash != v.snapshot_hash
@@ -119,8 +124,27 @@ def format_card(context: CardContext, settings: Settings) -> str:
     risk_text = "$•••" if policy.telegram_mask_amounts else f"-${risk:.2f}"
     lines = [
         f"{escape(p.symbol)} · Buy setup · {escape(c.playbook.value)} (score {c.score:f}/10)",
+        *(
+            ["WARN: optional earnings-gap playbook; a real trading edge is unverified."]
+            if c.playbook.value == "EARNINGS_GAP" and policy.execution_mode == "MANUAL"
+            else []
+        ),
         f"Buy limit ${p.limit_price:.2f} · Stop ${c.stop_price:.2f} · Target ${c.target_price:.2f}",
         f"Size {size_text} ({weight:.2f}% of account)",
+        *(
+            [
+                "Size "
+                + f"{p.size_evidence.product:f}× ("
+                + ", ".join(
+                    f"{name} {value}"
+                    for name, value in p.size_evidence.model_dump().items()
+                    if name not in {"base_qty", "minimum"} and value < 1
+                )
+                + ")"
+            ]
+            if p.size_evidence is not None and p.size_evidence.product < 1
+            else []
+        ),
         f"If stopped: about {risk_text} ({risk_pct:.2f}%) · Reward:risk {reward_risk:.2f}",
         f"News: {news_text} · Fundamentals {escape(fundamental_text)}",
         *[f"[{row.stable_id[:12]}] {escape(row.headline)}" for row in news.news.headlines[:3]],

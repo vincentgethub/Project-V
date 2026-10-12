@@ -20,6 +20,7 @@ from backend.core.errors import ConfigurationError, DataIntegrityError, Provider
 from backend.core.ledger import Ledger
 from backend.core.notifier import ConsoleNotifier
 from backend.core.system_state import SystemStateStore
+from backend.data.earnings_reports import EarningsReport
 from backend.domain.models import FrozenModel, UTCDateTime, validate_symbol
 from backend.net.http import GuardedAsyncClient, make_client
 
@@ -269,3 +270,8 @@ class SecEdgarProvider:
     async def submissions(self, symbol: str, as_of: datetime) -> Mapping[str, object]:
         ensure_utc(as_of)
         return (await self._read("SUBMISSIONS", await self.cik_for(symbol))).parsed()
+
+    async def earnings_reports(self, symbol: str, as_of: datetime) -> tuple[EarningsReport, ...]:
+        from backend.data.earnings_reports import sec_reports
+
+        return sec_reports(symbol, await self.submissions(symbol, as_of), as_of)

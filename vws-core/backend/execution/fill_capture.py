@@ -14,6 +14,19 @@ class ExecutionFillCapture:
         self.modes, self.state = modes, modes.state
 
     def record(self, observation: ObservedFill) -> ExecutionFillRecord:
+        from backend.evaluation.tca_store import capture
+
+        fill = self._record(observation)
+        try:
+            capture(self.state.ledger, fill)
+        except Exception as error:
+            self.state.halt_for_error(error)
+            raise ReconciliationError(
+                "XA-01: physical fill is durable; quality audit failed closed"
+            ) from None
+        return fill
+
+    def _record(self, observation: ObservedFill) -> ExecutionFillRecord:
         try:
             fill = ObservedFill.model_validate(observation)
             self.state.ledger.verify_chain()

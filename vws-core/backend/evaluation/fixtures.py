@@ -110,14 +110,41 @@ def seal_offline_fixtures(
         bundle = HistoryBundle(
             series=tuple(
                 HistorySeries(symbol=symbol, adjustment=adj, bars=tuple(bars))
-                for symbol in seed.symbols
+                for symbol in tuple(sorted({*seed.symbols, "SPY"}))
                 for adj in ("ALL", "RAW", "SPLIT")
             )
         )
         history = seal_history(root, bundle, calendar)
         payload = _filings(dates[0].year - 2, last.year, last + timedelta(days=60))
+        raw_submissions = json.dumps(
+            {
+                "cik": 1,
+                "filings": {
+                    "recent": {
+                        "form": [],
+                        "items": [],
+                        "acceptanceDateTime": [],
+                        "accessionNumber": [],
+                    }
+                },
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        submissions = SecPayload(
+            kind="SUBMISSIONS",
+            cik=payload.cik,
+            fetched_at=payload.fetched_at,
+            raw=raw_submissions,
+            data_sha256=hashlib.sha256(raw_submissions).hexdigest(),
+        )
         filings = seal_filings(
-            root, tuple(FilingEvidence(symbol=symbol, payload=payload) for symbol in seed.symbols)
+            root,
+            tuple(
+                FilingEvidence(symbol=symbol, payload=evidence)
+                for symbol in seed.symbols
+                for evidence in (payload, submissions)
+            ),
         )
         return history, filings
     except DataIntegrityError:

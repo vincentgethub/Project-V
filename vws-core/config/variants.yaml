@@ -1,0 +1,22 @@
+families:
+  - name: PLAYBOOK
+    variants:
+      - {name: BASELINE, overrides: {}}
+      - {name: EARNINGS_GAP, overrides: {playbooks.enabled: [EARNINGS_GAP]}}
+  - name: EXITS
+    variants:
+      - {name: BASELINE, overrides: {}}
+      - {name: SPLIT_1R, overrides: {exits.variant: SPLIT_1R}}
+      - {name: SPLIT_1R_TRAIL, overrides: {exits.variant: SPLIT_1R_TRAIL}}
+      - {name: TRAIL_EMA20, overrides: {exits.variant: TRAIL_EMA20}}
+      - {name: TIME_10, overrides: {evaluation.max_hold_sessions: 10}}
+      - {name: TIME_30, overrides: {evaluation.max_hold_sessions: 30}}
+  - name: CONFIDENCE
+    variants:
+      - {name: BASELINE, overrides: {}}
+      - {name: BANDS, overrides: {sizing.confidence_mode: bands}}
+  - name: RELATIVE_STRENGTH
+    variants:
+      - {name: BASELINE, overrides: {}}
+      - {name: STOCK_50, overrides: {rs.min_stock_percentile: 50}}
+      - {name: TOP_4, overrides: {rs.sector_filter: top_n}}

@@ -30,11 +30,18 @@ def average(values: Array, period: int, alpha: np.float64) -> Array:
         seeded = np.concatenate(
             (np.asarray([sma_seed(values, period)], dtype=np.float64), values[period:])
         )
+        # pandas converts alpha through (1-alpha)/alpha and back. At a
+        # half-cent this extra rounding can change the exported price. These
+        # exact centers of mass preserve our defined EMA/Wilder coefficients.
+        center = (
+            period - 1
+            if alpha == np.float64(1) / period
+            else (period - 1) / 2
+            if alpha == np.float64(2) / (period + 1)
+            else 1 / float(alpha) - 1
+        )
         result[period - 1 :] = (
-            pd.Series(seeded)
-            .ewm(alpha=float(alpha), adjust=False)
-            .mean()
-            .to_numpy(dtype=np.float64)
+            pd.Series(seeded).ewm(com=center, adjust=False).mean().to_numpy(dtype=np.float64)
         )
     return result
 
@@ -43,6 +50,14 @@ def average(values: Array, period: int, alpha: np.float64) -> Array:
 def ema(prices: tuple["Decimal", ...], period: int) -> Series:
     count = _period(period)
     return _export(average(_prices(prices), count, np.float64(2) / (count + 1)), CENT)
+
+
+@_fail_closed
+def ema_last(prices: tuple[Decimal, ...], period: int) -> Decimal | None:
+    """Same seeded EMA; export only its completed endpoint for sizing."""
+    count = _period(period)
+    values = average(_prices(prices), count, np.float64(2) / (count + 1))
+    return _export(values[-1:], CENT)[0]
 
 
 @_fail_closed

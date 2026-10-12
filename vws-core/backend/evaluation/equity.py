@@ -59,6 +59,7 @@ def build_equity_curve(
     initial_equity: Decimal,
     start: date,
     end: date,
+    portfolio: bool = False,
 ) -> EquityBuild:
     """No new sizing/fill model. Cash, dated fees and whole-share splits follow EV/CM.
 
@@ -74,7 +75,13 @@ def build_equity_curve(
             raise ValueError("bounded immutable outcomes required")
         checked = tuple(Outcome.model_validate(item) for item in outcomes)
         if len({item.setup.alert_id for item in checked}) != len(checked) or any(
-            not _selected(bound, item) or item.manifest_sha256 != frozen.manifest.sha256
+            (
+                not _selected(bound, item)
+                if not portfolio
+                else (item.setup.variant, item.setup.cohort, item.setup.disposition)
+                != (bound.variant, bound.cohort, bound.disposition)
+            )
+            or item.manifest_sha256 != frozen.manifest.sha256
             for item in checked
         ):
             raise ValueError("outcomes differ from curve cohort or history")
@@ -116,11 +123,14 @@ def build_equity_curve(
             raise ValueError("raw marks do not cover every equity session")
         entries: dict[date, list[Outcome]] = {}
         exits: dict[date, list[Outcome]] = {}
+        partials: dict[date, list[Outcome]] = {}
         for item in checked:
             if item.entry_session is not None:
                 entries.setdefault(item.entry_session, []).append(item)
             if item.exit_session is not None:
                 exits.setdefault(item.exit_session, []).append(item)
+            for row in item.partial_exits:
+                partials.setdefault(row.session, []).append(item)
         actions = {
             (action.symbol, action.effective_session): action.new_shares_per_old
             for action in frozen.bundle.splits
@@ -165,6 +175,19 @@ def build_equity_curve(
                         )
                     if expected is not None:
                         accrued_income += expected.amount
+                for item in sorted(
+                    partials.get(day, []), key=lambda value: value.setup.alert_id.hex
+                ):
+                    if item.entry_session == day:
+                        continue
+                    partial = next(row for row in item.partial_exits if row.session == day)
+                    symbol, qty = holdings[item.setup.alert_id]
+                    if not 0 < partial.fill.qty < qty:
+                        raise ValueError("EX-01: partial exit exceeds held shares")
+                    holdings[item.setup.alert_id] = (symbol, qty - partial.fill.qty)
+                    cash += (
+                        cast(Decimal, partial.fill.price) * partial.fill.qty - partial.fees.total
+                    )
                 for item in sorted(exits.get(day, []), key=lambda value: value.setup.alert_id.hex):
                     if item.entry_session == day:
                         continue
@@ -192,16 +215,26 @@ def build_equity_curve(
                         )
                     cash -= debit
                     had_shares = True
+                    remaining = fill.qty
+                    for partial in item.partial_exits:
+                        if partial.session == day:
+                            remaining -= partial.fill.qty
+                            cash += (
+                                cast(Decimal, partial.fill.price) * partial.fill.qty
+                                - partial.fees.total
+                            )
+                    if remaining <= 0:
+                        raise ValueError("EX-01: partial exit must leave the B leg")
                     if item.exit_session == day:
                         outgoing = cast(FillResult, item.exit_fill)
-                        if outgoing.qty != fill.qty:
+                        if outgoing.qty != remaining:
                             raise ValueError("same-session exit shares differ from the entry")
                         cash += (
                             cast(Decimal, outgoing.price) * outgoing.qty
                             - cast(FeeBreakdown, item.exit_fees).total
                         )
                     else:
-                        holdings[item.setup.alert_id] = (item.setup.symbol, fill.qty)
+                        holdings[item.setup.alert_id] = (item.setup.symbol, remaining)
                 equity = (
                     cash
                     + accrued_income

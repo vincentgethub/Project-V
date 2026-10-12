@@ -43,7 +43,7 @@ from backend.domain.models import (
 
 ZERO = Decimal("0")
 DEFAULT_SECTOR_CAP = Decimal("0.35")
-SIZING_RULES = frozenset(f"CRO-{number:02d}" for number in range(2, 9))
+SIZING_RULES = frozenset(f"CRO-{number:02d}" for number in range(2, 9)) | {"CRO-14"}
 EXCHANGE_TIMEZONE = ZoneInfo("America/New_York")
 STATE_RANK = {SystemState.RUNNING: 0, SystemState.REDUCE_ONLY: 1, SystemState.HALTED: 2}
 
@@ -238,7 +238,7 @@ class ChiefRiskOfficer:
                         "verifiable inputs",
                         "input or policy evaluation failed closed",
                     )
-                    for number in range(1, 14)
+                    for number in range(1, 15)
                 )
                 return Verdict(
                     proposal_id=proposal.proposal_id,
@@ -468,6 +468,22 @@ class ChiefRiskOfficer:
             "checking buffer and funding reading must be available",
         )
         earnings = self._earnings(market, now)
+        from backend.risk.overlays import open_risk
+
+        stop = proposal.stop_price
+        if stop is None:
+            raise DataIntegrityError("CRO-14: entry protection is unavailable")
+        total_risk = open_risk(snapshot) + (proposal.limit_price - stop) * proposal.qty
+        risk_cap = self.config.portfolio_max_open_risk
+        if not self.config.paper_trading:
+            risk_cap = min(risk_cap, self.config.live_max_open_risk)
+        portfolio_risk = _result(
+            "CRO-14",
+            total_risk <= equity * risk_cap,
+            total_risk,
+            equity * risk_cap,
+            "total held, pending and new stop risk fits the portfolio cap",
+        )
         return (
             name,
             risk,
@@ -480,6 +496,7 @@ class ChiefRiskOfficer:
             blackout,
             funding,
             earnings,
+            portfolio_risk,
         )
 
     def _allocation(self, exposures: dict[str, Decimal], equity: Decimal) -> RuleResult:

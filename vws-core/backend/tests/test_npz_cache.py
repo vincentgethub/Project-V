@@ -27,7 +27,7 @@ def test_PF_02_real_cache_roundtrip_and_versioned_keys(
     assert "AAPL_SPLIT_" in next(tmp_path.glob("*.npz")).name
     cache.calculate("AAPL", "ALL", bars, 0, feed="SIP")
     cache.calculate("AAPL", "SPLIT", bars, 1, feed="SIP")
-    monkeypatch.setattr(implementation, "CODE_VERSION", "pf1-v2")
+    monkeypatch.setattr(implementation, "CODE_VERSION", implementation.CODE_VERSION + "-next-test")
     assert cache.calculate("AAPL", "SPLIT", bars, 0, feed="SIP") == result
     assert len(tuple(tmp_path.glob("*.npz"))) == 4
 

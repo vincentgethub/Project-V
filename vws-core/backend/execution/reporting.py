@@ -11,6 +11,7 @@ from backend.core.clock import ensure_utc
 from backend.core.config import Settings
 from backend.core.database import Alert, ExecutionFillRecord, ExecutionOrderRecord, Order
 from backend.core.errors import DataIntegrityError
+from backend.core.money import validate_cent_price
 from backend.domain.models import PortfolioSnapshot
 from backend.execution.modes import ModeStore
 from backend.notifications.card_formatter import display_time
@@ -29,6 +30,7 @@ def fill_fyi(
     *,
     unit_cost: Decimal | None = None,
     exit_reason: str | None = None,
+    protective_level: Decimal | None = None,
 ) -> str:
     if (
         fill.execution_order_id != instruction.id
@@ -37,7 +39,7 @@ def fill_fyi(
         or entry.environment != ("PAPER" if settings.paper_trading else "LIVE")
         or entry.role != "ENTRY"
         or entry.stop_price is None
-        or entry.target_price is None
+        or (entry.target_price is None and not entry.client_order_id.endswith("-b"))
         or type(held) is not int
         or held < 0
     ):
@@ -47,7 +49,7 @@ def fill_fyi(
         if instruction.side == "BUY"
         else {
             "STOP": "Stop hit",
-            "REPAIR": "Stop hit",
+            "REPAIR": "Target hit" if instruction.order_type == "LIMIT" else "Stop hit",
             "TARGET": "Target hit",
             "EXIT": "Exit fill",
         }.get(instruction.role)
@@ -59,6 +61,7 @@ def fill_fyi(
             "TIME": "Time-stop exit",
             "EARNINGS": "Earnings exit",
             "SUSPECT": "Suspect-data exit",
+            "EMA20": "EMA20 exit",
         }.get(exit_reason)
         if instruction.role != "EXIT" or label is None:
             raise DataIntegrityError("AX-50: exit notice reason is not authorized")
@@ -69,15 +72,19 @@ def fill_fyi(
     )
     if not isinstance(cost, Decimal) or not cost.is_finite() or cost <= 0:
         raise DataIntegrityError("AX-50: fill notice lacks an exact acquisition cost")
+    stop = entry.stop_price if protective_level is None else validate_cent_price(protective_level)
+    if stop < entry.stop_price:
+        raise DataIntegrityError("EX-05: notice cannot claim lower stop protection")
     with localcontext() as precision:
         precision.prec = 80
-        risk = max(Decimal(0), cost - entry.stop_price) * held
+        risk = max(Decimal(0), cost - stop) * held
     qty = "$•••" if settings.telegram_mask_amounts else str(fill.qty)
     risk_text = "$•••" if settings.telegram_mask_amounts else f"${risk:,.2f}"
     protection = "at broker" if held else "recorded level; position closed"
+    target = "daily ATR trail" if entry.target_price is None else f"${entry.target_price:.2f}"
     return (
         f"{entry.environment} · 🤖 {label} {qty} {entry.symbol} @ ${fill.price:.2f} · "
-        f"stop ${entry.stop_price:.2f} ({protection}) · target ${entry.target_price:.2f} · "
+        f"stop ${stop:.2f} ({protection}) · target {target} · "
         f"risk ≈ {risk_text} · {display_time(fill.filled_at, settings)}"
     )
 
@@ -128,7 +135,7 @@ def daily_summary(
             )
         )
     entries = {
-        row.execution_order_id
+        instructions[row.execution_order_id].order_id
         for row in fills
         if instructions[row.execution_order_id].side == "BUY"
     }

@@ -1,58 +1,86 @@
-# Reading the evaluation
+# Reading registered validation
 
-Hypothetical/past results; not indicative of future returns.
+This stage is still under construction. No real edge or READY verdict has been
+established. Hypothetical/past results; not indicative of future returns.
 
-Stage G measures the fixed playbooks. The alert tracker models approved,
-rejected, expired and pending alerts and fresh-check failures. Positive-share
-CRO vetoes have a separate shadow view. These are hypothetical fills; a paper
-or live label identifies the managed account, not its actual broker returns.
+The configuration lists a small, explicit set of variants. Registration stores
+the file hash, public history and financial-filing hashes, fee schedule, settings
+and instrument definitions in the append-only ledger. Each family includes the
+unchanged baseline. Trials accumulate across registrations; changing a name or
+registering again does not erase the earlier comparisons. The program does not
+generate parameter combinations or search for better parameters.
 
-Every result uses the same cost model: liquidity-floor or measured half-spread,
-trade-through limit entries, a volume cap, conservative stop-first exits and
-dated fees rounded up per component. Gaps and next-open exits can differ from
-the recorded levels. The first partial entry is not topped up. Fees before the
-first dated row use that row and are disclosed as estimates. Stage J's broker
-FEE ingestion passed offline checks; it does not rewrite recorded evaluation
-costs. Real fee allocation, subscription and commission-plan facts remain
-unverified. Signal prices use split adjustments, with native RAW fills and
-whole shares. A fractional or subcent split is unavailable, never a fabricated
-fill. The alert tracker ignores dividends. Replay uses adjacent ALL/SPLIT
-distribution-return estimates, conservatively rounded down and kept outside
-settled entry cash; these are not actual dividend payments or payment dates.
-Ambiguous adjustments refuse the run. SPY uses ALL-adjusted total-return prices.
+The final 18 calendar months of the first registered history are reserved. The
+ordinary replay and hypothetical report paths refuse overlapping dates. Final
+validation requires the exact host phrase `RUN HOLDOUT FAMILY`. A durable start
+record consumes that family's one-use test even if execution later crashes.
+After completion, another invocation displays the stored result. Known
+unsupported implementations are refused before a start record is written.
 
-An R is the filled shares' recorded limit-to-stop risk. Reports subtract costs
-before calculating R, win/loss averages, expectancy and profit factor. Daily
-equity uses actual modeled holdings and cash; unavailable seed/history, too much
-concurrent exposure or invalid split evidence makes those metrics unavailable.
-Replay reserves pending entries, excludes sale proceeds until T+1 and cancels
-pending entries after a latched entry halt. Held exits remain available.
+Training starts after a 200-session warm-up. Each following test window spans
+six months. Training selects the variant with the highest lower confidence
+bound among variants with at least 50 resolved trades; ties and shortfalls use
+the baseline. The concatenated selected test windows measure that selection
+process. The report also shows each fixed variant's own test-window results.
 
-The 90% range comes from 10,000 circular block resamples, with a fixed seed.
-It describes uncertainty in the recorded sample. Fewer than 30 resolved trades
-prints "too few trades to judge". WORKING requires at least 50, a positive lower
-bound and profit factor at least 1.2; replay also needs out-of-sample validation
-and its required deflated Sharpe. An in-sample replay remains UNPROVEN even with
-positive averages. LOSING uses the specified negative range/XK-05 condition.
-Grades never change settings or pause a playbook by themselves.
+Each replay window starts flat with the same explicitly supplied hypothetical
+cash. It carries positions within that window, reserves pending entries, and
+excludes unsettled proceeds from new purchases until the next session. Open
+positions at the window's end affect marked equity but are excluded from resolved
+trade statistics. Separate windows do not carry positions between them. This
+boundary assumption must be considered when reading the estimates.
 
-Replay reads only sealed local manifests with exact file hashes. Fundamentals
-use filed dates and age limits, and missing evidence skips the stock. Decisions
-at a close cannot fill that session. Indicators and gates are precomputed once;
-cash and CRO admission remain sequential. Proof hashes match with one and four
-workers. Synthetic acceptance tapes and filings are labeled in the saved proof,
-report and output; their caches are separate from observed-history caches.
+Daily decisions use public evidence available by that session. Entry fills start
+the following session. The cost model includes spread, dated fees, participation
+limits, conservative same-bar stop precedence and stop slippage. Price paths,
+cash, sizing and CRO decisions are rerun for every variant; only indicator
+preparation with identical dependencies can be reused.
 
-Today's watchlist omits historical and delisted names: survivorship can overstate
-the result. No point-in-time universe or out-of-sample result is claimed yet.
-The later Stage V adds the small registered variant set, cumulative trial
-counts, anchored walk-forward windows, family multiple-testing correction and
-one-use holdout. There is no parameter search. Its readiness verdict informs
-the owner and is a live-unlock prerequisite; it never unlocks trading itself.
-Stage W also requires five healthy realtime feed sessions before live unlock.
+The 90% confidence interval uses 10,000 circular block bootstrap samples with
+the fixed registered seed. Holm correction applies across each family, and
+deflated Sharpe uses cumulative trials. Fewer than 30 out-of-sample resolved
+trades is INSUFFICIENT and UNPROVEN. WORKING additionally needs at least 50,
+a positive lower bound, profit factor at least 1.2 and deflated Sharpe at least
+0.95. A confidence interval is an estimate, not a profit promise.
 
-Rough after-tax replay numbers appear only with all supplied rates. The saved
-report includes those rates; yearly net and the estimate are checked against
-the per-alert evidence. Wash sales/carryovers are excluded from this rough
-view. The shared tax engine and authoritative 1099-B handle actual tax records.
-These numbers are estimates, not tax advice. No money is moved.
+Without `config/universe_history.csv`, reports warn that today's watchlist has
+survivorship bias. The optional file requires exactly `symbol,date_added,date_removed`;
+addition is inclusive, removal exclusive, and re-addition needs a separate interval.
+Its full contents and hash are registered before evaluation. Symbols require
+allowlisted instrument metadata and complete sealed RAW/SPLIT/ALL bars; incomplete
+delisted histories fail closed, and actual provider availability is UNVERIFIED.
+Membership never changes the live watchlist. Missing public evidence is unavailable, never
+a passing observation. Actual broker fills, hypothetical tracker outcomes,
+in-sample replay and out-of-sample replay retain separate labels.
+
+The readiness verdict informs the owner and never unlocks a mode. It prefers
+AUTO_PAPER evidence when present; otherwise the specified alert-tracker fallback
+is visibly labeled hypothetical. Every required safety, sample, drawdown,
+benchmark, drill and incident input must be verified. Live execution still needs
+its separate host unlock, actual paper history, security checks and healthy
+realtime sessions. The build does not enable or run AUTO_LIVE.
+
+Physical A/B brackets count as one resolved proposal only after all acquired
+shares are sold and both entry roots are terminal. Current-policy approval
+hashes bind the sample; another policy cannot certify its edge. Actual attributed
+fees replace CM estimates when available; missing attribution stays labeled
+modeled. Trade R uses fill proceeds less purchase costs/fees. Cash distributions
+are included in account daily returns, but are not allocated to physical trade R.
+Hypothetical results never top up a small physical sample.
+
+Fill quality uses recorded decision/limit prices and genuinely observed arrival
+quotes; a stale stop-creation quote cannot stand in for a stop-trigger quote.
+Missing evidence is counted separately. Monthly p50/p90 and stop p90 remain
+account/environment bound. A realized median above the model by more than two
+basis points over at least twenty fills can only raise the effective cost floor.
+Replay, registration, tracker, reports and verdict share the calibration hash;
+a changed cost context requires new registered validation. Runtime never edits fees.
+
+Edge drift compares current-policy actual PAPER R with that policy's registered
+OOS sample by playbook. Missing or short samples remain UNVERIFIED. Incident
+windows predating the new durable reconciliation/circuit telemetry are also
+UNVERIFIED; absence of older telemetry is never a clean bill of health.
+
+RS, PR, SZ and CRO filter cohorts overlap. They preserve the unsized candidate
+as a counterfactual and cannot be added to approval counts or portfolio returns.
+Reports show each filter's taken-versus-filtered comparison separately.

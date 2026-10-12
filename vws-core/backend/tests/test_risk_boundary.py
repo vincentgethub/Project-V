@@ -167,8 +167,8 @@ def test_R_03_CRO_13_warn_approval_does_not_log_veto(
     gate = boundary(engine, boundary_cro, sink)
     result = gate.evaluate(trade(), book(), quote(), deployable=capital())
     assert result.decision == Decision.APPROVED
-    assert len(result.results) == 13
-    assert not result.results[-1].passed and result.results[-1].severity == Severity.WARN
+    assert len(result.results) == 14
+    assert not result.results[12].passed and result.results[12].severity == Severity.WARN
     assert sink.calls == []
     assert gate.state.current() == SystemState.RUNNING
 

@@ -10,11 +10,12 @@ from backend.core.errors import ConfigurationError
 from backend.data.market_calendar import MarketCalendar
 from backend.execution.live_guard import LIVE_PHRASE, LIVE_WARNING, LiveGuard
 from backend.execution.modes import ModeStore, assert_auto_binding
+from backend.execution.stop_readiness import live_raise_reasons
 from backend.ops.doctor import DoctorResult
 from backend.ops.read_checks import ReadChecksClient
 from backend.security.secrets import SecretStore
 from vws import security_cli
-from vws.drill_cli import verified_drill
+from vws.drill_cli import verified_drill, verified_drill_time
 
 
 async def panic_cancel(context: security_cli.SecurityContext, store: SecretStore) -> None:
@@ -186,9 +187,48 @@ async def execute(
         modes.account_id,
         context.config_hash,
         security_reasons=security_cli.live_security_guard(context, store),
+        exit_reasons=lambda: live_raise_reasons(context.ledger, config),
+        verdict_hash=lambda: config.config_hash,
         drill_ready=lambda: verified_drill(
             security_cli.PROJECT, settings, store, context.ledger.clock.now(), 45
         ),
     )
+    # GV's security prerequisite needs the explicitly prepared live host. This
+    # read-only preflight uses qualified PAPER results; it never starts entries
+    # or substitutes live results for paper history. The phrase and every AX
+    # gate still follow independently, even if the informational verdict is READY.
+    paper_account = guard.qualified_paper_account()
+    if paper_account is not None:
+        from backend.data.fee_schedule import load_fee_schedule
+        from backend.data.history import load_history
+        from backend.evaluation.verdict import record
+        from backend.evaluation.verdict_source import collect, update_progress
+        from backend.ops.trading_controls import ControlScope
+
+        def refresh_verdict() -> None:
+            root = security_cli.PROJECT / "data/history"
+            calendar = MarketCalendar()
+            history = load_history(root, calendar) if (root / "manifest.json").is_file() else None
+            inputs = collect(
+                context.ledger,
+                settings,
+                config,
+                ControlScope(account_id=paper_account, environment="PAPER"),
+                calendar,
+                load_fee_schedule(security_cli.PROJECT / "config/fees.yaml"),
+                history=history,
+                effective_hash=config.config_hash,
+                security_green=not security_cli.live_security_guard(context, store)(),
+                drill_at=verified_drill_time(
+                    security_cli.PROJECT, settings, store, context.ledger.clock.now(), 31
+                ),
+            )
+            verdict = record(context.ledger, inputs, config.gv, seed=config.qv.seed)
+            update_progress(security_cli.PROJECT, verdict)
+
+        import asyncio
+
+        await asyncio.to_thread(refresh_verdict)
+    print(guard.verdict_text())
     guard.enable(operator=operator, phrase=getpass.getpass(f"Type {LIVE_PHRASE}: "))
     print("Config-bound live approval recorded. Re-run doctor before an explicit host restart.")

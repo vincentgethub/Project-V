@@ -17,6 +17,7 @@ from backend.evaluation.costs import FeeSchedule
 from backend.evaluation.ledger_inputs import collect_tracked_setups
 from backend.evaluation.outcomes import _simulate
 from backend.evaluation.publication import WeeklyInputs
+from backend.evaluation.registry import refuse_registered_holdout
 from backend.evaluation.security_summary import weekly_security
 from backend.evaluation.weekly import ReportContext
 
@@ -53,6 +54,7 @@ class LedgerWeeklySource:
         try:
             bound = WeeklyHistory.model_validate(evidence)
             context = bound.context
+            refuse_registered_holdout(self.state.ledger, context.start, context.end)
             if (
                 context.account_id != self.account_id
                 or context.cohort != ("PAPER" if self.settings.paper_trading else "LIVE")
@@ -73,15 +75,31 @@ class LedgerWeeklySource:
             context = ReportContext.model_validate(
                 {**context.model_dump(), "initial_equity": baseline}
             )
+            from backend.evaluation.calibrated_costs import snapshot as cost_snapshot
+            from backend.ops.trading_controls import ControlScope
+
+            cost_scope = ControlScope(
+                account_id=self.account_id,
+                environment="PAPER" if self.settings.paper_trading else "LIVE",
+            )
+            calibration = cost_snapshot(self.state.ledger, cost_scope.environment, scope=cost_scope)
             outcomes = tuple(
                 _simulate(
-                    item.setup,
+                    type(item.setup).model_validate(
+                        {
+                            **item.setup.model_dump(),
+                            "variant": "baseline"
+                            if self.config.exits.variant == "BASELINE"
+                            else self.config.exits.variant,
+                        }
+                    ),
                     bound.history,
-                    item.provenance.cost_context,
+                    calibration.context(item.provenance.cost_context),
                     self.fees,
                     self.config.evaluation,
                     None,
                     context.end,
+                    exit_variant=self.config.exits.variant,
                 )
                 for item in tracked
             )
@@ -99,6 +117,7 @@ class LedgerWeeklySource:
                         context.start, datetime.min.time(), ZoneInfo("America/New_York")
                     ),
                 ),
+                calibration=calibration,
             )
         except DataIntegrityError:
             raise

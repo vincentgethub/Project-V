@@ -156,6 +156,7 @@ class ApprovalGate:
         self.ledger, self.source = state.ledger, source
         self._lock = asyncio.Lock()
         self.executor, self.modes = executor, modes
+        self.size_entry: Callable[[TradeProposal, FreshInputs], Awaitable[int]] | None = None
 
     def bind_auto(self, executor: OrderExecutor, modes: ModeStore) -> None:
         if (
@@ -389,6 +390,12 @@ class ApprovalGate:
         now = ensure_utc(self.clock.now())
         if inputs.portfolio.account_id != order.account_id:
             raise DataIntegrityError("GD-06: fresh broker account differs")
+        size_changed = False
+        if proposal.intent in {Intent.ENTRY, Intent.ADD} and self.size_entry is not None:
+            allowed = await self.size_entry(proposal, inputs)
+            if type(allowed) is not int or not 0 <= allowed <= proposal.qty:
+                raise DataIntegrityError("PR-04: fresh manual sizing may only reduce whole shares")
+            size_changed = allowed < proposal.qty
         if inputs.filings is not None and (
             inputs.expected_cik != inputs.filings.cik or inputs.filings.fetched_at > now
         ):
@@ -409,6 +416,13 @@ class ApprovalGate:
         )
         findings = [row.model_dump(mode="json") for row in (*verdict.results, *compliance.results)]
         reasons = [row for row in findings if not row["passed"] and row["severity"] == "BLOCK"]
+        if size_changed:
+            reasons.append(
+                {
+                    "rule_id": "PR-04",
+                    "message": "Fresh size is smaller; refresh the card before approval",
+                }
+            )
         entry = proposal.intent in {Intent.ENTRY, Intent.ADD}
         if entry and not framework_allows(fundamental, self.config.fundamentals):
             reasons.append({"rule_id": "FA-08", "message": "; ".join(fundamental.failure_reasons)})

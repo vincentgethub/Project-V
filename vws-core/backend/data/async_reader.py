@@ -12,6 +12,7 @@ from typing import Any, Protocol, TypeVar
 
 from backend.core.clock import Clock, ensure_utc
 from backend.core.config import Settings
+from backend.core.database import SecurityEvent
 from backend.core.errors import DataIntegrityError, ProviderError, SafetyError
 from backend.core.ledger import Ledger
 from backend.core.system_state import SystemState, SystemStateStore
@@ -204,9 +205,15 @@ class AsyncAlpacaReader:
         """DAT-08/R-02: the one durable fault write also keeps the loop responsive."""
         self.tripped = True
         if self._halt_task is None:
-            self._halt_task = asyncio.create_task(
-                asyncio.to_thread(self.state.halt_for_error, error)
-            )
+
+            def persist_fault() -> SystemState:
+                result = self.state.halt_for_error(error)
+                self.state.ledger.append(
+                    SecurityEvent, kind="CIRCUIT_BREAKER_HALTED", detail={"provider": "SDK_ASYNC"}
+                )
+                return result
+
+            self._halt_task = asyncio.create_task(asyncio.to_thread(persist_fault))
         await asyncio.shield(self._halt_task)
 
     def _completed(self, worker: asyncio.Task[Any]) -> None:

@@ -81,7 +81,8 @@ def test_CRO_13_estimated_earnings_advisory_does_not_trap_entry_or_held_exit(
     gate = boundary(engine, boundary_cro)
     result = gate.evaluate(trade(), book(), market, deployable=capital())
     assert result.decision == Decision.APPROVED
-    assert not result.results[-1].passed and result.results[-1].severity == Severity.WARN
+    earnings = next(row for row in result.results if row.rule_id == "CRO-13")
+    assert not earnings.passed and earnings.severity == Severity.WARN
     held = gate.evaluate(trade(exit_=True), book(held=True), market)
     assert held.decision == Decision.APPROVED and len(held.results) == 2
 
@@ -131,13 +132,20 @@ def test_R_02_CRO_13_forged_earnings_evidence_durably_halts(
                 )
             }
         )
-    forged = cro.evaluate(trade(), book(), quote(), SystemState.RUNNING, NOW, deployable=capital())
+    forged = cro.evaluate(
+        trade(),
+        book(),
+        market if attack == "clear" else quote(),
+        SystemState.RUNNING,
+        NOW,
+        deployable=capital(),
+    )
     if attack == "clear":
         forged = forged.model_copy(
             update={
-                "results": (
-                    *forged.results[:-1],
-                    forged.results[-1].model_copy(update={"passed": True}),
+                "results": tuple(
+                    row.model_copy(update={"passed": True}) if row.rule_id == "CRO-13" else row
+                    for row in forged.results
                 )
             }
         )

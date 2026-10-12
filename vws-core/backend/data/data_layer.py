@@ -27,7 +27,13 @@ from urllib3.exceptions import TimeoutError as UrllibTimeoutError
 
 from backend.core.clock import Clock, ensure_utc
 from backend.core.config import Settings
-from backend.core.database import DataSnapshot, SystemControl, SystemEvent, transaction
+from backend.core.database import (
+    DataSnapshot,
+    SecurityEvent,
+    SystemControl,
+    SystemEvent,
+    transaction,
+)
 from backend.core.errors import DataIntegrityError, ProviderError, SafetyError, StaleDataError
 from backend.core.ledger import Ledger
 from backend.core.money import decimal_money, validate_cent_price
@@ -205,6 +211,9 @@ class ResilientReader:
         except Exception as exc:
             self.tripped = True
             self.state.halt_for_error(exc)
+            self.state.ledger.append(
+                SecurityEvent, kind="CIRCUIT_BREAKER_HALTED", detail={"provider": "SDK_SYNC"}
+            )
             if isinstance(exc, SafetyError):
                 raise exc from None
             raise ProviderError("DAT-04: read failed; circuit latched HALTED") from None
@@ -921,6 +930,111 @@ class AsyncAlpacaMarketData:
         except Exception as error:
             self.reader.state.halt_for_error(error)
             raise ProviderError("DAT-08: async market transport could not be configured") from None
+
+    async def secondary_completed_bars(
+        self, symbols: tuple[str, ...], day: date
+    ) -> tuple[SymbolBars, ...]:
+        """DQ-02: one delayed IEX batch, isolated from primary SIP caches."""
+        from alpaca.data.enums import Adjustment, DataFeed
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+
+        from backend.data.split_cache import current_epochs
+
+        self.reader.bind_policy(self.settings, self.ledger)
+        now = ensure_utc(self.reader.clock.now())
+        if (
+            not isinstance(symbols, tuple)
+            or not 1 <= len(symbols) <= 200
+            or len(set(symbols)) != len(symbols)
+            or self.calendar.session_close(day) + timedelta(minutes=self.delay) > now
+        ):
+            raise DataIntegrityError("DQ-02: bounded completed secondary session required")
+        for symbol in symbols:
+            validate_symbol(symbol)
+        self.ledger.verify_chain()
+        cached: dict[str, tuple[Bar, ...]] = {}
+        with transaction(self.ledger.engine) as session:
+            epochs = current_epochs(session, now)
+            rows = tuple(
+                session.scalars(
+                    select(DataSnapshot)
+                    .where(
+                        DataSnapshot.symbol.in_(symbols),
+                        DataSnapshot.feed == "IEX",
+                        DataSnapshot.timeframe == "1Day",
+                        DataSnapshot.adjustment == "SPLIT",
+                        DataSnapshot.range_start
+                        >= datetime.combine(day, datetime_time.min, tzinfo=NEW_YORK),
+                        DataSnapshot.range_end < self.calendar.session_close(day),
+                    )
+                    .order_by(DataSnapshot.seq)
+                    .limit(201)
+                )
+            )
+            if len(rows) > 200:
+                raise DataIntegrityError("DQ-02: secondary cache exceeds its bound")
+            for row in rows:
+                if row.seq <= epochs.get(row.symbol, 0):
+                    continue
+                bars = tuple(self._cached_bar(value) for value in row.bars)
+                if (
+                    len(bars) != 1
+                    or row.bar_count != 1
+                    or row.sha256 != _bars_digest(bars)[0]
+                    or bars[0].session_date != day
+                    or row.fetched_at > now
+                    or row.range_start != bars[0].timestamp
+                    or row.range_end != bars[0].timestamp
+                    or self.calendar.session_close(day) + timedelta(minutes=self.delay)
+                    > row.fetched_at
+                ):
+                    raise DataIntegrityError("DQ-02: secondary immutable digest/session differs")
+                if row.symbol in cached and cached[row.symbol] != bars:
+                    raise DataIntegrityError("DQ-02: secondary revisions conflict")
+                cached[row.symbol] = bars
+        missing = tuple(symbol for symbol in symbols if symbol not in cached)
+        if missing:
+            # VERIFY pinned StockBarsRequest supports explicit IEX/SPLIT on daily bars.
+            request = StockBarsRequest(
+                symbol_or_symbols=list(missing),
+                start=datetime.combine(day, datetime_time.min, tzinfo=NEW_YORK),
+                end=self.calendar.session_close(day),
+                timeframe=TimeFrame.Day,
+                feed=DataFeed.IEX,
+                adjustment=Adjustment.SPLIT,
+            )
+            response = await self.reader.run(
+                partial(self.client.get_stock_bars, request), budget_request=False
+            )
+            if not isinstance(response, Mapping) or set(response) != set(missing):
+                raise DataIntegrityError("DQ-02: secondary response symbol set differs")
+            for symbol in missing:
+                cached[symbol] = self._parse_completed(symbol, response[symbol], day, day, now)
+            with transaction(self.ledger.engine) as session:
+                for symbol in missing:
+                    bars = cached[symbol]
+                    digest, payload = _bars_digest(bars)
+                    self.ledger.append_in_session(
+                        session,
+                        DataSnapshot,
+                        symbol=symbol,
+                        timeframe="1Day",
+                        range_start=bars[0].timestamp,
+                        range_end=bars[-1].timestamp,
+                        feed="IEX",
+                        adjustment="SPLIT",
+                        fetched_at=now,
+                        bar_count=len(bars),
+                        sha256=digest,
+                        bars=payload,
+                    )
+        return tuple(
+            SymbolBars(
+                symbol=symbol, bars=cached[symbol], data_sha256=_bars_digest(cached[symbol])[0]
+            )
+            for symbol in symbols
+        )
 
     def _cache(
         self, symbols: tuple[str, ...], now: datetime, adjustment: DataAdjustment = "SPLIT"

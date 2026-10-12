@@ -63,8 +63,12 @@ async def test_EV_01_each_alert_state_uses_recorded_levels_qty_expiry_and_facts(
                 reasons=[{"rule_id": "CRO-01", "message": "test invalidation"}],
             )
     rows = collect_outcome_setups(h.state.ledger, h.settings, scope(h), h.swarm.risk.cro.calendar)
-    assert len(rows) == 1
-    setup = rows[0]
+    primary = tuple(row for row in rows if row.disposition != "CRO_VETO")
+    assert len(primary) == 1
+    setup = primary[0]
+    shadows = tuple(row for row in rows if row.disposition == "CRO_VETO")
+    assert len(shadows) == 1 and shadows[0].qty > setup.qty
+    assert shadows[0].alert_id != setup.alert_id
     assert setup.alert_id == alert.id and setup.qty == h.request.candidate.qty
     assert (
         setup.limit == h.request.candidate.entry_price

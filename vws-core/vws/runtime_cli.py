@@ -27,7 +27,7 @@ from backend.agents.setup_hunter import SetupHunter
 from backend.agents.swarm_runner import SwarmRunner
 from backend.core.config import MANUAL_CSV_DISABLED_MESSAGE, load_yaml_config
 from backend.core.database import Alert, ExecutionOrderRecord, JobRun, SecurityEvent
-from backend.core.errors import ConfigurationError
+from backend.core.errors import ConfigurationError, DataIntegrityError
 from backend.core.logging import configure_logging
 from backend.data.async_reader import AsyncAlpacaReader
 from backend.data.boundary import ReadBoundary
@@ -60,6 +60,7 @@ from backend.execution.modes import ModeStore
 from backend.execution.protocol import OrderExecutor
 from backend.execution.readiness import HostPrerequisites
 from backend.execution.reporting import daily_summary
+from backend.execution.stop_readiness import live_raise_reasons
 from backend.execution.worker import SingleAttemptWorker
 from backend.funding.activities import AlpacaActivitiesSource
 from backend.notifications.callbacks import ApprovalGate
@@ -89,7 +90,7 @@ from backend.risk.risk_cro import ChiefRiskOfficer
 from backend.security.secrets import KeyringSecretStore, SecretStore
 from backend.tax.service import TaxService
 from vws import security_cli
-from vws.drill_cli import verified_drill
+from vws.drill_cli import verified_drill, verified_drill_time
 from vws.host_config import load_host_settings
 
 ReadT = TypeVar("ReadT")
@@ -314,6 +315,20 @@ async def compose(
     )
     journal = Journal(state.ledger, scope)
     extras = ExtraControls(state.ledger, scope, config, source, macro, bot.notify)
+    from backend.evaluation.availability import GradeStore
+
+    grades = GradeStore(state.ledger, settings, config)
+    extras.entry_variant_allowed = grades.exit_working
+    extras.playbook_allowed = lambda name: (
+        name != Playbook.EARNINGS_GAP
+        or settings.execution_mode == "MANUAL"
+        or grades.earnings_working()
+    )
+    swarm.playbook_allowed = extras.playbook_allowed
+    swarm.earnings_report_source = source.past_earnings
+    source.hunter.size_provider = extras.evidence
+    swarm.hunter.size_provider = extras.evidence
+    gate.size_entry = extras.size
     desk = Desk(swarm)
     bot.watch_handler = WatchDesk(desk, source, bot, journal)
 
@@ -494,6 +509,10 @@ async def compose(
                 notify=bot.notify,
                 trade_notice=bot.notify_trade,
                 size_entry=extras.size,
+                entry_variant_allowed=grades.exit_working,
+                playbook_allowed=extras.playbook_allowed,
+                stop_raise_readiness=lambda: live_raise_reasons(state.ledger, config),
+                held_exit_observation=source.held_exit_observation,
                 portfolio=portfolio,
                 configuration_check=lambda: context.drift.check(
                     context.config_hash(), mode=settings.execution_mode
@@ -506,6 +525,8 @@ async def compose(
                     account_id,
                     context.config_hash,
                     security_reasons=security_cli.live_security_guard(context, store),
+                    exit_reasons=lambda: live_raise_reasons(state.ledger, config),
+                    verdict_hash=lambda: config.config_hash,
                     drill_ready=lambda: verified_drill(project, settings, store, clock.now(), 45),
                 )
                 if settings.execution_mode == "AUTO_LIVE"
@@ -527,6 +548,71 @@ async def compose(
         else AutoJobs(settings, modes, calendar, execution, fill_poll)
     )
 
+    from backend.evaluation.verdict import VerdictInputs
+    from backend.evaluation.verdict_source import VerdictPublisher
+    from backend.evaluation.verdict_source import collect as collect_verdict
+
+    verdict_publisher: VerdictPublisher | None = None
+    readiness_scope = scope if settings.paper_trading else None
+    if not settings.paper_trading:
+        qualified_account = LiveGuard(
+            settings,
+            state,
+            calendar,
+            account_id,
+            context.config_hash,
+            verdict_hash=lambda: config.config_hash,
+        ).qualified_paper_account()
+        if qualified_account is not None:
+            readiness_scope = ControlScope(account_id=qualified_account, environment="PAPER")
+    if readiness_scope is not None:
+
+        def readiness_inputs() -> VerdictInputs:
+            from backend.data.history import load_history
+
+            root = project / "data/history"
+            history = load_history(root, calendar) if (root / "manifest.json").is_file() else None
+            return collect_verdict(
+                state.ledger,
+                settings,
+                config,
+                readiness_scope,
+                calendar,
+                schedule,
+                history=history,
+                effective_hash=config.config_hash,
+                security_green=not security_cli.live_security_guard(context, store)(),
+                drill_at=verified_drill_time(project, settings, store, clock.now(), 31),
+            )
+
+        verdict_publisher = VerdictPublisher(
+            state.ledger, config, readiness_scope, calendar, project, readiness_inputs, bot.notify
+        )
+
+        async def private_verdict() -> str:
+            if verdict_publisher is None:
+                raise DataIntegrityError("GV-01: readiness publisher is unavailable")
+            verdict = await verdict_publisher.publish()
+            if verdict is None:
+                raise DataIntegrityError("GV-01: readiness evidence is unavailable")
+            return verdict.text()
+
+        commands.verdict_handler = private_verdict
+    else:
+
+        async def recorded_paper_verdict() -> str:
+            guard = LiveGuard(
+                settings,
+                state,
+                calendar,
+                account_id,
+                context.config_hash,
+                verdict_hash=lambda: config.config_hash,
+            )
+            return await asyncio.to_thread(guard.verdict_text)
+
+        commands.verdict_handler = recorded_paper_verdict
+
     async def maintenance() -> JobCounts:
         await reports.capture()
         result = await NightlyMaintenance(
@@ -534,6 +620,8 @@ async def compose(
         )()
         anchor = await asyncio.to_thread(context.anchors.record)
         await bot.notify(anchor.message(), True)
+        if verdict_publisher is not None:
+            await verdict_publisher.publish(monthly=True)
         return result
 
     weekly_publisher = WeeklyPublisher(

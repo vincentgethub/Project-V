@@ -185,6 +185,8 @@ class Settings(BaseSettings):
             "llm_daily_budget_usd": (Decimal("0"), Decimal("20")),
             "auto_min_score": (Decimal("6.0"), Decimal("10.0")),
             "auto_exit_limit_offset": (Decimal("0"), Decimal("0.01")),
+            "portfolio_max_open_risk": (Decimal("0"), Decimal("0.06")),
+            "live_max_open_risk": (Decimal("0"), Decimal("0.02")),
         }
     )
     INTEGER_BOUNDS: ClassVar[Mapping[str, tuple[int, int]]] = MappingProxyType(
@@ -277,6 +279,8 @@ class Settings(BaseSettings):
     live_max_gross_exposure_pct: Decimal | None = None
     live_max_risk_per_trade: Decimal | None = None
     live_daily_loss_limit: Decimal | None = None
+    portfolio_max_open_risk: Decimal = Decimal("0.04")
+    live_max_open_risk: Decimal = Decimal("0.02")
     broker_api_key: SecretStr = Field(
         default=SecretStr(""),
         repr=False,
@@ -1015,6 +1019,37 @@ class SizingConfig(_FrozenYamlModel):
     stop_atr_mult: Decimal = Decimal("2.0")
     target_r: Decimal = Decimal("2.0")
     swing_lookback: int = Field(default=10, strict=True, ge=1, le=60)
+    min_multiplier: Decimal = Decimal("0.25")
+    confidence_mode: Literal["off", "bands"] = "off"
+    confidence_bands: tuple[tuple[Decimal, Decimal], ...] = (
+        (Decimal(7), Decimal("0.5")),
+        (Decimal(8), Decimal("0.75")),
+        (Decimal(9), Decimal(1)),
+    )
+
+    @field_validator("min_multiplier", mode="before")
+    @classmethod
+    def multiplier_floor(cls, value: object) -> Decimal:
+        number = _bounded_exact_decimal(value)
+        if not Decimal("0.25") <= number <= 1:
+            raise ValueError("PR-04: multiplier floor may only be stricter")
+        return number
+
+    @field_validator("confidence_bands", mode="before")
+    @classmethod
+    def confidence_values(cls, value: object) -> tuple[tuple[Decimal, Decimal], ...]:
+        if not isinstance(value, (list, tuple)) or not 1 <= len(value) <= 10:
+            raise ValueError("SZ-01: bounded explicit confidence bands required")
+        result = []
+        for row in value:
+            if not isinstance(row, (list, tuple)) or len(row) != 2:
+                raise ValueError("SZ-01: each band requires a score and multiplier")
+            result.append((_bounded_exact_decimal(row[0]), _bounded_exact_decimal(row[1])))
+        if any(not 0 < multiplier <= 1 or not 0 <= score <= 10 for score, multiplier in result):
+            raise ValueError("SZ-01: invalid confidence band")
+        if any(a[0] >= b[0] or a[1] > b[1] for a, b in zip(result, result[1:], strict=False)):
+            raise ValueError("SZ-01: bands must have increasing scores and non-decreasing size")
+        return tuple(result)
 
     @field_validator(
         "target_risk_per_trade", "max_stop_pct", "stop_atr_mult", "target_r", mode="before"
@@ -1161,6 +1196,138 @@ class RampConfig(_FrozenYamlModel):
         return result[0], result[1], result[2]
 
 
+class ValidationConfig(_FrozenYamlModel):
+    holdout_months: int = Field(default=18, strict=True, ge=18, le=60)
+    test_months: int = Field(default=6, strict=True, ge=6, le=6)
+    min_train_trades: int = Field(default=50, strict=True, ge=50, le=10000)
+    max_variants_per_family: int = Field(default=8, strict=True, ge=1, le=8)
+    max_variants_total: int = Field(default=24, strict=True, ge=1, le=24)
+    bootstrap_resamples: int = Field(default=10000, strict=True, ge=10000, le=10000)
+    seed: int = Field(default=20261006, strict=True, ge=0, le=2**32 - 1)
+
+
+class PortfolioOverlayConfig(_FrozenYamlModel):
+    corr_threshold: Decimal = Decimal("0.70")
+    corr_lookback: int = Field(default=60, strict=True, ge=60, le=60)
+    corr_multipliers: tuple[Decimal, ...] = (
+        Decimal(1),
+        Decimal("0.75"),
+        Decimal("0.5"),
+        Decimal("0.25"),
+    )
+    vol_anchor: Decimal = Decimal("0.16")
+
+    @field_validator("corr_threshold", "vol_anchor", mode="before")
+    @classmethod
+    def exact_parameters(cls, value: object, info: ValidationInfo) -> Decimal:
+        number = _bounded_exact_decimal(value)
+        if not 0 < number <= 1:
+            raise ValueError("PR-02/03: finite fraction in (0,1] required")
+        if info.field_name == "corr_threshold" and number > Decimal("0.70"):
+            raise ValueError("PR-02: correlation threshold cannot weaken the baseline")
+        if info.field_name == "vol_anchor" and number > Decimal("0.16"):
+            raise ValueError("PR-03: volatility anchor cannot increase baseline exposure")
+        return number
+
+    @field_validator("corr_multipliers", mode="before")
+    @classmethod
+    def correlations(cls, value: object) -> tuple[Decimal, ...]:
+        if not isinstance(value, (list, tuple)) or len(value) != 4:
+            raise ValueError("PR-02: four correlation multipliers required")
+        result = tuple(_bounded_exact_decimal(item) for item in value)
+        caps = (Decimal(1), Decimal("0.75"), Decimal("0.5"), Decimal("0.25"))
+        if any(not 0 <= m <= cap for m, cap in zip(result, caps, strict=True)):
+            raise ValueError("PR-02: correlation multipliers may only reduce exposure")
+        if any(a < b for a, b in zip(result, result[1:], strict=False)):
+            raise ValueError("PR-02: correlation multipliers must be non-increasing")
+        return result
+
+
+class RelativeStrengthConfig(_FrozenYamlModel):
+    sector_filter: Literal["annotate", "half_size_outside", "top_n"] = "annotate"
+    top_n_sectors: int = Field(default=4, strict=True, ge=1, le=11)
+    min_stock_percentile: Decimal = Decimal(0)
+    use_breadth: bool = Field(default=False, strict=True)
+
+    @field_validator("min_stock_percentile", mode="before")
+    @classmethod
+    def percentile(cls, value: object) -> Decimal:
+        number = _bounded_exact_decimal(value)
+        if not 0 <= number <= 100:
+            raise ValueError("RS-02: percentile must be between 0 and 100")
+        return number
+
+
+class ExitVariantConfig(_FrozenYamlModel):
+    variant: Literal["BASELINE", "SPLIT_1R", "SPLIT_1R_TRAIL", "TRAIL_EMA20"] = "BASELINE"
+
+
+class TrailingExitConfig(_FrozenYamlModel):
+    trail_atr_mult: Decimal = Decimal(3)
+
+    @field_validator("trail_atr_mult", mode="before")
+    @classmethod
+    def trail(cls, value: object) -> Decimal:
+        number = _bounded_exact_decimal(value)
+        if number != 3:
+            raise ValueError("EX-02: the registered trail is fixed at 3 ATR")
+        return number
+
+
+class VerdictConfig(_FrozenYamlModel):
+    min_paper_trades: int = Field(default=50, strict=True, ge=50, le=100000)
+    min_sessions: int = Field(default=60, strict=True, ge=60, le=20000)
+    max_drawdown: Decimal = Decimal("0.10")
+    benchmark_sharpe_tolerance: Decimal = Decimal("0.2")
+    no_halt_sessions: int = Field(default=20, strict=True, ge=20, le=1000)
+    drill_max_age_days: int = Field(default=31, strict=True, ge=1, le=31)
+    ready_max_age_days: int = Field(default=35, strict=True, ge=1, le=35)
+
+    @field_validator("max_drawdown", "benchmark_sharpe_tolerance", mode="before")
+    @classmethod
+    def stricter(cls, value: object, info: ValidationInfo) -> Decimal:
+        number = _bounded_exact_decimal(value)
+        upper = Decimal("0.10") if info.field_name == "max_drawdown" else Decimal("0.2")
+        if not 0 <= number <= upper:
+            raise ValueError("GV-02: readiness thresholds may only be stricter")
+        return number
+
+
+DailyPlaybook = Literal["TREND_50EMA", "BASE_BREAKOUT", "ANCHORED_VWAP_RECLAIM", "EARNINGS_GAP"]
+DEFAULT_PLAYBOOKS: tuple[DailyPlaybook, ...] = (
+    "TREND_50EMA",
+    "BASE_BREAKOUT",
+    "ANCHORED_VWAP_RECLAIM",
+)
+
+
+class PlaybooksPolicy(_FrozenYamlModel):
+    enabled: tuple[DailyPlaybook, ...] = DEFAULT_PLAYBOOKS
+    strategies: Mapping[str, PlaybookConfig]
+
+    @model_validator(mode="before")
+    @classmethod
+    def flattened(cls, value: object) -> object:
+        if isinstance(value, Mapping) and "strategies" not in value:
+            return {
+                "enabled": value.get("enabled", DEFAULT_PLAYBOOKS),
+                "strategies": {name: item for name, item in value.items() if name != "enabled"},
+            }
+        return value
+
+    @field_validator("enabled", mode="after")
+    @classmethod
+    def unique(cls, value: tuple[DailyPlaybook, ...]) -> tuple[DailyPlaybook, ...]:
+        if not 1 <= len(value) <= 4 or len(set(value)) != len(value):
+            raise ValueError("EG-01: enable one to four distinct specified daily playbooks")
+        return value
+
+    @field_validator("strategies", mode="after")
+    @classmethod
+    def weights(cls, value: Mapping[str, PlaybookConfig]) -> Mapping[str, PlaybookConfig]:
+        return YamlConfig.validate_playbooks(value)
+
+
 class YamlConfig(_FrozenYamlModel):
     """GD-02/R-03: research configuration cannot modify env risk limits."""
 
@@ -1176,7 +1343,24 @@ class YamlConfig(_FrozenYamlModel):
     regime_filter: RegimeFilterConfig = Field(default_factory=RegimeFilterConfig)
     playbook_kill: PlaybookKillConfig = Field(default_factory=PlaybookKillConfig)
     ramp: RampConfig = Field(default_factory=RampConfig)
-    playbooks: Mapping[str, PlaybookConfig]
+    qv: ValidationConfig = Field(default_factory=ValidationConfig)
+    pr: PortfolioOverlayConfig = Field(default_factory=PortfolioOverlayConfig)
+    rs: RelativeStrengthConfig = Field(default_factory=RelativeStrengthConfig)
+    exits: ExitVariantConfig = Field(default_factory=ExitVariantConfig)
+    ex: TrailingExitConfig = Field(default_factory=TrailingExitConfig)
+    gv: VerdictConfig = Field(default_factory=VerdictConfig)
+    model_config = ConfigDict(
+        **_FrozenYamlModel.model_config, serialize_by_alias=True, validate_by_name=True
+    )
+    playbook_policy: PlaybooksPolicy = Field(alias="playbooks")
+
+    @property
+    def playbooks(self) -> Mapping[str, PlaybookConfig]:
+        return self.playbook_policy.strategies
+
+    @property
+    def enabled_playbooks(self) -> tuple[DailyPlaybook, ...]:
+        return self.playbook_policy.enabled
 
     @model_validator(mode="before")
     @classmethod
@@ -1203,7 +1387,6 @@ class YamlConfig(_FrozenYamlModel):
             result.append(symbol)
         return tuple(result)
 
-    @field_validator("playbooks", mode="after")
     @classmethod
     def validate_playbooks(
         cls, value: Mapping[str, PlaybookConfig]
@@ -1242,10 +1425,13 @@ class YamlConfig(_FrozenYamlModel):
             raise ValueError("each daily playbook must use its six specified criteria")
         return MappingProxyType(dict(value))
 
-    @field_serializer("playbooks")
-    def serialize_playbooks(self, value: Mapping[str, PlaybookConfig]) -> dict[str, object]:
+    @field_serializer("playbook_policy")
+    def serialize_playbooks(self, value: PlaybooksPolicy) -> dict[str, object]:
         """GD-02: canonicalize the immutable playbook map for audit snapshots."""
-        return {name: _canonical_value(playbook) for name, playbook in value.items()}
+        return {
+            "enabled": list(value.enabled),
+            **{name: _canonical_value(playbook) for name, playbook in value.strategies.items()},
+        }
 
     def assert_allowed_symbols(self, allowed_symbols: Collection[str]) -> None:
         """R-02: authoritative instrument symbols must cover the full watchlist."""
@@ -1254,6 +1440,8 @@ class YamlConfig(_FrozenYamlModel):
 
     def assert_settings_consistent(self, settings: Settings) -> None:
         """R-02/GD-04: wrong-home keys fail even when their values agree."""
+        if self.evaluation.max_hold_sessions not in {10, 20, 30}:
+            raise ConfigurationError("EX-04: configured holding periods are 10, 20 or 30 sessions")
         try:
             _reject_yaml_environment_keys()
             if YAML_ALLOWED_SETTING_NAMES.intersection(settings.__dict__) or (
@@ -1262,12 +1450,20 @@ class YamlConfig(_FrozenYamlModel):
                 raise ValueError("YAML-only schedule/cooldown settings cannot appear in Settings")
             if self.sizing.target_risk_per_trade > settings.max_risk_per_trade:
                 raise ValueError("target sizing risk cannot exceed the CRO risk limit")
+            if self.sizing.confidence_bands[0][0] != settings.min_setup_score:
+                raise ValueError("SZ-01: the lowest score band must start at MIN_SETUP_SCORE")
         except ValueError as exc:
             raise ConfigurationError("YAML-only settings are configured in the wrong home") from exc
 
     def nonsecret_snapshot(self) -> dict[str, object]:
         """R-03/GD-02: deterministic exact-value snapshot suitable for hashing."""
-        return {name: _canonical_value(self.__dict__[name]) for name in type(self).model_fields}
+        values = {
+            name: _canonical_value(self.__dict__[name])
+            for name in type(self).model_fields
+            if name != "playbook_policy"
+        }
+        values["playbooks"] = self.serialize_playbooks(self.playbook_policy)
+        return values
 
     @property
     def config_hash(self) -> str:

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from backend.agents.briefing import PositionView
 from backend.core.database import SecurityEvent
 from backend.core.errors import DataIntegrityError, LedgerIntegrityError
+from backend.data.data_layer import Bar, BatchBars, SymbolBars, _bars_digest, _eligible_session
 from backend.domain.models import MarketStatus
 from backend.ops import k_runtime
 from backend.ops.desk_source import ConnectedDeskSource
@@ -23,6 +24,7 @@ from backend.ops.k_runtime import ExtraControls
 from backend.ops.macro_events import MacroCalendar
 from backend.ops.report_publisher import ReportPublisher
 from backend.ops.trading_controls import ControlScope
+from backend.tests.test_auto_execution import AUTO
 from backend.tests.test_swarm_and_callbacks import Harness, make_research_harness
 
 harness = make_research_harness
@@ -168,6 +170,7 @@ def test_XK_04_missing_calendar_warning_is_typed(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["normal", "half", "no_new_entries", "paused", "unknown"])
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
 async def test_XK_03_05_host_sizing_uses_actual_signal_and_SPY(
     harness: Harness, tmp_path: Path, case: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -178,14 +181,43 @@ async def test_XK_03_05_host_sizing_uses_actual_signal_and_SPY(
     result = await h.swarm.run(h.request)
     assert result.proposal is not None
 
+    calendar, registry = h.swarm.risk.cro.calendar, h.swarm.risk.cro.registry
+    tail = _eligible_session(calendar, h.clock.now(), h.config.schedule.daily_scan_delay_minutes)
+    dates = (*calendar.previous_sessions(tail, 249), tail)
+    source: Any = SimpleNamespace(
+        settings=h.settings, calendar=calendar, registry=registry, _batch=None
+    )
+
     async def daily(symbols: tuple[str, ...]) -> Any:
-        bars = tuple(SimpleNamespace(close=Decimal(100)) for _ in range(249)) + (
-            SimpleNamespace(close=Decimal(100) if case == "normal" else Decimal(90)),
+        bars = tuple(
+            Bar(
+                timestamp=calendar.session_open(day) - timedelta(hours=5, minutes=30),
+                open=Decimal(100),
+                high=Decimal(101),
+                low=Decimal(99),
+                close=Decimal(101 if case == "normal" else 99) if index == 249 else Decimal(100),
+                volume=1000000,
+            )
+            for index, day in enumerate(dates)
         )
-        return SimpleNamespace(
-            status_for=lambda *args: MarketStatus.SUSPECT if case == "unknown" else MarketStatus.OK,
-            for_symbol=lambda *args: bars,
+        source._batch = BatchBars(
+            as_of=h.clock.now(),
+            through=tail,
+            entries=tuple(
+                SymbolBars(
+                    symbol=symbol,
+                    adjustment=adjustment,
+                    bars=bars,
+                    status=MarketStatus.SUSPECT if case == "unknown" else MarketStatus.OK,
+                    data_sha256=_bars_digest(bars)[0],
+                )
+                for symbol in ("NVDA", "SPY")
+                for adjustment in ("SPLIT", "ALL")
+            ),
         )
+        return source._batch
+
+    source.daily = daily
 
     async def notify(text: str, urgent: bool) -> None:
         raise AssertionError("paper sizing cannot raise live ramp")
@@ -201,7 +233,7 @@ async def test_XK_03_05_host_sizing_uses_actual_signal_and_SPY(
         h.state.ledger,
         ControlScope(account_id=h.request.portfolio.account_id, environment="PAPER"),
         policy,
-        cast(ConnectedDeskSource, SimpleNamespace(daily=daily)),
+        cast(ConnectedDeskSource, source),
         MacroCalendar(tmp_path / "missing.csv"),
         notify,
     )
@@ -224,6 +256,7 @@ async def test_XK_03_05_host_sizing_uses_actual_signal_and_SPY(
         with pytest.raises(ExecutionDisabledError if case == "paused" else DataIntegrityError):
             await extras.size(result.proposal, await h.source.refresh(result.proposal.symbol))
     else:
+        assert result.proposal.size_evidence is not None
         quantity = await extras.size(
             result.proposal, await h.source.refresh(result.proposal.symbol)
         )
@@ -232,5 +265,5 @@ async def test_XK_03_05_host_sizing_uses_actual_signal_and_SPY(
             if case == "normal"
             else 0
             if case == "no_new_entries"
-            else result.proposal.qty // 2
+            else min(result.proposal.qty, result.proposal.size_evidence.base_qty // 2)
         )
