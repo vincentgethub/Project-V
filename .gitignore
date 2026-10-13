@@ -1,5 +1,6 @@
 .env
 .env.*
+.env*
 !.env.example
 .venv/
 __pycache__/
@@ -12,6 +13,7 @@ htmlcov/
 *.db
 *.db-wal
 *.db-shm
+*.sqlite*
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
@@ -21,9 +23,13 @@ dist/
 .mutmut-cache/
 mutants/
 *.pem
+*.p12
+*.pfx
 *.key
 *.token
 *.fernet
+keyring-export*.json
+credentials*.json
 .secrets/
 audit-report.json
 bandit-report.json
