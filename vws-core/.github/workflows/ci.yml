@@ -67,6 +67,8 @@ jobs:
       - name: Offline tests and complete risk/state/fundamentals/card/tax branch coverage
         run: python -m pytest -q -m 'not perf' --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing
       - name: Prescribed synthetic performance workloads without coverage overhead
+        env:
+          VWS_PERF_BUDGET_SECONDS: '420'
         run: python -m pytest -q -s -m perf --no-cov backend/tests/test_replay_cli.py backend/tests/test_v_performance.py backend/tests/test_w_perf.py
       - name: Build non-root container from synthetic configuration
         run: |

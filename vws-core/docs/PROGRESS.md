@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 13, 2026 - CI test isolation and mutation timeout repair
+Last updated: October 13, 2026 - EV-03 host and CI performance budgets
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
