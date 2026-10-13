@@ -324,12 +324,7 @@ def test_R_03_GD_02_combined_hash_tracks_yaml_and_ignores_credentials(
     second = YamlConfig.model_validate(valid_payload)
     assert second.config_hash != first.config_hash
     assert Settings().with_yaml_hash(second) != original_hash
-    reordered = {
-        "playbooks": first.nonsecret_snapshot()["playbooks"],
-        "alerts": first.nonsecret_snapshot()["alerts"],
-        "schedule": first.nonsecret_snapshot()["schedule"],
-        "watchlist": first.nonsecret_snapshot()["watchlist"],
-    }
+    reordered = dict(reversed(tuple(first.nonsecret_snapshot().items())))
     assert YamlConfig.model_validate(reordered).config_hash == first.config_hash
 
 

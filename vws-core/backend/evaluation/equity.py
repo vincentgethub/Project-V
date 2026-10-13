@@ -42,12 +42,19 @@ class EquityBuild(FrozenModel):
 
 def _selected(key: EdgeKey, item: Outcome) -> bool:
     setup = item.setup
-    return (setup.playbook, setup.variant, setup.cohort, setup.disposition) == (
-        key.playbook,
-        key.variant,
-        key.cohort,
-        key.disposition,
-    ) and (key.fundamentals_status is None or key.fundamentals_status == setup.fundamentals_status)
+    return (
+        (setup.playbook, setup.variant, setup.cohort, setup.disposition)
+        == (
+            key.playbook,
+            key.variant,
+            key.cohort,
+            key.disposition,
+        )
+        and (
+            key.fundamentals_status is None or key.fundamentals_status == setup.fundamentals_status
+        )
+        and (key.context_tag is None or key.context_tag in setup.context_tags)
+    )
 
 
 def build_equity_curve(

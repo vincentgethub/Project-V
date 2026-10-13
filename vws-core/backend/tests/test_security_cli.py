@@ -855,6 +855,8 @@ def test_SEC_43_host_apply_and_ack_dispatch_bind_exact_effective_files(
     config_file = directory / "config.yaml"
     config_file.write_text("policy: original\n", encoding="utf-8")
     (directory / "instruments.csv").write_text("symbol\nSPY\n", encoding="utf-8")
+    for name in ("events_policy.yaml", "fees.yaml", "variants.yaml"):
+        (directory / name).write_text("synthetic policy fingerprint\n", encoding="utf-8")
     monkeypatch.setattr(module, "open_context", lambda *_args, **_kwargs: context)
     before = context.config_hash()
     assert cli.main(["ops", "apply-config", "--operator", "Owner"]) == 0

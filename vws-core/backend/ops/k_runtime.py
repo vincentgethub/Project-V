@@ -133,6 +133,7 @@ class ExtraControls:
         self._sizer_policy: str | None = None
         self.entry_variant_allowed: Callable[[], bool] | None = None
         self.playbook_allowed: Callable[[Playbook], bool] | None = None
+        self.event_factor: Callable[[str, datetime], Decimal] | None = None
 
     def evidence(
         self,
@@ -191,6 +192,7 @@ class ExtraControls:
             account,
             auto=self.source.settings.execution_mode != "MANUAL",
             ramp=ramp,
+            events=Decimal(1) if self.event_factor is None else self.event_factor(symbol, instant),
         )
         self.last_sizing[symbol] = result
         return result.factors
@@ -314,11 +316,9 @@ class ExtraControls:
         now = self.ledger.clock.now()
         day = now.astimezone(ZoneInfo("America/New_York")).date()
         lines = [f"Entries awaiting fresh checks: {pending}"] if pending else []
-        for event in self.macro.read():
+        for event in self.macro.read() if self.macro.path.is_file() else ():
             if event.date == day:
-                lines.append(
-                    f"{event.event} today; new auto entries blocked until release + 30 minutes."
-                )
+                lines.append(f"{event.event} today; configured event-day policy applies.")
         for quote in checked.quotes:
             earnings = quote.market.next_earnings_date
             if earnings is not None and day <= earnings <= self.source.calendar.add_sessions(

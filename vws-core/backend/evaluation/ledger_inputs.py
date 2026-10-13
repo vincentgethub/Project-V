@@ -34,6 +34,7 @@ from backend.evaluation.filter_shadows import filters as reduction_filters
 from backend.evaluation.outcomes import Disposition, OutcomeSetup
 from backend.evaluation.provenance import EvaluationProvenance
 from backend.evaluation.weekly import ReportContext
+from backend.realtime.models import RealtimeContext
 
 NY = ZoneInfo("America/New_York")
 SHADOW_NAMESPACE = UUID("cfa2f9b5-d014-49bd-88e5-d03a5857d21f")
@@ -220,6 +221,41 @@ def collect_tracked_setups(
                     if candidate.size_evidence is not None:
                         approved_qty = candidate.size_evidence.base_qty
                 valid = provenance.expires_at.astimezone(NY).date()
+
+                context_rows = tuple(
+                    session.scalars(
+                        select(SecurityEvent)
+                        .where(
+                            SecurityEvent.kind == "REALTIME_CONTEXT",
+                            SecurityEvent.detail["proposal_id"].as_string()
+                            == str(order.proposal_id),
+                        )
+                        .order_by(SecurityEvent.seq)
+                        .limit(1001)
+                    )
+                )
+                if len(context_rows) > 1000:
+                    raise DataIntegrityError("RT-12: proposal context inventory exceeds its bound")
+                tags: tuple[str, ...] = ()
+                for stored in context_rows:
+                    recorded = RealtimeContext.recorded(stored.detail["context"])
+                    if (
+                        (
+                            recorded.scope.account_id,
+                            recorded.scope.environment,
+                            recorded.symbol,
+                            recorded.policy_sha256,
+                        )
+                        != (scope.account_id, scope.cohort, order.symbol, provenance.yaml_hash)
+                        or recorded.as_of > stored.ts
+                        or stored.ts > now
+                    ):
+                        raise DataIntegrityError(
+                            "RT-12: proposal context binding or receipt differs"
+                        )
+                    if candidate.as_of <= recorded.as_of <= provenance.expires_at:
+                        tags = tuple(tag.value for tag in recorded.tags)
+                        break  # Opening context never uses a later trading outcome.
                 if not calendar.is_session(valid):
                     raise ValueError("tracker validity is not an XNYS session")
                 setups.append(
@@ -232,6 +268,7 @@ def collect_tracked_setups(
                             cohort=scope.cohort,
                             disposition=status,
                             fundamentals_status=fundamental,
+                            context_tags=tags,
                             score=candidate.score,
                             qty=approved_qty,
                             limit=order.limit_price,
@@ -298,6 +335,38 @@ def collect_tracked_setups(
                     or provenance.yaml_hash != scope.config_sha256
                 ):
                     raise DataIntegrityError("ER-04: filter source/configuration is unbound")
+                size_contexts = tuple(
+                    session.scalars(
+                        select(SecurityEvent)
+                        .where(
+                            SecurityEvent.kind == "REALTIME_SIZE_CONTEXT",
+                            SecurityEvent.detail["scope"]["account_id"].as_string()
+                            == scope.account_id,
+                            SecurityEvent.detail["scope"]["environment"].as_string()
+                            == scope.cohort,
+                            SecurityEvent.detail["policy_sha256"].as_string()
+                            == scope.config_sha256,
+                            SecurityEvent.detail["context"]["symbol"].as_string()
+                            == candidate.symbol,
+                            SecurityEvent.ts <= filter_event.ts,
+                        )
+                        .order_by(SecurityEvent.seq.desc())
+                        .limit(1001)
+                    )
+                )
+                if len(size_contexts) > 1000:
+                    raise DataIntegrityError("RT-12: sizing context inventory exceeds its bound")
+                size_tags: tuple[str, ...] = ()
+                for stored in size_contexts:
+                    recorded = RealtimeContext.recorded(stored.detail["context"])
+                    if recorded.as_of > stored.ts or stored.ts > now:
+                        raise DataIntegrityError("RT-12: sizing context receipt differs")
+                    if (
+                        recorded.as_of <= candidate.as_of
+                        and recorded.entry_multiplier == zero_shadow.factors.events
+                    ):
+                        size_tags = tuple(tag.value for tag in recorded.tags)
+                        break
                 for name in zero_shadow.cohorts:
                     setups.append(
                         TrackedSetup(
@@ -309,6 +378,7 @@ def collect_tracked_setups(
                                 cohort=scope.cohort,
                                 disposition=name,
                                 fundamentals_status=FrameworkStatus.INCOMPLETE,
+                                context_tags=size_tags,
                                 score=candidate.score,
                                 qty=zero_shadow.factors.base_qty,
                                 limit=candidate.entry_price,

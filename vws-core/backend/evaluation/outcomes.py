@@ -104,6 +104,9 @@ class OutcomeSetup(FrozenModel):
     target: Price
     decision_session: SessionDate
     valid_until_session: SessionDate
+    context_tags: tuple[str, ...] = Field(
+        default=(), max_length=21, exclude_if=lambda value: not value
+    )
 
     @model_validator(mode="after")
     def ordered(self) -> Self:
@@ -112,6 +115,12 @@ class OutcomeSetup(FrozenModel):
             or self.valid_until_session < self.decision_session
         ):
             raise ValueError("EV-01: ordered long levels and non-reversed validity required")
+        from backend.realtime.models import ContextTag
+
+        if len(set(self.context_tags)) != len(self.context_tags) or any(
+            value not in {tag.value for tag in ContextTag} for value in self.context_tags
+        ):
+            raise ValueError("RT-12: closed unique realtime context taxonomy required")
         return self
 
 

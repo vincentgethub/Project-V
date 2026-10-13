@@ -498,6 +498,9 @@ class AlpacaExecutor:
         held_exit_observation: Callable[[HeldEntry, FreshInputs], Awaitable[HeldExitObservation]]
         | None = None,
         trade_notice: Callable[[str, bool, UUID], Awaitable[None]] | None = None,
+        realtime_entry: Callable[[UUID], Awaitable[None]] | None = None,
+        realtime_exit: Callable[[str, datetime], tuple[Literal["DELIST", "DILUTION"], str] | None]
+        | None = None,
     ) -> None:
         self.settings, self.config = (
             Settings.validated_copy(settings),
@@ -551,6 +554,7 @@ class AlpacaExecutor:
         self.stop_raise_readiness = stop_raise_readiness
         self._arrival_quotes: dict[str, MarketContext] = {}
         self.held_exit_observation = held_exit_observation
+        self.realtime_entry, self.realtime_exit = realtime_entry, realtime_exit
         if recovery:
             managed = self._instructions()
             if not managed:
@@ -1020,6 +1024,8 @@ class AlpacaExecutor:
                         broker_orders=tuple(known_orders) if len(known_orders) > 1 else (),
                     )
                 self._assert_entry_variant()
+                if self.realtime_entry is not None:
+                    await self.realtime_entry(proposal_id)
                 self._assert_playbook(alert.playbook)
                 await self._verify_account()
                 async with asyncio.timeout(30):
@@ -1059,6 +1065,8 @@ class AlpacaExecutor:
                 )
                 if not framework_allows(fundamental, self.config.fundamentals):
                     raise ExecutionDisabledError("FA-08 fresh fundamental framework blocks entry")
+                if self.realtime_entry is not None:
+                    await self.realtime_entry(proposal_id)
                 verdict = self.risk.evaluate(
                     proposal, inputs.portfolio, inputs.market, deployable=inputs.capital
                 )
@@ -2008,8 +2016,17 @@ class AlpacaExecutor:
             values = self.config.model_dump(mode="python")
             values["evaluation"]["max_hold_sessions"] = held_policy.hold_sessions
             entry_policy = YamlConfig.model_validate(values)
-            reason = automatic_exit_reason(
-                self.settings, entry_policy, self.calendar, first_fill, inputs.market, now
+            hard = (
+                None if self.realtime_exit is None else self.realtime_exit(entry.symbol, first_fill)
+            )
+            if hard is not None and any(row.rt_event_key == hard[1] for row in history):
+                hard = None  # At most one AX-29 cycle for this event and held entry.
+            reason = (
+                hard[0]
+                if hard is not None
+                else automatic_exit_reason(
+                    self.settings, entry_policy, self.calendar, first_fill, inputs.market, now
+                )
             )
             if reason is None and held_policy.variant == "TRAIL_EMA20":
                 observation = await self._held_observation(entry, inputs)
@@ -2038,6 +2055,7 @@ class AlpacaExecutor:
                 reason=reason,
                 state="ACTIVE",
                 session_date=today,
+                rt_event_key=None if hard is None else hard[1],
             )
             self._cycle_event(cycle, "ACTIVE")
         with DatabaseSession(self.state.engine) as session:

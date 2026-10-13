@@ -411,3 +411,15 @@ delivery and in VERIFY.md.
 97. Stage J schema 6 is additive. Panic retains exact recognized versions 2–5
     and the current layout without rewriting older ledger hashes. All migration
     development used temporary databases; the owner's DB was not opened.
+98. Amendment 06's event policy supersedes the earlier blanket macro blackout
+    in host composition. FOMC/CPI/jobs/VIX default to half size; GDP/PCE/OPEX
+    annotate. Earnings and early-close restrictions keep their existing rules.
+    Unknown required feeds, schedules and FRED evidence refuse AUTO entries.
+99. W opening context and causal loss-day/during-hold cause evidence are separate.
+    Durable event receipts after the exit cannot retroactively change the cause.
+    Actual MFE/MAE and gap-open prices remain unknown without complete observed
+    coverage; journal rows never relabel daily hypothetical bounds as actual.
+100. The news SDK is pinned to 0.44.0. Its one-shot connection methods avoid an
+     independent infinite reconnect loop; the sole supervisor owns bounded
+     retries. Authenticated entitlement and operation remain UNVERIFIED.
+     Journal, mining and read-only doctor do not apply, register or enable modes.

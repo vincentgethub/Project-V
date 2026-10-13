@@ -42,13 +42,14 @@ SYNTHETIC_NOTICE = (
 )
 
 
-def _key(key: EdgeKey) -> tuple[str, str, str, str, str]:
+def _key(key: EdgeKey) -> tuple[str, str, str, str, str, str]:
     return (
         key.playbook.value,
         key.variant,
         key.cohort,
         key.disposition,
         "" if key.fundamentals_status is None else key.fundamentals_status.value,
+        "" if key.context_tag is None else key.context_tag.value,
     )
 
 
@@ -223,7 +224,7 @@ class WeeklyReport(FrozenModel):
         overall = {
             (card.key.playbook, card.key.variant, card.key.disposition): card
             for card in self.cards
-            if card.key.fundamentals_status is None
+            if card.key.fundamentals_status is None and card.key.context_tag is None
         }
         comparisons = tuple(
             (item.playbook.value, item.variant, item.filter) for item in self.filters
@@ -288,7 +289,7 @@ def build_weekly_report(
             raise ValueError("report outcome account/cohort/hash/date binding differs")
         if not calendar.is_session(bound.start) or not calendar.is_session(bound.end):
             raise ValueError("report endpoints require XNYS sessions")
-        grouped: dict[tuple[str, str, str, str, str], EdgeKey] = {}
+        grouped: dict[tuple[str, str, str, str, str, str], EdgeKey] = {}
         for item in checked:
             for status in (None, item.setup.fundamentals_status):
                 key = EdgeKey(
@@ -297,6 +298,17 @@ def build_weekly_report(
                     cohort=item.setup.cohort,
                     disposition=item.setup.disposition,
                     fundamentals_status=status,
+                )
+                grouped[_key(key)] = key
+            for tag in item.setup.context_tags:
+                from backend.realtime.models import ContextTag
+
+                key = EdgeKey(
+                    playbook=item.setup.playbook,
+                    variant=item.setup.variant,
+                    cohort=item.setup.cohort,
+                    disposition=item.setup.disposition,
+                    context_tag=ContextTag(tag),
                 )
                 grouped[_key(key)] = key
         cards: list[EdgeCard] = []
@@ -340,7 +352,7 @@ def build_weekly_report(
         overall = {
             (card.key.playbook, card.key.variant, card.key.disposition): card
             for card in cards
-            if card.key.fundamentals_status is None
+            if card.key.fundamentals_status is None and card.key.context_tag is None
         }
         comparisons: list[FilterComparison] = []
         for (playbook, variant, disposition), filtered in sorted(
@@ -447,6 +459,8 @@ def render_weekly(report: WeeklyReport, *, mask_amounts: bool = False) -> str:
             if card.key.fundamentals_status is None
             else card.key.fundamentals_status.value
         )
+        if card.key.context_tag is not None:
+            status += " · event " + card.key.context_tag.value
         money = "$•••" if mask_amounts else "$" + _number(card.expectancy_money)
         ci = _range(card.confidence)
         lines.extend(
@@ -518,6 +532,7 @@ _COLUMNS = (
     "variant",
     "disposition",
     "fundamentals_status",
+    "context_tag",
     "grade",
     "alerts",
     "filled",
@@ -589,6 +604,7 @@ def report_csv(report: WeeklyReport) -> bytes:
             variant=card.key.variant,
             disposition=card.key.disposition,
             fundamentals_status=card.key.fundamentals_status,
+            context_tag=card.key.context_tag,
         )
         metrics = {
             key: value for key, value in card.model_dump(mode="python").items() if key in _COLUMNS
@@ -623,6 +639,7 @@ def report_csv(report: WeeklyReport) -> bytes:
                 "variant": estimate.key.variant,
                 "disposition": estimate.key.disposition,
                 "fundamentals_status": estimate.key.fundamentals_status,
+                "context_tag": estimate.key.context_tag,
                 "year": estimate.year,
                 "net_gains": estimate.net_gains,
                 "rough_after_tax": estimate.rough_after_tax,

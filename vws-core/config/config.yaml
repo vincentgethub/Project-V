@@ -52,7 +52,22 @@ alerts:
   alert_cooldown_sessions: 1
 egress:
   # Additional entries require both a DNS host and a readable comment.
-  extra_hosts: []
+  extra_hosts:
+    - {host: www.nasdaqtrader.com, comment: RT-03 public trade halt RSS}
+    - {host: www.federalreserve.gov, comment: RT-08 official schedule refresh only}
+    - {host: www.bls.gov, comment: RT-08 official schedule refresh only}
+    - {host: www.bea.gov, comment: RT-08 official schedule refresh only}
+lj: {min_tag_n: 15, narrative_llm: false}
+lp: {mine_cron: weekly, max_open_proposals: 10}
+rt:
+  clock_skew_ms: 500
+  news_stale_sec: 120
+  asset_poll_sec: 60
+  ca_stale_hours: 36
+  halt_poll_sec: 60
+  vix_stress: 30
+  required_feeds: [clock, halts, news, assets]
+  hard_events: {halt: block_entries, delisting: true, dilution: alert_only, mwc1: half_size, mwc2: half_size, mwc3: no_new_entries}
 news:
   # RSS is secondary. Only explicit HTTPS feeds receive network grants.
   rss_urls: []

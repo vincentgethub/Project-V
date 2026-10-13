@@ -161,11 +161,15 @@ class SecEdgarProvider:
             ) from None
 
     async def _read(
-        self, kind: Literal["TICKERS", "COMPANYFACTS", "SUBMISSIONS"], cik: str | None
+        self,
+        kind: Literal["TICKERS", "COMPANYFACTS", "SUBMISSIONS"],
+        cik: str | None,
+        *,
+        fresh: bool = False,
     ) -> SecPayload:
         try:
             async with asyncio.timeout(30):
-                return await self._read_bounded(kind, cik)
+                return await self._read_bounded(kind, cik, fresh=fresh)
         except TimeoutError:
             raise ProviderError(
                 "FA-02: SEC evidence read exceeded its whole-operation deadline"
@@ -175,6 +179,8 @@ class SecEdgarProvider:
         self,
         kind: Literal["TICKERS", "COMPANYFACTS", "SUBMISSIONS"],
         cik: str | None,
+        *,
+        fresh: bool = False,
     ) -> SecPayload:
         key = (kind, cik)
         ttl = timedelta(days=7) if kind == "TICKERS" else timedelta(hours=self.config.cache_hours)
@@ -186,7 +192,7 @@ class SecEdgarProvider:
                     cached = SecPayload.model_validate(cached)
                     if cached.fetched_at > now:
                         raise DataIntegrityError("FA-02: SEC cache is future evidence")
-                    if now - cached.fetched_at < ttl:
+                    if not fresh and now - cached.fetched_at < ttl:
                         return cached
                 url = (
                     _TICKERS
@@ -270,6 +276,11 @@ class SecEdgarProvider:
     async def submissions(self, symbol: str, as_of: datetime) -> Mapping[str, object]:
         ensure_utc(as_of)
         return (await self._read("SUBMISSIONS", await self.cik_for(symbol))).parsed()
+
+    async def realtime_submissions(self, symbol: str, as_of: datetime) -> Mapping[str, object]:
+        """RT-06: bypass the 24-hour cache, retaining the same aggregate SEC pacer."""
+        ensure_utc(as_of)
+        return (await self._read("SUBMISSIONS", await self.cik_for(symbol), fresh=True)).parsed()
 
     async def earnings_reports(self, symbol: str, as_of: datetime) -> tuple[EarningsReport, ...]:
         from backend.data.earnings_reports import sec_reports

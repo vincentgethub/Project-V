@@ -1,4 +1,49 @@
-# Stage V GREEN OFFLINE - 2026-10-12
+# Stage W GREEN OFFLINE - 2026-10-12
+
+Final fresh full offline suite: **5,316 passed, 59 skipped, four perf deselected,
+two warnings, 2,368.18s**, zero failures/errors. Required critical coverage is
+**100%: 7,624 statements / 2,606 branches, zero missing/partial**, with 20
+inherited exclusions. Full scope includes state/risk/compliance/fundamentals,
+notifications, tax and the entire evaluation package. This full run supersedes
+the historical coverage unions below. Evidence: `data/w-final-full.xml`, `.log`
+and `-coverage.json`. Skips: 57 explicit disposable PG cases, one read-only
+paper account/SIP case, one GET-only existing canceled paper OTO/OCO case.
+Warnings: pinned websockets legacy deprecation and the intentionally refused
+pytest-socket positive control; no real network request was permitted.
+
+Fresh fixed 20-symbol/seven-year replay: **one pass, four deselected, one warning,
+203.24s overall; 172.520s timed**, 443 decisions, under 180s. SHA256:
+`82534b12f27d10ba8787236a94a8beefc7103d65efda9671b383e78ce0dd4024`.
+Warm scan / RT fake selection: **two passes, one deselected, one warning, 13.01s**;
+warm scan **2.450009s**, fake idle **0.000% CPU over 1.003s**, queue 1000/drop
+oldest OTHER/dedupe. Safety + fixed replay = **5,317** distinct available passes;
+including warm/RT = **5,319**. Focused W/write 159 cases overlap the full gate.
+Eight-variant walk-forward speed remains **UNVERIFIED** under Amendment 05's
+explicit exception: V recorded 19 incomplete windows / 949.845s, no result.
+
+Ruff/format, strict whole-source types (419), all five actual root hooks, full
+AST controls, zero-finding Bandit, pip check, exact 62/141 runtime/dev audits,
+SBOMs, source secret scan, redacted history scan and wheel build pass. Wheel:
+`44b228bbf07ebf89fa8bdaf6fd5a42643f23e72b209e9b051a741e88417394ac`.
+No source changed between the fresh full suite and performance checks. Two
+preliminary W full runs were aborted for a fixture alias and causal loss-news
+repair; neither produced a final passing result. The guard refused SBOM metadata
+in data; moving generated inventories to build repaired it without a waiver.
+
+MANUAL paper / ALPACA-only state remains default; MANUAL_CSV refuses before
+reading files. Its acceptance is owner-DEFERRED, Oct 8. Actual services, host
+protections, native backups/drill, full realtime sessions, current macro schedules,
+paper order/stop behavior, delisted history, tax forms, mutation/Docker/PG/remote
+CI remain UNVERIFIED. Reproduction commands below and FINAL_REPORT list the
+needed evidence. No AUTO_LIVE, owner DB migration, money movement or push.
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q -m 'not perf' --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing
+.venv\Scripts\python.exe -m pytest -q -s -m perf --no-cov backend/tests/test_replay_cli.py
+.venv\Scripts\python.exe -m pytest -q -s -m perf --no-cov backend/tests/test_v_performance.py backend/tests/test_w_perf.py -k 'warm_daily_scan or fake_supervisor_idle'
+```
+
+# Stage V GREEN OFFLINE - 2026-10-12 (historical)
 
 Latest safety run: **5,179 passed, 59 skipped, three perf deselected, two warnings,
 11,004.16s recorded wall time**, no test failures. Its original coverage gate

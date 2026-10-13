@@ -63,6 +63,7 @@ from backend.execution.reporting import daily_summary
 from backend.execution.stop_readiness import live_raise_reasons
 from backend.execution.worker import SingleAttemptWorker
 from backend.funding.activities import AlpacaActivitiesSource
+from backend.learning.service import LearningService
 from backend.notifications.callbacks import ApprovalGate
 from backend.notifications.telegram_bot import TelegramBot
 from backend.ops.account_context import LedgerAccountContext
@@ -82,6 +83,11 @@ from backend.ops.watch import WatchDesk
 from backend.ops.watchdog import Watchdog
 from backend.pnl.history import EquityHistory, read_history
 from backend.pnl.service import AccountingReports
+from backend.realtime.desk import RealtimeDesk
+from backend.realtime.reader import RealtimeReader
+from backend.realtime.schedules import Schedules
+from backend.realtime.storage import RealtimeStore
+from backend.realtime.supervisor import Supervisor
 from backend.risk.boundary import RiskBoundary
 from backend.risk.compliance import ComplianceEngine
 from backend.risk.compliance_boundary import ComplianceBoundary
@@ -236,18 +242,16 @@ async def compose(
     )
     cro = ChiefRiskOfficer(settings, registry, calendar)
     macro = MacroCalendar(project / "config/macro_events.csv")
-    macro.read()
+    if macro.path.is_file():
+        macro.read()
     risk, compliance = (
         RiskBoundary(
             cro,
             state,
             clock,
             marks=marks,
-            additional_blackouts=lambda: (
-                tuple(row.window() for row in macro.read())
-                if modes is not None and modes.effective != "MANUAL"
-                else ()
-            ),
+            # Amendment 06 EVT-01/02 supersedes XK-04 blanket macro windows.
+            # Its explicit event table feeds PR-04; CRO-13 earnings is unchanged.
         ),
         ComplianceBoundary(ComplianceEngine(settings, registry, calendar), state, clock),
     )
@@ -315,6 +319,16 @@ async def compose(
     )
     journal = Journal(state.ledger, scope)
     extras = ExtraControls(state.ledger, scope, config, source, macro, bot.notify)
+    realtime_store = RealtimeStore(state.ledger, scope, config.config_hash)
+    schedules = Schedules(state.ledger, macro, project / "config/events_policy.yaml")
+    realtime = RealtimeDesk(
+        realtime_store,
+        config,
+        calendar,
+        schedules,
+        lambda: modes is not None and modes.effective != "MANUAL",
+    )
+    extras.event_factor = realtime.factor
     from backend.evaluation.availability import GradeStore
 
     grades = GradeStore(state.ledger, settings, config)
@@ -350,13 +364,16 @@ async def compose(
             if verified_drill(project, settings, store, clock.now(), 31)
             else ("Monthly drill due: run vws ops drill --operator NAME on the host.",)
         )
-        return (*extras.status(), *drill)
+        return (*extras.status(), *realtime.statuses(), *drill)
 
     commands.extra_status = extra_status
 
     def card_annotations(alert: Alert) -> tuple[str, ...]:
         extras.update_playbooks()
+        rt_context = realtime.record(alert.proposal_id, alert.symbol)
         lines = ["Playbook paused"] if extras.controls.paused(Playbook(alert.playbook)) else []
+        lines.append("Event tags: " + (", ".join(tag.value for tag in rt_context.tags) or "none"))
+        lines.extend(rt_context.warnings)
         batch = source._batch
         if batch is None:
             lines.append("SPY regime UNVERIFIED")
@@ -373,8 +390,8 @@ async def compose(
                 )
         day = clock.now().astimezone(ZoneInfo("America/New_York")).date()
         lines.extend(
-            f"Macro event today: {event.event}; automatic blackout applies."
-            for event in macro.read()
+            f"Macro event today: {event.event}; configured event policy applies."
+            for event in (macro.read() if macro.path.is_file() else ())
             if event.date == day
         )
         return tuple(lines)
@@ -389,6 +406,45 @@ async def compose(
         return (await boundary.portfolio_async(reader)).snapshot
 
     schedule = load_fee_schedule(project / "config/fees.yaml")
+    learning = LearningService(state.ledger, scope, config, calendar, schedule, project)
+
+    async def sync_learning() -> None:
+        await asyncio.to_thread(learning.sync)
+        if config.lj.narrative_llm:
+            from backend.learning.narrative import enrich
+
+            await enrich(learning.journal, realtime_store, llm)
+
+    async def journal_command(argument: str) -> str:
+        if argument.strip():
+            raise ConfigurationError("Use /journal without arguments.")
+        return await asyncio.to_thread(learning.journal.recent)
+
+    async def lessons_command(argument: str) -> str:
+        if argument.strip():
+            raise ConfigurationError("Use /lessons without arguments; it never applies a proposal.")
+        return await asyncio.to_thread(learning.proposals.masked)
+
+    async def events_command(argument: str) -> str:
+        if argument.strip():
+            raise ConfigurationError("Use /events without arguments.")
+        return await asyncio.to_thread(realtime.events)
+
+    async def regret_command(argument: str) -> str:
+        try:
+            identity = UUID(argument.strip())
+        except ValueError:
+            raise ConfigurationError(
+                "Use /regret followed by the recorded proposal UUID."
+            ) from None
+        return await asyncio.to_thread(learning.regret, identity)
+
+    commands.learning_handlers = {
+        "/journal": journal_command,
+        "/lessons": lessons_command,
+        "/events": events_command,
+        "/regret": regret_command,
+    }
 
     async def prepare_fills(symbols: tuple[str, ...]) -> None:
         start = calendar.previous_sessions(calendar.last_completed_session(clock.now()), 280)[0]
@@ -457,13 +513,16 @@ async def compose(
         if execution is not None:
             if prerequisites is None:
                 raise ConfigurationError("Execution prerequisite refresh is unavailable")
-            await prerequisites.refresh(lambda: security_cli.doctor_result(context, store))
+            await prerequisites.refresh(
+                lambda: security_cli.doctor_result(context, store, reads_override=reads)
+            )
         result = await tax.sync(force=True)
         if execution is not None:
             await execution.reconcile()
             if scope.environment == "LIVE":
                 await extras.observe_ramp(await portfolio())
         await asyncio.to_thread(journal.sync)
+        await sync_learning()
         await reports.flush()
         return result
 
@@ -513,6 +572,8 @@ async def compose(
                 playbook_allowed=extras.playbook_allowed,
                 stop_raise_readiness=lambda: live_raise_reasons(state.ledger, config),
                 held_exit_observation=source.held_exit_observation,
+                realtime_entry=realtime.require_entry,
+                realtime_exit=realtime.hard_exit,
                 portfolio=portfolio,
                 configuration_check=lambda: context.drift.check(
                     context.config_hash(), mode=settings.execution_mode
@@ -527,6 +588,13 @@ async def compose(
                     security_reasons=security_cli.live_security_guard(context, store),
                     exit_reasons=lambda: live_raise_reasons(state.ledger, config),
                     verdict_hash=lambda: config.config_hash,
+                    feeds_healthy=lambda: realtime.history_ready(
+                        LiveGuard(
+                            settings, state, calendar, account_id, context.config_hash
+                        ).qualified_paper_account()
+                        or "unverified-paper-account",
+                        settings.auto_live_min_rt_sessions,
+                    ),
                     drill_ready=lambda: verified_drill(project, settings, store, clock.now(), 45),
                 )
                 if settings.execution_mode == "AUTO_LIVE"
@@ -538,6 +606,7 @@ async def compose(
             async def capture_stream_fills() -> object:
                 result = await tax.sync(force=True)
                 await asyncio.to_thread(journal.sync)
+                await sync_learning()
                 return result
 
             stream = ManagedTradingStream(execution, policy, capture_stream_fills)
@@ -647,6 +716,11 @@ async def compose(
         result = await weekly_publisher()
         await asyncio.to_thread(journal.resolve)
         await asyncio.to_thread(extras.update_playbooks)
+        await sync_learning()
+        await bot.notify(
+            await asyncio.to_thread(learning.journal.summary, len(learning.proposals.open())), False
+        )
+        await bot.notify(await asyncio.to_thread(learning.mine), False)
         for reminder in extra_status():
             await bot.notify(reminder, False)
         for page in await accounting.tax_summary():
@@ -712,6 +786,71 @@ async def compose(
         )
 
     verifier = BrokerTimeVerifier(settings, calendar, clock, state, clock_read, calendar_read)
+    held_cache: PortfolioSnapshot | None = None
+    held_lock = asyncio.Lock()
+
+    async def watched() -> tuple[str, ...]:
+        nonlocal held_cache
+        async with held_lock:
+            if held_cache is None or (clock.now() - held_cache.as_of).total_seconds() >= 15:
+                held_cache = await portfolio()
+            return tuple(sorted(set(config.watchlist) | set(held_cache.positions)))
+
+    async def pending_held() -> tuple[str, ...]:
+        await watched()
+        if held_cache is None:
+            raise DataIntegrityError("RT: held snapshot unavailable")
+        pending = tuple(row.symbol for row in held_cache.open_orders if row.side.value == "BUY")
+        tickets = await source.open_tickets()
+        if len(pending) > 1000:
+            raise DataIntegrityError("RT: pending inventory exceeds its bound")
+        return tuple(
+            sorted(set(held_cache.positions) | set(pending) | {row.symbol for row in tickets})
+        )
+
+    async def held(symbol: str) -> bool:
+        return symbol in (await portfolio()).positions
+
+    async def dispatch(event: object) -> None:
+        from backend.realtime.models import RealtimeEvent
+
+        # AX-29 signals are consumed by the executor monitor. Notification
+        # delivery cannot delay held protection or submit an order here.
+        checked = RealtimeEvent.model_validate(event)
+        if checked.symbol is None or checked.kind not in {
+            "HALT",
+            "HALT_NEWS",
+            "NEWS_NEG",
+            "ASSET_INACTIVE",
+            "DELIST",
+            "DILUTION",
+        }:
+            return
+        owned = await held(checked.symbol)
+        realtime_store.flag_once(checked, held=owned)
+        if not realtime_store.notice_delivered(checked):
+            await bot.notify(
+                f"Realtime flag: {checked.symbol} {checked.kind}. {'Held position flagged.' if owned else 'Watched symbol flagged.'} {checked.text}",
+                owned,
+            )
+            realtime_store.delivered_notice(checked)
+
+    rt_reader = RealtimeReader(
+        settings,
+        config.rt,
+        reads,
+        realtime_store,
+        verifier,
+        calendar,
+        watched,
+        pending_held,
+        macro,
+        schedules.confirmed,
+        sec=sec,
+        fred_key=store.get("FRED_API_KEY"),
+    )
+    rt_supervisor = Supervisor(realtime_store, config.rt, rt_reader, dispatch, watched, state)
+    resources.push_async_callback(rt_supervisor.aclose)
 
     async def doctor() -> DoctorResult:
         return verified_doctor
@@ -750,6 +889,7 @@ async def compose(
         initialize_account=initialize_account,
         modes=modes,
         start_execution=None if stream is None else stream.start,
+        start_realtime=rt_supervisor.start,
     )
 
 

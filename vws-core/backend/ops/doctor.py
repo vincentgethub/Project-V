@@ -141,6 +141,7 @@ class Doctor:
         host_findings: tuple[HostFinding, ...],
         disk_free: Callable[[Path], int] = lambda path: shutil.disk_usage(path).free,
         python_version: tuple[int, int] = (sys.version_info.major, sys.version_info.minor),
+        realtime_probe: Callable[[str], Awaitable[tuple[Check, ...]]] | None = None,
     ) -> None:
         self.settings = Settings.validated_copy(settings)
         self.config = YamlConfig.model_validate(config)
@@ -149,6 +150,7 @@ class Doctor:
         self.state, self.calendar, self.clock = state, calendar, clock
         self.store, self.reads, self.project = store, reads, project
         self.account_id: str | None = None
+        self.realtime_probe = realtime_probe
         self.host_findings, self.disk_free, self.python_version = (
             host_findings,
             disk_free,
@@ -490,15 +492,30 @@ class Doctor:
         checks.append(stop_slippage_check(self.state.ledger, self.settings, self.account_id))
         # H stores the owner key only in setup. Stage W owns actual daily feed
         # health and policy. Presence alone cannot certify a healthy feed.
-        checks.append(
-            Check(
-                name="fred",
-                status="UNVERIFIED",
-                required=False,
-                message="FRED feed health is unverified; realtime policy is not built yet.",
-                fix="Enter the FRED key only in setup; Stage W verifies required feed health.",
+        if self.account_id is not None and self.realtime_probe is not None:
+            try:
+                checks.extend(await self.realtime_probe(self.account_id))
+            except Exception as error:
+                self.state.halt_for_error(error)
+                checks.append(
+                    Check(
+                        name="realtime_learning",
+                        status="UNVERIFIED",
+                        required=self.settings.execution_mode != "MANUAL",
+                        message="Realtime + learning probes failed; no health or write proof is available.",
+                        fix="Resolve credentials, provider availability or ledger faults and rerun doctor.",
+                    )
+                )
+        else:
+            checks.append(
+                Check(
+                    name="fred",
+                    status="UNVERIFIED",
+                    required=False,
+                    message="Realtime + learning: feeds and journal write are UNVERIFIED; bound probes unavailable.",
+                    fix="Enter credentials only in setup; verify the bound account and rerun doctor.",
+                )
             )
-        )
         for finding in self.host_findings:
             checks.append(
                 Check(

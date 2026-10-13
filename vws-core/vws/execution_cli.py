@@ -180,6 +180,8 @@ async def execute(
 
     async with AsyncExitStack() as resources:
         await compose(context, store, readiness, resources=resources, accounting_only=True)
+    from vws.realtime_cli import healthy_for_live
+
     guard = LiveGuard(
         settings,
         context.state,
@@ -189,6 +191,7 @@ async def execute(
         security_reasons=security_cli.live_security_guard(context, store),
         exit_reasons=lambda: live_raise_reasons(context.ledger, config),
         verdict_hash=lambda: config.config_hash,
+        feeds_healthy=lambda: healthy_for_live(context, config, modes.account_id),
         drill_ready=lambda: verified_drill(
             security_cli.PROJECT, settings, store, context.ledger.clock.now(), 45
         ),

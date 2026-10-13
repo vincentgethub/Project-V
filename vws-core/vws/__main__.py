@@ -75,6 +75,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     tax_reconcile.add_argument("--mapping", type=Path, default=Path("config/1099b_columns.yaml"))
     journal = commands.add_parser("journal").add_subparsers(dest="journal_operation", required=True)
     journal.add_parser("export")
+    journal.add_parser("recent").add_argument("--count", type=int, default=10)
+    journal.add_parser("regret").add_argument("proposal_id")
+    commands.add_parser("lessons").add_subparsers(
+        dest="lessons_operation", required=True
+    ).add_parser("mine")
+    commands.add_parser("events").add_subparsers(dest="events_operation", required=True).add_parser(
+        "refresh-schedules"
+    )
     report_parser = commands.add_parser("report").add_subparsers(
         dest="report_operation", required=True
     )
@@ -210,7 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ):
             selected_env = security.PROJECT / ".env"
         if selected_env is None and (
-            args.command in {"doctor", "tax", "journal", "report"}
+            args.command in {"doctor", "tax", "journal", "report", "lessons", "events"}
             or (
                 args.command == "ops"
                 and args.operation
@@ -245,7 +253,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                     phrase=phrase,
                 )
                 return 0
-            if args.command in {"journal", "report"}:
+            if args.command == "journal" and args.journal_operation != "export":
+                from vws.realtime_cli import recent, regret
+
+                print(
+                    recent(context, security.PROJECT, args.count)
+                    if args.journal_operation == "recent"
+                    else regret(context, security.PROJECT, args.proposal_id)
+                )
+            elif args.command == "lessons":
+                from vws.realtime_cli import service
+
+                print(service(context, security.PROJECT).mine())
+            elif args.command == "events":
+                from vws.realtime_cli import refresh_schedules
+
+                asyncio.run(refresh_schedules(context, security.PROJECT))
+            elif args.command in {"journal", "report"}:
                 from vws.extras_cli import export_journal, export_monthly
 
                 path = (

@@ -62,15 +62,17 @@ def _operator(value: str) -> str:
 
 
 def effective_config_hash(settings: Settings, files: Mapping[str, Path]) -> str:
-    """SEC-43: bind nonsecret settings and exact bytes of all four policy files.
+    """SEC-43/RT/LP: bind nonsecret settings and exact supplied policy bytes.
 
     Not-yet-created optional macro/accounts files contribute an explicit missing
     marker. Required config/instruments files may never be silently absent.
     Only file hashes are retained; file contents never enter security events.
     """
     try:
-        expected = {"config.yaml", "instruments.csv", "macro_events.csv", "accounts.yaml"}
-        if set(files) != expected:
+        legacy = {"config.yaml", "instruments.csv", "macro_events.csv", "accounts.yaml"}
+        current = legacy | {"events_policy.yaml", "fees.yaml", "variants.yaml"}
+        expected = set(files)
+        if expected not in (legacy, current):
             raise ValueError("effective config file inventory differs")
         payload = settings.model_dump()
         if (

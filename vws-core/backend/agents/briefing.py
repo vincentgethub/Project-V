@@ -212,6 +212,7 @@ class DeskCommands:
         self.modes = modes
         self.extra_status = extra_status
         self.verdict_handler: Callable[[], Awaitable[str]] | None = None
+        self.learning_handlers: dict[str, Callable[[str], Awaitable[str]]] = {}
 
     def handlers(self) -> dict[str, CommandBody]:
         return {
@@ -223,7 +224,20 @@ class DeskCommands:
             "/verdict": self.verdict,
             "/help": self.help,
             "/progress": self.progress,
+            **{
+                name: self.learning_command(name)
+                for name in ("/journal", "/lessons", "/events", "/regret")
+            },
         }
+
+    def learning_command(self, name: str) -> CommandBody:
+        async def run(argument: str) -> tuple[str, ...]:
+            handler = self.learning_handlers.get(name)
+            if handler is None:
+                return pages("Realtime + learning: UNVERIFIED; host composition is unavailable.")
+            return pages(escape(await handler(argument)))
+
+        return run
 
     async def status(self, argument: str) -> tuple[str, ...]:
         snapshot = read_status(self.state, self.settings)
@@ -444,6 +458,7 @@ class DeskCommands:
         if self.modes is not None:
             return (
                 "/status · /positions · /digest · /report · /edge · /verdict · /progress · /pnl · /tax · /watch TICKER\n"
+                "/journal · /lessons · /events · /regret PROPOSAL_ID\n"
                 "Watch cards never auto-trade. Reply to a trade card or FYI to save a journal note.\n"
                 "/halt, /pause and /manual stop automatic entries; held exits and broker stops continue.\n"
                 "In an automatic mode, Approve places the order now after fresh checks.\n"
@@ -451,6 +466,7 @@ class DeskCommands:
             )
         return (
             "/status · /positions · /digest · /report · /edge · /verdict · /progress · /pnl · /tax · /watch TICKER\n"
+            "/journal · /lessons · /events · /regret PROPOSAL_ID\n"
             "Reply to a trade card or FYI to save a journal note.\n"
             "/halt reason stops entries immediately. /pause allows reductions only.\n"
             "Approve creates a manual ticket after fresh checks. Details is read-only.\n"

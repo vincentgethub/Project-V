@@ -58,7 +58,26 @@ YAML_INTEGER_BOUNDS: Mapping[str, tuple[int, int]] = MappingProxyType(
     }
 )
 YAML_ALLOWED_SETTING_NAMES = frozenset(YAML_INTEGER_BOUNDS) | frozenset(
-    {"scan_interval_minutes", "offhours_interval_minutes"}
+    {
+        "scan_interval_minutes",
+        "offhours_interval_minutes",
+        "lj",
+        "lp",
+        "rt",
+        "events_policy",
+        "min_tag_n",
+        "narrative_llm",
+        "mine_cron",
+        "max_open_proposals",
+        "clock_skew_ms",
+        "news_stale_sec",
+        "asset_poll_sec",
+        "ca_stale_hours",
+        "halt_poll_sec",
+        "vix_stress",
+        "hard_events",
+        "required_feeds",
+    }
 )
 KEYRING_ONLY_ENV_NAMES = frozenset(
     {"plaid_access_token", "plaid_token_path", "fernet_key", "fred_api_key"}
@@ -211,6 +230,7 @@ class Settings(BaseSettings):
             "auto_max_entries_per_day": (1, 10),
             "auto_max_consecutive_order_failures": (1, 3),
             "auto_live_min_paper_sessions": (20, 10000),
+            "auto_live_min_rt_sessions": (5, 10000),
         }
     )
     SECRET_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -270,6 +290,7 @@ class Settings(BaseSettings):
     auto_max_entries_per_day: int = 5
     auto_max_consecutive_order_failures: int = 3
     auto_live_min_paper_sessions: int = 20
+    auto_live_min_rt_sessions: int = 5
     auto_exits: bool = True
     auto_exit_before_earnings: bool = True
     auto_exit_limit_offset: Decimal = Decimal("0.01")
@@ -1328,6 +1349,66 @@ class PlaybooksPolicy(_FrozenYamlModel):
         return YamlConfig.validate_playbooks(value)
 
 
+EventAction = Literal["annotate", "half_size", "no_new_entries"]
+
+
+class LearningJournalConfig(_FrozenYamlModel):
+    min_tag_n: int = Field(default=15, strict=True, ge=15, le=100000)
+    narrative_llm: bool = Field(default=False, strict=True)
+
+
+class LessonProposalConfig(_FrozenYamlModel):
+    mine_cron: Literal["weekly"] = "weekly"
+    max_open_proposals: int = Field(default=10, strict=True, ge=1, le=10)
+
+
+class HardEventConfig(_FrozenYamlModel):
+    halt: Literal["block_entries"] = "block_entries"
+    delisting: bool = Field(default=True, strict=True)
+    dilution: Literal["alert_only", "exit"] = "alert_only"
+    mwc1: Literal["half_size", "no_new_entries"] = "half_size"
+    mwc2: Literal["half_size", "no_new_entries"] = "half_size"
+    mwc3: Literal["no_new_entries"] = "no_new_entries"
+
+
+class RealtimeConfig(_FrozenYamlModel):
+    clock_skew_ms: int = Field(default=500, strict=True, ge=1, le=500)
+    news_stale_sec: int = Field(default=120, strict=True, ge=1, le=120)
+    asset_poll_sec: int = Field(default=60, strict=True, ge=1, le=60)
+    ca_stale_hours: int = Field(default=36, strict=True, ge=1, le=36)
+    halt_poll_sec: int = Field(default=60, strict=True, ge=60, le=300)
+    vix_stress: Decimal = Field(default=Decimal(30), ge=1, le=30)
+    hard_events: HardEventConfig = Field(default_factory=HardEventConfig)
+    required_feeds: tuple[Literal["clock", "halts", "news", "assets"], ...] = (
+        "clock",
+        "halts",
+        "news",
+        "assets",
+    )
+
+    @field_validator("vix_stress", mode="before")
+    @classmethod
+    def exact_stress(cls, value: object) -> Decimal:
+        return _exact_decimal(value)
+
+    @field_validator("required_feeds")
+    @classmethod
+    def all_required(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != ("clock", "halts", "news", "assets"):
+            raise ValueError("RT-10: the four required feeds cannot be removed or reordered")
+        return value
+
+
+class EventsPolicy(_FrozenYamlModel):
+    fomc: EventAction = "half_size"
+    cpi: EventAction = "half_size"
+    jobs: EventAction = "half_size"
+    gdp: EventAction = "annotate"
+    pce: EventAction = "annotate"
+    opex: EventAction = "annotate"
+    vix_stress: EventAction = "half_size"
+
+
 class YamlConfig(_FrozenYamlModel):
     """GD-02/R-03: research configuration cannot modify env risk limits."""
 
@@ -1349,6 +1430,10 @@ class YamlConfig(_FrozenYamlModel):
     exits: ExitVariantConfig = Field(default_factory=ExitVariantConfig)
     ex: TrailingExitConfig = Field(default_factory=TrailingExitConfig)
     gv: VerdictConfig = Field(default_factory=VerdictConfig)
+    lj: LearningJournalConfig = Field(default_factory=LearningJournalConfig)
+    lp: LessonProposalConfig = Field(default_factory=LessonProposalConfig)
+    rt: RealtimeConfig = Field(default_factory=RealtimeConfig)
+    events_policy: EventsPolicy = Field(default_factory=EventsPolicy)
     model_config = ConfigDict(
         **_FrozenYamlModel.model_config, serialize_by_alias=True, validate_by_name=True
     )
@@ -1563,7 +1648,16 @@ def load_yaml_config(
 ) -> YamlConfig:
     """GD-02/R-02: load frozen policy and enforce instrument/env identity."""
     try:
-        config = YamlConfig.model_validate(load_exact_yaml(path))
+        payload = load_exact_yaml(path)
+        event_path = Path(path).parent / "events_policy.yaml"
+        if isinstance(payload, dict) and event_path.exists():
+            if "events_policy" in payload:
+                raise ValueError("EVT-01: events_policy.yaml is the sole event-policy file")
+            payload = {
+                **payload,
+                "events_policy": EventsPolicy.model_validate(load_exact_yaml(event_path)),
+            }
+        config = YamlConfig.model_validate(payload)
         config.assert_allowed_symbols(allowed_symbols)
         if settings is not None:
             config.assert_settings_consistent(settings)

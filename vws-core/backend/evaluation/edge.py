@@ -28,6 +28,7 @@ from backend.indicators.statistics import (
     spearman,
 )
 from backend.ops.playbook_kill import playbook_kill_condition
+from backend.realtime.models import ContextTag
 
 ZERO = Decimal(0)
 Grade = Literal["LOSING", "WORKING", "UNPROVEN"]
@@ -39,6 +40,7 @@ class EdgeKey(FrozenModel):
     cohort: Cohort
     disposition: Disposition
     fundamentals_status: FrameworkStatus | None = None
+    context_tag: ContextTag | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class EquityPoint(FrozenModel):
@@ -220,14 +222,19 @@ def summarize_edge(
             raise ValueError("duplicate alert")
         for item in checked:
             intent = item.setup
-            if (intent.playbook, intent.variant, intent.cohort, intent.disposition) != (
-                bound.playbook,
-                bound.variant,
-                bound.cohort,
-                bound.disposition,
-            ) or (
-                bound.fundamentals_status is not None
-                and intent.fundamentals_status != bound.fundamentals_status
+            if (
+                (intent.playbook, intent.variant, intent.cohort, intent.disposition)
+                != (
+                    bound.playbook,
+                    bound.variant,
+                    bound.cohort,
+                    bound.disposition,
+                )
+                or (
+                    bound.fundamentals_status is not None
+                    and intent.fundamentals_status != bound.fundamentals_status
+                )
+                or (bound.context_tag is not None and bound.context_tag not in intent.context_tags)
             ):
                 raise ValueError("mixed playbook, variant, cohort, filter or fundamental status")
         manifests = {item.manifest_sha256 for item in checked}

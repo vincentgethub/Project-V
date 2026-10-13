@@ -111,8 +111,8 @@ including MANUAL mode and direct component use. No manual file is read.
 Confirmed earnings near a proposal block entries; estimated or unknown dates
 show warnings. The account-type check halts on a reported CASH/MARGIN mismatch.
 
-The current fresh schema is version 6. Normal startup refuses older layouts;
-never delete the database or change its version number by hand. Stage H/J supply
+The current fresh schema is version 7. Normal startup refuses older layouts;
+never delete the database or change its version number by hand. Stage H/J/I supply
 the explicit backup-first additive migration. Host `python -m vws ops panic --operator NAME --reason REASON` remains available for the exact compatible
 version-2 through version-5 schemas and persists HALTED without upgrading them. It does not certify
 old or damaged ledger chains. An incompatible control schema is refused.
@@ -261,8 +261,9 @@ For a known older SQLite schema, stop the runtime first and run:
 .venv\Scripts\python.exe -m vws doctor
 ```
 
-The current Stage J layout is version 6, adding cash-flow, daily-P&L and tax
-evidence tables. The migration authenticates an encrypted online backup and its
+Stage J added cash-flow, daily-P&L and tax tables in version 6. The current
+version 7 additionally retains isolated execution evidence. W adds append-only
+security receipts and needs no further DDL. The migration authenticates an encrypted online backup and its
 scratch restore before additive DDL. Existing ledger rows and hashes are retained. Unknown layouts
 or corrupt chains refuse. Do not manually alter `schema_meta` or delete rows.
 If migration is refused, preserve the DB and report the precise failure.
@@ -483,3 +484,60 @@ and no unprotected window over 30 seconds, under the current variant/policy.
 When a cancel is ambiguous, an overlapping sell is unsafe: halt, notify urgently
 and look up the existing broker identity before any repair. Held exits and valid
 stop protection remain available during entry halts.
+
+## Learning loop and realtime feeds
+
+The existing host runtime owns one async supervisor; no extra server or inbound
+port is needed. Required AUTO entry feeds are clock, Nasdaq halts, news heartbeat
+and asset status. Unavailable required feeds stop entries; MANUAL cards show
+warnings. Halts and stale feeds never delay held exits or broker stop repair.
+Confirmed delisting may use the existing bounded AX-29 exit; dilution defaults
+to an alert. Scheduled events use the reducing policy table: FOMC/CPI/jobs and
+VIX stress halve size, GDP/PCE/OPEX annotate. Earnings retains its existing CRO
+gate. No event can raise size or create a trade.
+
+Enter FRED only through setup/native keyring and SEC identification through the
+same wizard. Missing credentials are UNVERIFIED. Paper keys, clock/calendar,
+News REST/WSS entitlement, assets and corporate actions need authenticated
+verification. Corporate actions are delayed confirmation without a freshness
+guarantee; SEC shares the existing aggregate pacer. The pinned news SDK's
+one-shot connection APIs leave bounded reconnect ownership with the supervisor.
+Doctor reads feeds and checks journal writes; it cannot dispatch event actions
+or send orders. Five whole healthy XNYS feed sessions, not five snapshots,
+are an additional live prerequisite; this does not replace any existing unlock
+condition. Do not enable AUTO_LIVE as part of setup or this build.
+
+Quarterly schedules require owner review. Curate `config/macro_events.csv`
+from the Federal Reserve, BLS CPI/employment and BEA published schedules,
+including FOMC, CPI, NFP, GDP and PCE for the current quarter. The command below
+fetches bounded official pages and displays hashes; it never writes that CSV.
+Type `CONFIRM MACRO SCHEDULES` only after reviewing the times in Eastern time.
+The reviewed file must still match and the review must be under 15 minutes old.
+Missing, edited, stale or unconfirmed schedules block AUTO event gating.
+After editing policy files, use the existing host apply-config/ack-config
+workflow and review its drift warning. Fees, variants and event policy are now
+included in the security fingerprint; earlier acknowledgements need renewal.
+
+```powershell
+.venv\Scripts\python.exe -m vws events refresh-schedules
+.venv\Scripts\python.exe -m vws journal recent --count 10
+.venv\Scripts\python.exe -m vws journal regret PROPOSAL_UUID
+.venv\Scripts\python.exe -m vws lessons mine
+```
+
+The private heavy-rate `/journal`, `/regret`, `/lessons` and `/events` commands
+show masked evidence only. A regret must bind a recorded blocked candidate.
+Weekly lessons show cause counts, expected-noise share and open proposals.
+Mining needs at least 15 independent episodes plus complete registered OOS
+evidence; insufficient data produces no proposal. There are at most ten open
+proposals, written to Suggestions and `data/proposals/<id>.json`. None applies
+itself. Keep declined/abandoned suggestions visible. Owner plain-words approval
+must precede adding the specified fixed override to the host registry; run
+`vws validate register`, walk-forward and paper observation before a later host
+setting change. Do not optimize parameters or run holdout merely to preview it.
+The running process cannot apply, register or resolve its own lessons.
+
+The journal never invents unavailable MFE/MAE, fill-time prices or fee attribution.
+An unchanged history replays byte-identically. Notify retries preserve one
+durable event/flag; after ambiguous broker delivery the isolated executor looks
+up its stable identity before retrying. Hypothetical/past results; not indicative of future returns.

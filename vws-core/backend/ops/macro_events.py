@@ -21,7 +21,7 @@ OFFICIAL_HOSTS = frozenset({"www.federalreserve.gov", "www.bls.gov", "www.bea.go
 class MacroEvent(FrozenModel):
     date: SessionDate
     release_at: UTCDateTime
-    event: Literal["FOMC", "CPI", "NFP"]
+    event: Literal["FOMC", "CPI", "NFP", "GDP", "PCE"]
     source: str = Field(strict=True, min_length=1, max_length=512)
 
     @model_validator(mode="after")

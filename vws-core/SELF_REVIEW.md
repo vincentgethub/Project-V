@@ -1,4 +1,27 @@
-# Stage J safety review - GREEN OFFLINE with owner deferral
+# Stage W safety review - GREEN OFFLINE
+
+The current W/write boundary selection passed 159 cases. Whole strict types,
+Ruff/format, the execution/write guards, five actual root hooks, production
+Bandit, pinned dependency audits and redacted full-history secret scan pass.
+The final whole-suite certificate is 5,316 passes / 59 skips / 100% required
+critical branch coverage (7,624 statements, 2,606 branches). Fixed replay,
+warm scan and RT fake performance also pass, for 5,319 available distinct passes.
+STATUS/VERIFY hold the exact evidence. The Stage J review below is historical.
+
+| W failure route | Applied protection | Evidence |
+| --- | --- | --- |
+| One news transport failure erases a healthy other transport | Preserve genuinely fresh shared heartbeat; failures never refresh it | test_w_recovery: 119s/121s boundaries |
+| Private notice failure loses a held flag or duplicates it | Separate received/flag/delivered receipts; durable retry | test_w_recovery: one FLAG, retry, one delivery; halt never AX-29 |
+| Old entry news becomes the cause of a later loss | Separate opening tags from causal loss-day/during-hold event receipts | test_w_recovery: actual split loss, timestamp/symbol binding, backdated receipt refusal, stable replay |
+| Closing snapshots falsely satisfy five feed sessions | Whole XNYS open-to-close samples, maximum gaps and explicit outage refusal | test_w_core: five sessions, missing open/closing-only/gap controls |
+| Learning silently modifies trading | Typed fixed proposals only, owner review, registered QV caps, AST positive controls | test_w_learning_feeds, test_w_integration, test_write_guard |
+| Context subgroups inflate total trade counts | Base totals exclude overlapping event/filter cards | test_w_event_reports; existing weekly/equity regressions |
+
+Unknown excursions, gap-open prices and unassigned external holdings remain
+unknown; authenticated feeds, real paper behavior and host protections remain
+UNVERIFIED. No credentials, owner DB or real orders were used by these tests.
+
+## Retained Stage J safety review - GREEN OFFLINE with owner deferral
 
 Final cumulative gate: 4,266 passes, 52 unavailable service checks skipped,
 100% required branch coverage (5,244 statements / 1,684 branches). The fixed

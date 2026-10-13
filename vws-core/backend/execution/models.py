@@ -274,9 +274,16 @@ class ExitCycleEvidence(FrozenModel):
     account_id: str = Field(strict=True, min_length=1, max_length=128)
     environment: Environment
     config_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    reason: Literal["TIME", "EARNINGS", "SUSPECT", "EMA20"]
+    reason: Literal["TIME", "EARNINGS", "SUSPECT", "EMA20", "DELIST", "DILUTION"]
     state: Literal["ACTIVE", "DONE", "FAILED"]
     session_date: date
+    rt_event_key: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def hard_event_bound(self) -> Self:
+        if (self.reason in {"DELIST", "DILUTION"}) != (self.rt_event_key is not None):
+            raise ValueError("AC-02: a hard-event exit needs its durable event identity")
+        return self
 
 
 class ExitApprovalEvidence(FrozenModel):

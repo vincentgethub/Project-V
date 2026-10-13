@@ -275,6 +275,9 @@ class ReadChecksClient:
         raise ConfigurationError("Broker calendar request must be a bounded date window")
 
     async def fred(self, key: SecretStr) -> None:
+        await self.fred_observations(key)
+
+    async def fred_observations(self, key: SecretStr) -> dict[str, object]:
         raw = self._token(key)
         await self._reserve_fred()
         # VERIFY: https://fred.stlouisfed.org/docs/api/fred/series_observations.html
@@ -309,3 +312,4 @@ class ReadChecksClient:
                 raise ValueError("Invalid FRED observation")
         except (ValueError, ArithmeticError):
             raise DataIntegrityError("FRED credential check remains unverified") from None
+        return result

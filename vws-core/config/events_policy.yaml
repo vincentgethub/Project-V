@@ -1,0 +1,8 @@
+# EVT-01/02: owner-controlled reductions; host apply-config is required after edits.
+fomc: half_size
+cpi: half_size
+jobs: half_size
+gdp: annotate
+pce: annotate
+opex: annotate
+vix_stress: half_size

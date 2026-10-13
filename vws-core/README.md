@@ -74,7 +74,7 @@ Stage F supplies the swarm, private Telegram approval boundary, six scheduled
 job bodies, manual tickets and read-only fill matching. Its offline gate passed
 3,366 tests with 44 unverified checks skipped and complete required branch coverage;
 connected host composition is supplied by Stage H. The project is not
-finished. Stage I's isolated order executor passed its offline safety gates;
+certified for connected deployment. Stage I's isolated order executor passed its offline safety gates;
 MANUAL remains the default, and money movement remains banned.
 
 Stage G/G+ supplies recorded hypothetical outcomes, original cost evidence,

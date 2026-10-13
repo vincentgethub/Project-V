@@ -15,6 +15,91 @@ docs/FINAL_REPORT.md with per-stage gates, the final cumulative offline/replay
 result, every unverified prerequisite, unmet spec IDs, known risks and exact
 setup/doctor/paper-start commands; then stop. No AUTO_LIVE or live trading.
 
+## Stage W GREEN OFFLINE - October 12, 2026
+
+V was committed locally as `0ada107`. W's final full safety gate passed:
+**5,316 passed, 59 skipped, four perf deselected, two warnings, 2,368.18s**.
+Required critical branch coverage is **100%: 7,624 statements / 2,606 branches,
+zero missing/partial, 20 inherited exclusions**. Artifacts are
+`data/w-final-full.xml`, `.log` and `-coverage.json`. The 59 skips are 57
+explicit-disposable-PostgreSQL cases and two explicit paper integrations.
+Warnings are pinned websockets legacy deprecation and the intentional
+pytest-socket positive control. Neither warning represents a permitted network
+request. Final uninstrumented replay passed **one case, four deselected, one
+warning, 203.24s overall; 172.520s timed**, 443 decisions, under 180s. Current
+proof SHA256: `82534b12f27d10ba8787236a94a8beefc7103d65efda9671b383e78ce0dd4024`.
+The warm 100-symbol scan and RT fake queue/idle selection passed **two cases,
+one deselected, one warning, 13.01s**. Warm scan: **2.450009s**, under 60s;
+fake idle: **0.000% CPU over 1.003s**, queue 1000 with oldest OTHER drop and
+dedupe, under 2%. Distinct available passes including these three perf cases:
+**5,319** (safety + fixed replay alone: 5,317). Eight-variant walk-forward speed
+remains explicitly UNVERIFIED with V's recorded timing; it is not a pass.
+Whole strict types (419 sources), Ruff/format (437 files), all five root hooks,
+full AST controls, Bandit (zero findings, 56,631 lines, 16 reviewed narrow skips),
+pip check, exact 62/141 runtime/dev audits, SBOMs, authored secret scan and
+redacted 15-commit history scan pass. Current wheel SHA256:
+`44b228bbf07ebf89fa8bdaf6fd5a42643f23e72b209e9b051a741e88417394ac`.
+W's source stayed unchanged through the full and performance gates. Connected
+services, host proofs, current-quarter schedules, five actual feed sessions and
+real price excursions remain UNVERIFIED. No AUTO_LIVE or push occurred.
+The first current W selection passed **73 cases in 4.91s** with sockets disabled
+(`data/w-foundations.log`, `.xml`): LJ loss/stop/slippage tags, idempotent scoped
+append-only rows and byte replay; LP n=14, NORMAL_VARIANCE and crossing-zero CI
+abstention, fixed paired complete OOS lift with cumulative Holm attempts,
+immutable proposal/Suggestions output with no configuration application; RT
+clock/health, halt/resume, full-session proof, bounded public RSS/news/SEC/FRED
+and delayed corporate-action parsing; exact reducing event policy. This count
+includes the earlier overlapping 41-case foundation gate; it is not 114.
+Runtime now connects PR-04 event sizing, sealed proposal/zero-filter context,
+entry-only preflight, persistent hard-event identities in the isolated AX-29
+monitor, private heavy commands, real physical/fee projections, weekly learning,
+read-only doctor probes and whole-session live prerequisites. Required unavailable
+connected inputs keep those host paths fail closed. Earlier foundations passed **109 cases / one warning,
+18.65s** (`data/w-current-foundations.xml`). The prior combined selection passed
+**138 cases / one warning, 17.88s** (109 W and 29 write controls, overlapping).
+The runtime regression passed **214 / two warnings, 125.04s**; report regression
+**127 / one warning, 50.37s**. These overlap and are not added together.
+The two affected fixture failures were repaired; current YAML/security/W
+selection passed **267 / one warning, 20.20s**. The final W/write selection
+passed **159 / one warning, 37.56s** (`data/w-final-focused.xml`), including
+causal receipt-based loss-day NEWS_SHOCK and during-hold halt/dilution tags.
+Opening context stays separate from the cause evidence; later received backdated
+events cannot rewrite the earlier observation. Two preliminary full runs were
+aborted without a result while repairing the fixture alias and this causal
+classification issue. They are not passing gates. The completed fresh full
+gate above supersedes them and the overlapping focused selections.
+RT fake queue/idle gate passed **one case, 3.19s**: queue 1000, oldest OTHER
+news dropped, duplicate ignored, measured CPU 0.000% over 1.006s. This is a
+fake idle measurement, not an authenticated production performance claim.
+W also fixes QV-05 Holm family correction to retain cumulative unobserved
+attempts; this is a stricter accounting correction, not parameter optimization.
+Host SEC-43 fingerprints now include events_policy.yaml, fees.yaml and
+variants.yaml; previous configuration acknowledgements require fresh review.
+No actual services, owner credentials, money movement or AUTO_LIVE were used.
+
+### W requirement traceability (offline gates passed; connected checks UNVERIFIED)
+
+| IDs | Code | Evidence |
+| --- | --- | --- |
+| LJ-01..06, AC-03 | learning/journal.py, service.py; physical.py, tca_store.py, shared tax FIFO | test_w_core, test_w_learning_feeds, test_w_integration: actual split loss, stop/slip, replay, expected-noise abstention |
+| LJ-07..08 | briefing.py, runtime_cli.py, realtime_cli.py; Telegram admission | test_w_integration: strangers/groups refused, heavy budget; weekly counts and masked recent rows |
+| LJ-04, LP-05, SEC-60..62 | learning/narrative.py, existing public-only typed LLM client | test_w_adapters: no account/order/R/quantity input; outage template; cause unchanged |
+| LP-01..04, LP-06..07 | learning/proposals.py, service.py; registry.py, validation.py | n14/15, complete paired OOS, 90% CI, cumulative Holm, fixed reducing override, immutable Suggestions/JSON, declined/accepted never reopen; write controls |
+| RT-01..08, AC-01 | realtime/reader.py, parsers.py, schedules.py; shared SEC pacer and physical GET budgets | clock 501/2001, HTML/RSS/SEC/FRED/CA fakes, read-only pagination bound, missing credential refusal; authenticated services UNVERIFIED |
+| RT-09..12, EVT-01..05 | realtime/policy.py, desk.py; k_runtime.py, ledger_inputs.py, edge.py, weekly.py | calendar/OPEX goldens, FOMC 40→20, zero skip, halt/resume; separate context cohorts; earnings remains CRO-13 |
+| RT-13, AC-02 | supervisor.py, storage.py; executor ExitCycleEvidence.rt_event_key | bounded queue, durable outbox, receive/flag/notice/cycle identities, reconnect cap, fake CPU gate |
+| RT-14, AX-40 | storage.healthy_sessions; LiveGuard callers in runtime, doctor and explicit host unlock | five whole XNYS sessions, closing-only/gap/outage refusal, floor5; no live unlock performed |
+| AC-04 | realtime/checks.py, ops/doctor.py | bound statuses/ages, append-only journal write receipt, open count, SEC identity/FRED presence; absent evidence UNVERIFIED |
+
+Amendment 06 EVT-01/02 supersedes XK-04's blanket macro-day blackout in host
+composition: FOMC/CPI/jobs use the configured reducing table; GDP/PCE annotate.
+This is an explicit later-spec precedence decision. CRO-13 and AX-22 remain.
+Known unavailable observations are stored as unknown, including physical
+MFE/MAE when complete held-price coverage is absent; hypothetical daily bounds
+are never relabeled actual excursions. Unassigned external holdings have no
+invented initial R or Project V proposal. Authenticated paper/feeds/history and
+production timings still require the owner's setup and actual observation.
+
 ## Stage V GREEN OFFLINE - October 12, 2026
 
 K is committed locally as `381f9a4`. V's final offline gate uses **5,179
@@ -35,7 +120,7 @@ by inference. Ruff/format/strict types, all five hooks, the AST positive control
 production Bandit, pinned runtime/development audits and wheel build pass.
 MANUAL paper and ALPACA-only state remain default; live remains locked behind
 READY, five healthy feed sessions and the independent host prerequisites.
-Stage W is next. The diagnostics below are historical and superseded by this
+Stage W followed this snapshot. The diagnostics below are historical and superseded by this
 final gate; they are retained to explain failures, repairs and the evidence union.
 
 Initial implementation:
@@ -652,7 +737,7 @@ TX-08 has no federal ST/LT defaults; those stay unset (totals only) until suppli
 External IRA/Roth, Merrill taxable and 401(k)
 lots are manually entered/imported only; shared wash checks, no logins or funding.
 
-## Stage inventory
+## Historical stage inventory before G closure
 
 | Stage | Existing deliverable | Current amended status |
 | --- | --- | --- |

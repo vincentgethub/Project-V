@@ -34,7 +34,8 @@ from backend.net.egress import EgressPolicy, SDKSocketGuard, build_allowlist
 from backend.net.http import configure_network, make_client
 from backend.ops.anchors import LedgerAnchors
 from backend.ops.backups import BackupService
-from backend.ops.doctor import DoctorResult
+from backend.ops.doctor import Check, DoctorResult
+from backend.ops.read_checks import ReadChecksClient
 from backend.ops.security import ACCOUNT_ITEMS, ConfigDriftGuard, SecurityOps, effective_config_hash
 from backend.security.permissions import check_permissions
 from backend.security.secrets import (
@@ -75,7 +76,15 @@ class SecurityContext:
             self.settings if self.settings_source is None else self.settings_source(),
             {
                 name: PROJECT / "config" / name
-                for name in ("config.yaml", "instruments.csv", "macro_events.csv", "accounts.yaml")
+                for name in (
+                    "config.yaml",
+                    "instruments.csv",
+                    "macro_events.csv",
+                    "accounts.yaml",
+                    "events_policy.yaml",
+                    "fees.yaml",
+                    "variants.yaml",
+                )
             },
         )
 
@@ -570,13 +579,14 @@ def live_security_guard(
     ).reasons
 
 
-async def doctor_result(context: SecurityContext, store: SecretStore) -> DoctorResult:
+async def doctor_result(
+    context: SecurityContext, store: SecretStore, *, reads_override: ReadChecksClient | None = None
+) -> DoctorResult:
     """OPS-01: actual checklist; optional observations remain explicitly unverified."""
     from backend.data.market_calendar import MarketCalendar
     from backend.domain.instruments import InstrumentRegistry
     from backend.ops.doctor import Doctor
     from backend.ops.host import inspect_host
-    from backend.ops.read_checks import ReadChecksClient
     from vws.drill_cli import verified_drill
 
     config = load_yaml_config(
@@ -586,6 +596,35 @@ async def doctor_result(context: SecurityContext, store: SecretStore) -> DoctorR
     )
     configure_egress(context)
     host = await asyncio.to_thread(inspect_host, PROJECT / "data")
+    from backend.data.async_reader import AsyncTokenBucket
+    from backend.realtime.checks import checklist
+
+    bucket = AsyncTokenBucket(context.ledger.clock, plan=context.settings.alpaca_data_plan)
+    connected_reads = reads_override or ReadChecksClient(
+        _require_network_policy(context, config),
+        context.ledger.clock,
+        alpaca_request_hook=bucket.acquire,
+    )
+    if (
+        connected_reads.clock is not context.ledger.clock
+        or connected_reads.policy.ledger.engine is not context.engine
+    ):
+        raise ConfigurationError(
+            "AC-04: doctor reads must share the host's ledger, clock and request budget"
+        )
+
+    async def realtime_probe(account_id: str) -> tuple[Check, ...]:
+        return await checklist(
+            context.settings,
+            config,
+            context.state,
+            MarketCalendar(),
+            store,
+            connected_reads,
+            PROJECT,
+            account_id,
+        )
+
     doctor = Doctor(
         context.settings,
         config,
@@ -593,9 +632,10 @@ async def doctor_result(context: SecurityContext, store: SecretStore) -> DoctorR
         MarketCalendar(),
         context.ledger.clock,
         store,
-        ReadChecksClient(_require_network_policy(context, config), context.ledger.clock),
+        connected_reads,
         project=PROJECT,
         host_findings=host,
+        realtime_probe=realtime_probe,
     )
     result = await doctor.run()
     context.doctor_observations = (context.ledger.clock.now(), result)
@@ -603,7 +643,6 @@ async def doctor_result(context: SecurityContext, store: SecretStore) -> DoctorR
         return result
     from backend.execution.live_guard import LiveGuard
     from backend.execution.readiness import verified_backup
-    from backend.ops.doctor import Check
 
     checks = list(result.checks)
     backup_ok = False
@@ -666,6 +705,8 @@ async def doctor_result(context: SecurityContext, store: SecretStore) -> DoctorR
         findings: tuple[str, ...] = ("AX-15: live account identity remains unverified",)
         if doctor.account_id is not None:
             try:
+                from vws.realtime_cli import healthy_for_live
+
                 findings = LiveGuard(
                     context.settings,
                     context.state,
@@ -675,6 +716,7 @@ async def doctor_result(context: SecurityContext, store: SecretStore) -> DoctorR
                     security_reasons=security_reasons,
                     exit_reasons=lambda: live_raise_reasons(context.ledger, config),
                     verdict_hash=lambda: config.config_hash,
+                    feeds_healthy=lambda: healthy_for_live(context, config, doctor.account_id),
                     drill_ready=lambda: verified_drill(
                         PROJECT, context.settings, store, context.ledger.clock.now(), 45
                     ),

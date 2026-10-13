@@ -288,7 +288,8 @@ def _results(
     reject = holm(
         tuple(
             Decimal(1) if estimate is None else estimate.p_nonpositive for estimate in estimates[1:]
-        )
+        ),
+        unobserved_trials=max(0, trials - len(samples) + 1),
     )
     dates = tuple(day for day, _ in samples[0].daily)
     if any(tuple(day for day, _ in row.daily) != dates for row in samples):

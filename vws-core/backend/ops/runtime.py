@@ -91,6 +91,7 @@ class HostRuntime:
         initialize_account: Callable[[], Awaitable[object]] | None = None,
         modes: ModeStore | None = None,
         start_execution: Callable[[], Awaitable[None]] | None = None,
+        start_realtime: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.settings = Settings.validated_copy(settings)
         if (
@@ -119,6 +120,7 @@ class HostRuntime:
         self.verify_broker_time = verify_broker_time
         self.initialize_account = initialize_account
         self.modes, self.start_execution = modes, start_execution
+        self.start_realtime = start_realtime
         self.notifications = SafetyNotifications()
         self.state.notifier = DeduplicatingNotifier(self.notifications)
 
@@ -136,6 +138,8 @@ class HostRuntime:
             enable_sqlite_wal(self.state.engine)
             started_bot = True  # cleanup covers partial polling initialization
             await self.bot.start()
+            if self.start_realtime is not None:
+                await self.start_realtime()
             if self.initialize_account is not None:
                 try:
                     await self.initialize_account()

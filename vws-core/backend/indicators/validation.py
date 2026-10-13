@@ -9,19 +9,25 @@ from backend.core.errors import DataIntegrityError
 from backend.indicators.statistics import _exact, _samples
 
 
-def holm(p_values: tuple[Decimal, ...], alpha: Decimal = Decimal("0.10")) -> tuple[bool, ...]:
+def holm(
+    p_values: tuple[Decimal, ...], alpha: Decimal = Decimal("0.10"), *, unobserved_trials: int = 0
+) -> tuple[bool, ...]:
     if (
         not isinstance(p_values, tuple)
         or not 1 <= len(p_values) <= 24
         or not isinstance(alpha, Decimal)
         or not alpha.is_finite()
         or not 0 < alpha <= Decimal("0.10")
+        or type(unobserved_trials) is not int
+        or not 0 <= unobserved_trials <= 1000000
         or any(not isinstance(p, Decimal) or not p.is_finite() or not 0 <= p <= 1 for p in p_values)
     ):
         raise DataIntegrityError("QV-05: invalid family p-values or alpha")
     result = [False] * len(p_values)
     for rank, index in enumerate(sorted(range(len(p_values)), key=lambda i: (p_values[i], i))):
-        if p_values[index] > alpha / (len(p_values) - rank):
+        # LP-02: cumulative attempts with unavailable p-values remain in the
+        # family denominator, conservatively equivalent to padding with ones.
+        if p_values[index] > alpha / (len(p_values) + unobserved_trials - rank):
             break
         result[index] = True
     return tuple(result)

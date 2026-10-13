@@ -84,3 +84,20 @@ UNVERIFIED; absence of older telemetry is never a clean bill of health.
 RS, PR, SZ and CRO filter cohorts overlap. They preserve the unsized candidate
 as a counterfactual and cannot be added to approval counts or portfolio returns.
 Reports show each filter's taken-versus-filtered comparison separately.
+
+Lessons are proposals, never live changes. The journal uses actual scoped fill
+and fee evidence for physical losses and stops, and records unknown excursions
+or prices as unavailable. Hypothetical missed-fill and filtered cohorts retain
+their labels. NORMAL_VARIANCE is expected noise and cannot produce a change
+proposal. A cause/playbook cell needs at least 15 independent trade episodes;
+the proposed fixed reducing override additionally needs complete paired,
+preregistered OOS evidence, a positive 90% lower confidence bound and cumulative
+family Holm correction. The running process writes only immutable evidence,
+proposal JSON and Suggestions; it never edits source, settings, fees or variants.
+
+Plain-words owner approval precedes any accepted-for-testing lesson. The host
+then preregisters it through `vws validate register`, within the existing
+eight-variant/family and 24-total caps. Walk-forward validation and paper
+observation precede any host setting change. Neither `/lessons` nor mining
+registers, applies, optimizes or enables a mode. Context cohorts overlap and
+never inflate total trade counts. Hypothetical/past results; not indicative of future returns.

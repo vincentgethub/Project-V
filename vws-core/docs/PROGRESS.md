@@ -1,59 +1,49 @@
 # Project V progress
-Last updated: October 12, 2026 - validation passed its offline safety checks
+Last updated: October 12, 2026 - offline build stages complete
 ## Where things stand
-Research, tickets, isolated paper auto and reports pass offline safety checks.
-Account, tax, watch cards, reducing controls and fake emergency drills pass.
-Validation, split exits and readiness reporting now pass offline safety checks.
+Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
+Validation, split exits and readiness reporting pass offline checks.
 Readiness stays NOT YET: real evidence and drift are UNVERIFIED.
 
 ## What works now
 From the vws-core folder in PowerShell:
 - Read this page: `.venv\Scripts\python.exe -m vws progress`
 - Preview a fake setup: `.venv\Scripts\python.exe scripts/dry_run.py --dry-run NVDA --offline`
-- Replay fake data: `.venv\Scripts\python.exe -m vws replay --start 2026-08-01 --end 2026-10-02 --symbols NVDA --offline-fixtures --workers 1`
 - Guided configuration: `.venv\Scripts\python.exe -m vws setup`
-Fake preview/replay leave your DB closed. Setup confirms saves; AI starts off.
-Tax defaults are single, Texas state zero and NIIT zero; federal rates are unset.
+Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-Learning and realtime feeds are next. Then final checks and one build report.
+Learning and realtime passed the final offline checks.
+Only the final build report remains. Then work stops for your setup.
 
 ## Waiting on you
-Setup later needs the following; broker state stays ALPACA only:
-- Paper broker keys and your actual CASH or MARGIN account type.
-- A Telegram bot and confirmed private chat, for alerts only to you.
-- Plaid credentials and a checking account, for read-only cash checks.
-- Your FRED key in setup only; enter a filing name and email there too.
-- Federal ST/LT tax rates; enter or import IRA/Roth, Merrill and 401(k) lots.
-- Account security, email notices, phone lock, carrier PIN and unused crypto disabled.
-- A backup key saved in your password manager when setup shows it.
-Do not paste secrets; setup stores keys in the computer's secret store.
+Setup later needs paper broker keys and your CASH or MARGIN account type;
+your Telegram bot/private chat; read-only Plaid checking credentials;
+your FRED key and filing name/email; federal ST/LT rates and marked outside lots.
+Check account security, notices, phone lock, carrier PIN and unused crypto.
+Save the backup key in your password manager when setup shows it.
+Setup stores keys in the computer's secret store; do not paste them here.
 
 ## Not checked yet
 Real broker, bank, Telegram, FRED and SEC checks need setup.
-Validation: 5,179 safety tests passed; 59 integrations were skipped.
-The separate replay and warm scan passed; combined critical coverage is 100%.
-The overlapping focused checks are not added to the safety test count.
+Final safety suite: 5,316 passes, 59 skips and complete required branch coverage.
+Replay, warm scan and realtime fakes passed: 5,319 distinct available passes total.
 Amendment 02 "MANUAL_CSV path works": DEFERRED (user decision, Oct 8 2026).
 Walk-forward speed is UNVERIFIED: 19 windows took 949.845 seconds without finishing.
 Mutation, database, container and CI reproduction commands are supplied.
-Your secret storage, protections, backup, real stop raises and drill are unchecked.
-Real fee attribution, tax forms, delisted history and container secrets need checks.
+Your host protections, backups, real stop raises, tax forms and drill are unchecked.
 No real trading edge or READY verdict has been established.
 
 ## Try this next
-After setup: `.venv\Scripts\python.exe -m vws doctor`, then `-m vws start`.
-Start requires verified checks and MANUAL paper. Fake preview/replay remains safe.
+After setup, follow the backup-first migration steps in RUNBOOK.md.
+Run `.venv\Scripts\python.exe -m vws doctor`, then `-m vws start` when checks pass.
+Start defaults to MANUAL paper. Missing credentials never count as a pass.
 
 ## Safety status
-MANUAL paper defaults. Isolated auto passed offline checks; live stays locked.
+ALPACA-only state. MANUAL_CSV refuses startup. MANUAL paper defaults; live is locked.
 Live still needs paper history/report, account/tax completion, an emergency
 drill, explicit host unlock, small limits, account protections, a READY verdict
-and five healthy feed sessions. Halts keep held exits and protection available.
-After all stages, the final report will list gaps; then building stops.
+and five healthy feed sessions. Halts keep held exits and protection available; lessons never apply themselves.
 
 ## Suggestions
-Manual account evidence file declined by owner, Oct 8 2026; not built.
-Purpose: supply the account ID, restrictions and pending orders missing from CSVs.
-Benefit: connect manual holdings/funding. Risk: owner mistakes; all safety limits stay.
-Effort: a small input adapter, host checks and offline tests. No safety rule changes.
+DECLINED, owner Oct 8 2026: manual account evidence file. Purpose: fill CSV account/restriction gaps. Benefit: manual holdings/funding checks. Risk: input mistakes. Effort: adapter and tests. Not built; all safety limits stay.

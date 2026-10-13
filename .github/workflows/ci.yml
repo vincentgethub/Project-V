@@ -46,7 +46,7 @@ jobs:
       - name: Execution source guard
         run: python -m backend.core.source_guard .
       - name: Production source security checks
-        run: python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/net backend/ops backend/security backend/telegram backend/notifications backend/tax backend/funding backend/pnl backend/evaluation backend/indicators backend/execution scripts vws -c pyproject.toml
+        run: python -m bandit -r backend/core backend/domain backend/risk backend/data backend/agents backend/net backend/ops backend/security backend/telegram backend/notifications backend/tax backend/funding backend/pnl backend/evaluation backend/indicators backend/execution backend/learning backend/realtime scripts vws -c pyproject.toml
       - name: Audit runtime and development dependency locks
         run: |
           python -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off --timeout 15
@@ -75,7 +75,7 @@ jobs:
       - name: Offline tests and complete risk/state/fundamentals/card/tax branch coverage
         run: python -m pytest -q -m 'not perf' --cov=backend.core.system_state --cov=backend.risk --cov=backend.domain.compliance_models --cov=backend.agents.fundamentals --cov=backend.notifications --cov=backend.tax --cov=backend.evaluation --cov-branch --cov-fail-under=100 --cov-report=term-missing
       - name: Prescribed synthetic performance workloads without coverage overhead
-        run: python -m pytest -q -s -m perf --no-cov backend/tests/test_replay_cli.py backend/tests/test_v_performance.py
+        run: python -m pytest -q -s -m perf --no-cov backend/tests/test_replay_cli.py backend/tests/test_v_performance.py backend/tests/test_w_perf.py
       - name: Build non-root container from synthetic configuration
         run: |
           cp .env.example .env

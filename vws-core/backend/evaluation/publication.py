@@ -224,6 +224,7 @@ class WeeklyPublisher:
                             card.n
                             for card in report.cards
                             if card.key.fundamentals_status is None
+                            and card.key.context_tag is None
                             and card.key.disposition
                             not in {"CRO_VETO", "RS_FILTER", "PR_FILTER", "SZ_FILTER"}
                         ),

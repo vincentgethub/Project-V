@@ -152,6 +152,29 @@ def runtime_write_nodes(
     else:
         return (tree,)  # cyclic/unbounded path aliases cannot establish safety
     findings: list[ast.AST] = []
+    proposal_only = any(part in {"learning", "realtime"} for part in source_path.parts)
+    if proposal_only:
+        for node in nodes:
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                in {
+                    "backend.ops.apply_config",
+                    "vws.setup",
+                    "vws.host_config",
+                }
+                or isinstance(node, ast.Import)
+                and any(
+                    alias.name
+                    in {
+                        "backend.ops.apply_config",
+                        "vws.setup",
+                        "vws.host_config",
+                    }
+                    for alias in node.names
+                )
+            ):
+                findings.append(node)
     for node in nodes:
         if not isinstance(node, ast.Call):
             continue
@@ -164,6 +187,18 @@ def runtime_write_nodes(
             else ""
         )
         write_target = func.value if isinstance(func, ast.Attribute) else None
+        if proposal_only and name in {
+            "apply_config",
+            "setup_application",
+            "apply",
+            "acknowledge",
+            "upgrade",
+            "enable_live",
+            "register",
+            "set_active",
+            "resolve_review",
+        }:
+            findings.append(node)
         if name in _WRITERS and (
             (write_target is not None and protected(write_target))
             or any(protected(arg) for arg in node.args)

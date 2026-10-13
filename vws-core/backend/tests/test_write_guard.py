@@ -10,6 +10,24 @@ from backend.core.source_guard import scan_file, scan_project
 @pytest.mark.parametrize(
     "source",
     [
+        "from backend.ops.apply_config import setup_application as save\nsave(proposal)",
+        "import backend.ops.apply_config as writer\nwriter.setup_application(proposal)",
+        "drift.apply(operator='automatic', config_hash=proposal['hash'])",
+        "registrations.register(proposal['variant'])",
+        "modes.enable_live(proposal)",
+    ],
+)
+def test_LP_07_indirect_auto_apply_and_registration_forbidden(tmp_path: Path, source: str) -> None:
+    directory = tmp_path / "learning"
+    directory.mkdir()
+    target = directory / "proposals.py"
+    target.write_text(source, encoding="utf-8")
+    assert any(row.rule_id == "SELF-WRITE" for row in scan_file(target))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
         "from pathlib import Path\nPath(__file__).write_text('new code')",
         "from pathlib import Path\np=Path(__file__).parent/'other.py'\np.write_bytes(b'code')",
         "from pathlib import Path\np=Path('config/config.yaml')\nq=p\nq.write_text(proposal)",
