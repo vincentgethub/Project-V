@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import subprocess  # nosec B404
+import sys
 from collections.abc import Callable
 from pathlib import Path, PureWindowsPath
 from typing import Literal, Protocol, cast
@@ -32,13 +33,15 @@ class _UserAPI(Protocol):
 
 
 def is_privileged() -> bool:
-    if os.name == "nt":
+    if sys.platform == "win32":
         # VERIFY: https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-isuseranadmin
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     return cast(_UserAPI, os).geteuid() == 0
 
 
 def _windows_powershell() -> Path:
+    if sys.platform != "win32":
+        raise ConfigurationError("Native Windows system directory is unavailable")
     directory = ctypes.create_unicode_buffer(32768)
     length = ctypes.windll.kernel32.GetSystemDirectoryW(directory, len(directory))
     if not 0 < length < len(directory):

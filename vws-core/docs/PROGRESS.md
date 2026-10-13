@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 12, 2026 - offline build stages complete
+Last updated: October 13, 2026 - narrow CI repairs awaiting checks
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.

@@ -3,6 +3,7 @@
 import errno
 import json
 import os
+import sys
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -40,7 +41,7 @@ class ProcessLock:
             if os.fstat(fd).st_size == 0:
                 os.write(fd, b"0")
             os.lseek(fd, 0, os.SEEK_SET)
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)

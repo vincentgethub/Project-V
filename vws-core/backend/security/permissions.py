@@ -10,6 +10,7 @@ import stat
 
 # SEC-12 requires the read-only native ACL utility; no shell is used.
 import subprocess  # nosec B404
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,7 +47,7 @@ class PermissionFinding:
 def _windows_acl(path: Path) -> str:
     """SEC-12: icacls without mutation flags reads the current Windows ACL."""
     # VERIFY: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls
-    if os.name != "nt":
+    if sys.platform != "win32":
         raise ConfigurationError("Windows ACL probe is unavailable on this platform")
     # VERIFY: https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemdirectoryw
     directory = ctypes.create_unicode_buffer(32768)
