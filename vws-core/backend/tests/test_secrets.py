@@ -90,6 +90,7 @@ def test_SEC_11_native_backend_selection_is_explicit_and_local_machine(
 def test_SEC_11_keyring_has_no_plaintext_or_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     native = FakeNative()
     monkeypatch.setattr(module, "_native_backend", lambda: native)
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
     store = KeyringSecretStore()
     assert store.get("PLAID_ACCESS_TOKEN") is None
     store.set("PLAID_ACCESS_TOKEN", SecretStr("isolated-native-token"))
