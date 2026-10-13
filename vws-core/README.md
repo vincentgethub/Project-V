@@ -77,6 +77,12 @@ connected host composition is supplied by Stage H. The project is not
 certified for connected deployment. Stage I's isolated order executor passed its offline safety gates;
 MANUAL remains the default, and money movement remains banned.
 
+The requested build through Stage W is GREEN OFFLINE. The final safety suite
+passed 5,316 tests with 100% required critical branch coverage; replay, warm scan
+and realtime fakes also passed. Read [the final build report](docs/FINAL_REPORT.md)
+for 59 unverified service skips, deferred manual CSV, real prerequisites and
+the exact setup/doctor/MANUAL-paper start steps. AUTO_LIVE remains locked.
+
 Stage G/G+ supplies recorded hypothetical outcomes, original cost evidence,
 private weekly edge/security reports with individual proofs, sealed local
 replay, split-aware cache invalidation and deterministic parallel indicators.

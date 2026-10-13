@@ -17,6 +17,11 @@ setup/doctor/paper-start commands; then stop. No AUTO_LIVE or live trading.
 
 ## Stage W GREEN OFFLINE - October 12, 2026
 
+Local green W commit: `0c7823a`. `docs/FINAL_REPORT.md` is the final owner
+report: per-stage cumulative counts, fresh full/replay/performance gates,
+unverified requirements by ID, credentials/services, known limitations and
+exact setup/doctor/MANUAL-paper steps. Build work stops after that report.
+
 V was committed locally as `0ada107`. W's final full safety gate passed:
 **5,316 passed, 59 skipped, four perf deselected, two warnings, 2,368.18s**.
 Required critical branch coverage is **100%: 7,624 statements / 2,606 branches,

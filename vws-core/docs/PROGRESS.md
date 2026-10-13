@@ -14,7 +14,7 @@ Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
 Learning and realtime passed the final offline checks.
-Only the final build report remains. Then work stops for your setup.
+FINAL_REPORT.md is complete. Build work has stopped for your setup.
 
 ## Waiting on you
 Setup later needs paper broker keys and your CASH or MARGIN account type;
