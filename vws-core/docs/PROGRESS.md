@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 13, 2026 - complete mutation shards and final gate
+Last updated: October 14, 2026 - manual tax mutation diagnostics
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.

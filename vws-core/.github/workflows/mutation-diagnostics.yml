@@ -1,0 +1,331 @@
+name: mutation-diagnostics
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tax-diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        working-directory: vws-core
+    env:
+      VWS_DIAGNOSTIC_DIR: ${{ runner.temp }}/tax-diagnostics-results
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install the same hashed dependencies and local source
+        run: |
+          python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+          python -m pip check
+      - name: Prepare observation hooks without changing tests or runner limits
+        run: |
+          mkdir -p "$VWS_DIAGNOSTIC_DIR"
+          cat > "$RUNNER_TEMP/tax-diagnostics-driver.py" <<'PY'
+          import faulthandler
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import tomllib
+          from importlib.metadata import version
+          from pathlib import Path
+          
+          import pytest
+          import yaml
+          
+          ROOT = Path(os.environ["VWS_DIAGNOSTIC_DIR"])
+          ROOT.mkdir(parents=True, exist_ok=True)
+          for folder in ("timings", "stacks", "pytest"):
+              (ROOT / folder).mkdir(exist_ok=True)
+          if version("mutmut") != "3.8.0":
+              raise SystemExit("Unexpected mutmut version")
+          workflow = yaml.safe_load(Path("../.github/workflows/ci.yml").read_text())
+          rows = workflow["jobs"]["mutations"]["strategy"]["matrix"]["include"]
+          tax = [row for row in rows if row["shard"] == "tax"]
+          if len(tax) != 1 or tax[0]["count"] != 1710:
+              raise SystemExit("Tax assignment changed")
+          paths = tax[0]["paths"]
+          if paths != ["backend/tax/accounting.py", "backend/tax/lots.py", "backend/tax/reports.py"]:
+              raise SystemExit("Tax paths changed")
+          project = Path("pyproject.toml")
+          original = project.read_text(encoding="utf-8")
+          before = tomllib.loads(original)
+          patched, count = re.subn(r"(?m)^source_paths = .*?$", "source_paths = " + json.dumps(paths), original)
+          if count != 1:
+              raise SystemExit("Could not select tax paths")
+          args = before["tool"]["mutmut"]["pytest_add_cli_args"] + ["--durations=50"]
+          patched, count = re.subn(r"(?m)^pytest_add_cli_args = .*?$", "pytest_add_cli_args = " + json.dumps(args), patched)
+          expected = json.loads(json.dumps(before))
+          expected["tool"]["mutmut"]["source_paths"] = paths
+          expected["tool"]["mutmut"]["pytest_add_cli_args"] = args
+          if count != 1 or tomllib.loads(patched) != expected:
+              raise SystemExit("Unexpected diagnostic configuration change")
+          (ROOT / "original-mutation-config.json").write_text(json.dumps(before["tool"]["mutmut"], indent=2))
+          project.write_text(patched, encoding="utf-8")
+          
+          from mutmut.mutation.file_mutation import mutate_file_contents
+          from mutmut.utils.format_utils import get_mutant_name
+          
+          identifiers = []
+          for filename in paths:
+              path = Path(filename)
+              mutated = mutate_file_contents(filename, path.read_text(encoding="utf-8"))
+              identifiers.extend(get_mutant_name(path, name) for name in mutated.mutant_names)
+          if len(identifiers) != 1710 or len(set(identifiers)) != 1710:
+              raise SystemExit("Tax mutant coverage mismatch")
+          (ROOT / "expected-mutants.json").write_text(json.dumps(sorted(identifiers), ensure_ascii=True, indent=2))
+          
+          import mutmut.__main__ as cli_module
+          from mutmut.runners.harness import PytestRunner
+          from mutmut.workers.isolation import ForkRunner
+          
+          def emit(handle, event, **values):
+              handle.write(json.dumps({"event": event, "monotonic": time.monotonic(),
+                                       "cpu": time.process_time(), "pid": os.getpid(), **values},
+                                      ensure_ascii=True) + "\n")
+              handle.flush()
+          
+          def parent_event(event, **values):
+              with (ROOT / "parent-events.jsonl").open("a", encoding="utf-8") as handle:
+                  emit(handle, event, **values)
+          
+          class PhaseTimings:
+              def __init__(self, handle):
+                  self.handle = handle
+          
+              def begin(self, item, phase):
+                  emit(self.handle, "phase_start", test=item.nodeid, phase=phase)
+          
+              @pytest.hookimpl(wrapper=True)
+              def pytest_runtest_setup(self, item):
+                  self.begin(item, "setup")
+                  return (yield)
+          
+              @pytest.hookimpl(wrapper=True)
+              def pytest_runtest_call(self, item):
+                  self.begin(item, "call")
+                  return (yield)
+          
+              @pytest.hookimpl(wrapper=True)
+              def pytest_runtest_teardown(self, item, nextitem):
+                  self.begin(item, "teardown")
+                  return (yield)
+          
+              def pytest_runtest_logreport(self, report):
+                  if report.when in {"setup", "call", "teardown"}:
+                      emit(self.handle, "phase_end", test=report.nodeid, phase=report.when,
+                           seconds=report.duration, outcome=report.outcome)
+          
+          current_plugin = None
+          original_execute = PytestRunner.execute_pytest
+          original_tests = PytestRunner.run_tests
+          original_init = ForkRunner.__init__
+          original_submit = ForkRunner.submit
+          original_wait = ForkRunner.wait_for_result
+          
+          def execute(self, params, **kwargs):
+              if current_plugin is not None:
+                  kwargs["plugins"] = [*kwargs.get("plugins", []), current_plugin]
+                  # Pytest exception hooks cancel process-wide timers; own this diagnostic timer.
+                  params = [*params, "-p", "no:faulthandler"]
+              return original_execute(self, params, **kwargs)
+          
+          def run_tests(self, *, mutant_name, tests):
+              global current_plugin
+              if mutant_name is None:
+                  return original_tests(self, mutant_name=mutant_name, tests=tests)
+              tests = list(tests)
+              stem = mutant_name.encode("utf-8").hex()
+              with (ROOT / "timings" / (stem + ".jsonl")).open("a", encoding="utf-8") as timing, \
+                   (ROOT / "stacks" / (stem + ".txt")).open("a", encoding="utf-8") as stacks, \
+                   (ROOT / "pytest" / (stem + ".log")).open("a", encoding="utf-8") as output:
+                  emit(timing, "run_start", mutant=mutant_name, test_count=len(tests), tests=tests)
+                  current_plugin = PhaseTimings(timing)
+                  previous = sys.stdout, sys.stderr
+                  sys.stdout = sys.stderr = output
+                  faulthandler.dump_traceback_later(120, repeat=True, file=stacks, exit=False)
+                  try:
+                      result = original_tests(self, mutant_name=mutant_name, tests=tests)
+                      emit(timing, "run_end", mutant=mutant_name, exit_code=result)
+                      return result
+                  finally:
+                      faulthandler.cancel_dump_traceback_later()
+                      current_plugin = None
+                      sys.stdout, sys.stderr = previous
+          
+          def initialize(self, max_workers, test_runner, debug=False):
+              original_init(self, max_workers, test_runner, debug)
+              parent_event("worker_configuration", cpu_count=os.cpu_count(), max_workers=self.max_workers,
+                           isolation="fork", runner_version=version("mutmut"))
+          
+          def submit(self, mutant_name, tests, cpu_time_limit, estimated_time):
+              before_pids = set(self._running)
+              result = original_submit(self, mutant_name, tests, cpu_time_limit, estimated_time)
+              added = set(self._running) - before_pids
+              parent_event("submitted", mutant=mutant_name, test_count=len(tests), tests=tests,
+                           worker_pids=sorted(added), active_workers=len(self._running),
+                           cpu_limit=cpu_time_limit, estimated_call_seconds=estimated_time)
+              return result
+          
+          def wait(self, timeout=None):
+              result = original_wait(self, timeout=timeout)
+              parent_event("completed", mutant=result.mutant_name, exit_code=result.exit_code,
+                           seconds=result.duration, active_workers=len(self._running))
+              return result
+          
+          PytestRunner.execute_pytest = execute
+          PytestRunner.run_tests = run_tests
+          ForkRunner.__init__ = initialize
+          ForkRunner.submit = submit
+          ForkRunner.wait_for_result = wait
+          parent_event("driver_start", command=["python", "-m", "mutmut", "run"])
+          cli_module.cli.main(args=["run"], standalone_mode=False)
+          PY
+          cat > "$RUNNER_TEMP/tax-diagnostics-summary.py" <<'PY'
+          import csv
+          import json
+          import os
+          import shutil
+          import subprocess
+          import sys
+          import time
+          from collections import defaultdict
+          from pathlib import Path
+          
+          from mutmut.stats import status_by_exit_code
+          from mutmut.utils.format_utils import orig_function_and_class_names_from_key
+          
+          root = Path(os.environ["VWS_DIAGNOSTIC_DIR"])
+          root.mkdir(parents=True, exist_ok=True)
+          metadata = root / "metadata"
+          metadata.mkdir(exist_ok=True)
+          for path in Path("mutants").rglob("*.meta"):
+              target = metadata / path.relative_to("mutants")
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(path, target)
+          for name in ("mutmut-stats.json", "mutmut-cicd-stats.json"):
+              source = Path("mutants") / name
+              if source.exists():
+                  shutil.copy2(source, metadata / name)
+          
+          def events(path):
+              if not path.exists():
+                  return []
+              result = []
+              for line in path.read_text(encoding="utf-8").splitlines():
+                  try:
+                      result.append(json.loads(line))
+                  except json.JSONDecodeError:
+                      pass
+              return result
+          
+          parent = events(root / "parent-events.jsonl")
+          completed = {event["mutant"]: event for event in parent if event["event"] == "completed"}
+          submitted = {event["mutant"]: event for event in parent if event["event"] == "submitted"}
+          configuration = [event for event in parent if event["event"] == "worker_configuration"]
+          stats_path = metadata / "mutmut-stats.json"
+          stats = json.loads(stats_path.read_text()) if stats_path.exists() else {}
+          associations = stats.get("tests_by_mangled_function_name", {})
+          raw_meta = {}
+          for path in metadata.rglob("*.meta"):
+              payload = json.loads(path.read_text())
+              for key, code in payload.get("exit_code_by_key", {}).items():
+                  raw_meta[key] = {"status": status_by_exit_code[code],
+                                   "seconds": payload.get("durations_by_key", {}).get(key)}
+          expected_path = root / "expected-mutants.json"
+          expected = json.loads(expected_path.read_text()) if expected_path.exists() else []
+          rows = []
+          grouped = {"survived": defaultdict(list), "no tests": defaultdict(list)}
+          for key in expected:
+              function_key = key.partition("__mutmut_")[0]
+              name, owner = orig_function_and_class_names_from_key(key)
+              module = function_key.rpartition(".")[0]
+              function = module + "." + (owner + "." if owner else "") + name
+              record = raw_meta.get(key, {"status": "not checked", "seconds": None})
+              stem = key.encode("utf-8").hex()
+              timing = events(root / "timings" / (stem + ".jsonl"))
+              starts = [event for event in timing if event["event"] == "run_start"]
+              ends = [event for event in timing if event["event"] == "run_end"]
+              phases = {"setup": 0.0, "call": 0.0, "teardown": 0.0}
+              active = None
+              for event in timing:
+                  if event["event"] == "phase_start":
+                      active = event
+                  elif event["event"] == "phase_end":
+                      phases[event["phase"]] += event["seconds"]
+                      if active and (active["phase"], active["test"]) == (event["phase"], event["test"]):
+                          active = None
+              duration = record["seconds"]
+              if duration is None and key in completed:
+                  duration = completed[key]["seconds"]
+              if duration is None and starts:
+                  duration = (ends[-1]["monotonic"] if ends else time.monotonic()) - starts[0]["monotonic"]
+              partial = None
+              if active and starts and duration is not None:
+                  partial = {"phase": active["phase"], "test": active["test"],
+                             "seconds": max(0, starts[0]["monotonic"] + duration - active["monotonic"])}
+              count = submitted.get(key, {}).get("test_count", len(associations.get(function_key, [])))
+              stack = root / "stacks" / (stem + ".txt")
+              row = {"mutant": key, "function": function, "status": record["status"],
+                     "test_count": count, "elapsed_seconds": duration or 0.0,
+                     "setup_seconds": phases["setup"], "call_seconds": phases["call"],
+                     "teardown_seconds": phases["teardown"], "unfinished_phase": partial,
+                     "stack_file": str(stack.relative_to(root)) if stack.exists() and stack.stat().st_size else None,
+                     "pytest_log": "pytest/" + stem + ".log" if starts else None}
+              rows.append(row)
+              if record["status"] in grouped:
+                  grouped[record["status"]][function].append(key)
+          workers = {"configurations": configuration,
+                     "peak_active_workers": max((event.get("active_workers", 0) for event in parent), default=0),
+                     "distinct_worker_pids": sorted({pid for event in parent for pid in event.get("worker_pids", [])})}
+          (root / "workers.json").write_text(json.dumps(workers, ensure_ascii=True, indent=2))
+          (root / "mutant-timings.json").write_text(json.dumps(rows, ensure_ascii=True, indent=2))
+          slowest = sorted((row for row in rows if row["elapsed_seconds"]), key=lambda row: row["elapsed_seconds"], reverse=True)[:20]
+          (root / "slowest-20.json").write_text(json.dumps(slowest, ensure_ascii=True, indent=2))
+          groups = {status: {function: {"count": len(keys), "mutants": sorted(keys)}
+                            for function, keys in sorted(functions.items())}
+                    for status, functions in grouped.items()}
+          (root / "surviving-and-no-test-by-function.json").write_text(json.dumps(groups, ensure_ascii=True, indent=2))
+          with (root / "mutant-timings.csv").open("w", newline="", encoding="utf-8") as handle:
+              writer = csv.DictWriter(handle, fieldnames=list(rows[0]) if rows else ["mutant"])
+              writer.writeheader()
+              writer.writerows(rows)
+          result = subprocess.run([sys.executable, "-m", "mutmut", "results", "--all"],
+                                  capture_output=True, text=True)
+          (root / "mutmut-results.txt").write_text(result.stdout, encoding="utf-8")
+          (root / "mutmut-results-stderr.txt").write_text(result.stderr, encoding="utf-8")
+          counts = {}
+          for row in rows:
+              counts[row["status"]] = counts.get(row["status"], 0) + 1
+          print("Expected tax mutants:", len(expected), "results:", counts)
+          print("Worker configuration:", configuration, "peak:", workers["peak_active_workers"])
+          if result.returncode or len(expected) != 1710 or set(raw_meta) != set(expected):
+              raise SystemExit("Diagnostic metadata is incomplete")
+          ascii_results = "\n".join("m_" + row["mutant"].encode("utf-8").hex() + ": " + row["status"] for row in rows) + "\n"
+          gate_file = root / "original-gate-results.txt"
+          gate_file.write_text(ascii_results, encoding="utf-8")
+          subprocess.run([sys.executable, "-m", "scripts.check_mutations", str(gate_file)], check=True)
+          PY
+      - name: Run only tax mutants with timings and 120 second stack dumps
+        run: |
+          # Reserve ten minutes for metadata collection and artifact upload.
+          # This diagnostic deadline leaves native per-mutant limits untouched.
+          timeout --signal=TERM --kill-after=30s 140m python "$RUNNER_TEMP/tax-diagnostics-driver.py" 2>&1 | tee "$VWS_DIAGNOSTIC_DIR/driver.log"
+      - name: Collect every result and metadata and retain the original 100 percent check
+        if: ${{ always() }}
+        run: python "$RUNNER_TEMP/tax-diagnostics-summary.py"
+      - name: Upload timings stacks pytest durations and mutation metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: tax-mutation-diagnostics-${{ github.run_id }}
+          path: ${{ runner.temp }}/tax-diagnostics-results
+          if-no-files-found: error
+          retention-days: 30
+          include-hidden-files: true
