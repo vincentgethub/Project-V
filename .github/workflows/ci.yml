@@ -9,10 +9,10 @@ jobs:
       run:
         working-directory: vws-core
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, official ref verified 2026-10-06
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4, official ref verified 2026-10-06
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5, official ref verified 2026-10-06
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v5, official ref verified 2026-10-06
         with:
           python-version: '3.12'
       - name: Install hashed dependencies and local source
@@ -50,7 +50,7 @@ jobs:
           python -m cyclonedx_py requirements requirements.lock --output-format JSON --output-file build/sbom/runtime.json
           python -m cyclonedx_py requirements requirements-dev.lock --output-format JSON --output-file build/sbom/development.json
       - name: Upload public dependency inventories
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0; official tag verified 2026-10-08
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v6.0.0; official tag verified 2026-10-08
         with:
           name: dependency-sboms
           path: '**/build/sbom/*.json'
@@ -205,8 +205,8 @@ jobs:
       run:
         working-directory: vws-core
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
       - name: Install hashed dependencies and local source
@@ -367,7 +367,7 @@ jobs:
       run:
         working-directory: vws-core
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Require every mutation shard to succeed
         env:
           MUTATIONS_RESULT: ${{ needs.mutations.result }}
@@ -394,8 +394,8 @@ jobs:
       run:
         working-directory: vws-core
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
       - name: Install hashed dependencies and local source

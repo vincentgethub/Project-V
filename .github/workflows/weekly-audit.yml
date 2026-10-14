@@ -13,8 +13,8 @@ jobs:
       run:
         working-directory: ${{ env.VWS_PROJECT_DIR || '.' }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; verified official ref
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5; verified official ref
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4; verified official ref
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v5; verified official ref
         with:
           python-version: '3.12'
       - name: Locate project
@@ -40,7 +40,7 @@ jobs:
           mkdir -p build/sbom
           python -m cyclonedx_py requirements requirements.lock --output-format JSON --output-file build/sbom/runtime.json
           python -m cyclonedx_py requirements requirements-dev.lock --output-format JSON --output-file build/sbom/development.json
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0; official tag verified 2026-10-08
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v6.0.0; official tag verified 2026-10-08
         with:
           name: weekly-dependency-sboms
           path: '**/build/sbom/*.json'
