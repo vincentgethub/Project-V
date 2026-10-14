@@ -75,8 +75,132 @@ jobs:
           cp .env.example .env
           docker compose build
   mutations:
+    name: mutations (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: executor-a
+            count: 2580
+            paths:
+              - backend/execution/alpaca_executor.py
+            functions:
+              - "x_configure_execution_client"
+              - "x_make_execution_client"
+              - "x_parse_order"
+              - "x\u01c1AlpacaExecutor\u01c1__init__"
+              - "x\u01c1AlpacaExecutor\u01c1_assert_live_raises"
+              - "x\u01c1AlpacaExecutor\u01c1_assert_ops"
+              - "x\u01c1AlpacaExecutor\u01c1_cancel_sells"
+              - "x\u01c1AlpacaExecutor\u01c1_confirmed_absence"
+              - "x\u01c1AlpacaExecutor\u01c1_daily_count"
+              - "x\u01c1AlpacaExecutor\u01c1_entry_requests"
+              - "x\u01c1AlpacaExecutor\u01c1_held_observation"
+              - "x\u01c1AlpacaExecutor\u01c1_lookup"
+              - "x\u01c1AlpacaExecutor\u01c1_observe"
+              - "x\u01c1AlpacaExecutor\u01c1_outcome"
+              - "x\u01c1AlpacaExecutor\u01c1_positions"
+              - "x\u01c1AlpacaExecutor\u01c1_reconcile_or_protect"
+              - "x\u01c1AlpacaExecutor\u01c1_record_held_quote"
+              - "x\u01c1AlpacaExecutor\u01c1_recover_verified_entry"
+              - "x\u01c1AlpacaExecutor\u01c1_recover_verified_protection"
+              - "x\u01c1AlpacaExecutor\u01c1_repair_stop"
+              - "x\u01c1AlpacaExecutor\u01c1_resume_stop_moves"
+              - "x\u01c1AlpacaExecutor\u01c1_split_profit_taken"
+              - "x\u01c1AlpacaExecutor\u01c1_stop_moved"
+              - "x\u01c1AlpacaExecutor\u01c1_submit"
+              - "x\u01c1AlpacaExecutor\u01c1close"
+              - "x\u01c1AlpacaExecutor\u01c1enter"
+              - "x\u01c1AlpacaExecutor\u01c1environment"
+              - "x\u01c1AlpacaExecutor\u01c1observe_fill"
+              - "x\u01c1AlpacaExecutor\u01c1prepare_fills"
+              - "x\u01c1AlpacaExecutor\u01c1reconcile"
+              - "x\u01c1AlpacaExecutor\u01c1record_paper_cancel_semantics"
+              - "x\u01c1ExactStopLoss\u01c1to_request_fields"
+              - "x\u01c1ExactStop\u01c1protective_shape"
+              - "x\u01c1ExactStop\u01c1to_request_fields"
+              - "x\u01c1ManagedTradingStream\u01c1_run_forever"
+              - "x\u01c1ManagedTradingStream\u01c1aclose"
+              - "x\u01c1ProtectionRecovery\u01c1enter"
+              - "x\u01c1TradingCalls\u01c1get_account"
+              - "x\u01c1TradingCalls\u01c1get_order_by_client_id"
+              - "x\u01c1TradingCalls\u01c1get_orders"
+          - shard: executor-b
+            count: 2579
+            paths:
+              - backend/execution/alpaca_executor.py
+            functions:
+              - "x__instant"
+              - "x__price"
+              - "x__whole"
+              - "x_inspect_paper_cancel_semantics"
+              - "x_order_not_found"
+              - "x\u01c1AlpacaExecutor\u01c1_assert_entry_variant"
+              - "x\u01c1AlpacaExecutor\u01c1_assert_playbook"
+              - "x\u01c1AlpacaExecutor\u01c1_cancel_and_poll"
+              - "x\u01c1AlpacaExecutor\u01c1_cancel_confirmed"
+              - "x\u01c1AlpacaExecutor\u01c1_cycle_event"
+              - "x\u01c1AlpacaExecutor\u01c1_ensure_stop"
+              - "x\u01c1AlpacaExecutor\u01c1_exit_step"
+              - "x\u01c1AlpacaExecutor\u01c1_fresh_exit_inputs"
+              - "x\u01c1AlpacaExecutor\u01c1_held_entry"
+              - "x\u01c1AlpacaExecutor\u01c1_instructions"
+              - "x\u01c1AlpacaExecutor\u01c1_loaded"
+              - "x\u01c1AlpacaExecutor\u01c1_monitor_entry"
+              - "x\u01c1AlpacaExecutor\u01c1_open_orders"
+              - "x\u01c1AlpacaExecutor\u01c1_protect_and_exit"
+              - "x\u01c1AlpacaExecutor\u01c1_publish_fill_notices"
+              - "x\u01c1AlpacaExecutor\u01c1_quantity"
+              - "x\u01c1AlpacaExecutor\u01c1_raise_repair"
+              - "x\u01c1AlpacaExecutor\u01c1_raise_step"
+              - "x\u01c1AlpacaExecutor\u01c1_read_bound"
+              - "x\u01c1AlpacaExecutor\u01c1_reconcile"
+              - "x\u01c1AlpacaExecutor\u01c1_register_children"
+              - "x\u01c1AlpacaExecutor\u01c1_trade_notice"
+              - "x\u01c1AlpacaExecutor\u01c1_verify_account"
+              - "x\u01c1AlpacaExecutor\u01c1cancel_unfilled_entries"
+              - "x\u01c1AlpacaExecutor\u01c1monitor"
+              - "x\u01c1ExactLimit\u01c1allowed_shape"
+              - "x\u01c1ExactLimit\u01c1to_request_fields"
+              - "x\u01c1ExactTakeProfit\u01c1to_request_fields"
+              - "x\u01c1ManagedTradingStream\u01c1__init__"
+              - "x\u01c1ManagedTradingStream\u01c1_update"
+              - "x\u01c1ManagedTradingStream\u01c1start"
+              - "x\u01c1TradingCalls\u01c1cancel_order_by_id"
+              - "x\u01c1TradingCalls\u01c1get_all_positions"
+              - "x\u01c1TradingCalls\u01c1get_order_by_id"
+              - "x\u01c1TradingCalls\u01c1submit_order"
+          - shard: risk-controls
+            count: 2561
+            paths:
+              - backend/risk/risk_cro.py
+              - backend/risk/compliance.py
+              - backend/risk/boundary.py
+          - shard: risk-sizing
+            count: 1914
+            paths:
+              - backend/risk/__init__.py
+              - backend/risk/compliance_boundary.py
+              - backend/risk/overlays.py
+              - backend/risk/portfolio_marks.py
+              - backend/risk/portfolio_sizing.py
+              - backend/risk/relative_strength.py
+              - backend/risk/wash_sales.py
+              - backend/execution/modes.py
+              - backend/execution/policy.py
+          - shard: fundamentals-callbacks
+            count: 2023
+            paths:
+              - backend/agents/fundamentals.py
+              - backend/notifications/callbacks.py
+          - shard: tax
+            count: 1710
+            paths:
+              - backend/tax/accounting.py
+              - backend/tax/lots.py
+              - backend/tax/reports.py
     defaults:
       run:
         working-directory: vws-core
@@ -89,11 +213,166 @@ jobs:
         run: |
           python -m pip install --require-hashes --no-deps -r requirements-dev.lock
           python -m pip install --no-deps --no-build-isolation -e .
-      - name: Mutate risk, approvals, fundamentals, tax and AUTO checklist/modes/ceilings
+      - name: Prove complete disjoint file function and mutant assignments
+        env:
+          VWS_MUTATION_SHARD: ${{ matrix.shard }}
         run: |
-          python -m mutmut run
-          python -m mutmut results --all > /tmp/vws-mutants.txt
-          python -m scripts.check_mutations /tmp/vws-mutants.txt
+          python - <<'PY'
+          import fnmatch
+          import json
+          import os
+          import tomllib
+          from collections import Counter
+          from pathlib import Path
+          from importlib.metadata import version
+
+          import yaml
+          from mutmut.mutation.file_mutation import compute_function_hashes, mutate_file_contents
+          from mutmut.utils.format_utils import get_mutant_name
+
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit("Mutation shard coverage FAIL: " + message)
+
+
+          require(version("mutmut") == "3.8.0", "unexpected generator version")
+          workflow = yaml.safe_load(Path("../.github/workflows/ci.yml").read_text(encoding="utf-8"))
+          rows = workflow["jobs"]["mutations"]["strategy"]["matrix"]["include"]
+          require(len(rows) == 6, "expected six shards")
+          require(len({row["shard"] for row in rows}) == len(rows), "duplicate shard name")
+          config = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["tool"]["mutmut"]
+          configured = set()
+          for value in config["source_paths"]:
+              path = Path(value)
+              require(path.exists(), "configured path missing: " + value)
+              files = sorted(path.rglob("*.py")) if path.is_dir() else [path]
+              require(bool(files), "configured path has no files: " + value)
+              configured.update(file.as_posix() for file in files)
+          assigned_files = {path for row in rows for path in row["paths"]}
+          require(assigned_files == configured, "unassigned or unexpected configured file")
+          require(all(len(row["paths"]) == len(set(row["paths"])) for row in rows), "duplicate shard path")
+          executor = "backend/execution/alpaca_executor.py"
+          file_owners = Counter(path for row in rows for path in row["paths"])
+          require(all(count == (2 if path == executor else 1) for path, count in file_owners.items()),
+                  "file assignment overlaps")
+          selected = {row["shard"]: set() for row in rows}
+          generated_by_path = {}
+          for filename in sorted(configured):
+              path = Path(filename)
+              source = path.read_text(encoding="utf-8")
+              functions = set(compute_function_hashes(source))
+              owners = [row for row in rows if filename in row["paths"]]
+              function_owners = {}
+              for row in owners:
+                  explicit = row.get("functions")
+                  require((explicit is not None) == (filename == executor), "invalid function partition")
+                  names = explicit if explicit is not None else sorted(functions)
+                  require(len(names) == len(set(names)), "duplicate function assignment")
+                  require(set(names) <= functions, "unknown assigned function in " + filename)
+                  for name in names:
+                      require(name not in function_owners, "overlapping function in " + filename)
+                      function_owners[name] = row["shard"]
+              require(set(function_owners) == functions, "unassigned function in " + filename)
+              mutated = mutate_file_contents(str(path), source)
+              names = list(mutated.mutant_names)
+              require(len(names) == len(set(names)), "duplicate generated mutant")
+              generated_by_path[filename] = set()
+              for name in names:
+                  function = name.rsplit("__mutmut_", 1)[0]
+                  require(function in function_owners, "unassigned mutant function in " + filename)
+                  key = get_mutant_name(path, name)
+                  generated_by_path[filename].add(key)
+                  selected[function_owners[function]].add(key)
+          all_mutants = set().union(*generated_by_path.values())
+          require(sum(map(len, generated_by_path.values())) == len(all_mutants),
+                  "duplicate mutant ID across files")
+          require(len(all_mutants) == 13367, "generated total differs from 13367")
+          require(sum(map(len, selected.values())) == len(all_mutants), "overlapping mutants")
+          require(set().union(*selected.values()) == all_mutants, "unassigned mutants")
+          for row in rows:
+              require(len(selected[row["shard"]]) == row["count"], "shard count changed: " + row["shard"])
+          executor_rows = [row for row in rows if executor in row["paths"]]
+          a, b = (selected[row["shard"]] for row in executor_rows)
+          require(not a & b and a | b == generated_by_path[executor] and len(a | b) == 5159,
+                  "executor overlap or coverage mismatch")
+          current = [row for row in rows if row["shard"] == os.environ["VWS_MUTATION_SHARD"]]
+          require(len(current) == 1, "unknown current shard")
+          row = current[0]
+          generated = set().union(*(generated_by_path[path] for path in row["paths"]))
+          patterns = [get_mutant_name(Path(executor), name + "__mutmut_*")
+                      for name in row.get("functions", [])]
+          matched = {key for key in generated if any(fnmatch.fnmatchcase(key, pattern) for pattern in patterns)} if patterns else generated
+          require(matched == selected[row["shard"]], "CLI selection differs from assigned mutants")
+          manifest = {"shard": row["shard"], "paths": row["paths"], "patterns": patterns,
+                      "expected_count": row["count"], "selected": sorted(selected[row["shard"]]),
+                      "generated": sorted(generated)}
+          Path(os.environ["RUNNER_TEMP"], "vws-mutation-shard.json").write_text(
+              json.dumps(manifest, ensure_ascii=True), encoding="utf-8")
+          print("Verified all 18 files, all functions, 13367 unique mutants; executor overlap=0, union=5159")
+          print("Shard:", row["shard"], "expected mutants:", row["count"])
+          PY
+      - name: Mutate every assigned mutant and enforce the unchanged 100 percent gate
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit("Mutation shard results FAIL: " + message)
+
+
+          manifest = json.loads(Path(os.environ["RUNNER_TEMP"], "vws-mutation-shard.json").read_text())
+          project = Path("pyproject.toml")
+          original = project.read_text(encoding="utf-8")
+          before = tomllib.loads(original)
+          patched, changes = re.subn(r"(?m)^source_paths = .*?$",
+                                     "source_paths = " + json.dumps(manifest["paths"]), original)
+          require(changes == 1, "could not select shard paths")
+          after = tomllib.loads(patched)
+          expected = json.loads(json.dumps(before))
+          expected["tool"]["mutmut"]["source_paths"] = manifest["paths"]
+          require(after == expected, "configuration changed beyond shard paths")
+          project.write_text(patched, encoding="utf-8")
+          subprocess.run([sys.executable, "-m", "mutmut", "run", *manifest["patterns"]], check=True)
+          result = subprocess.run([sys.executable, "-m", "mutmut", "results", "--all"],
+                                  check=True, capture_output=True, text=True)
+          records = {}
+          for line in result.stdout.splitlines():
+              key, separator, status = line.strip().partition(": ")
+              require(bool(separator) and key not in records, "malformed or duplicate result")
+              records[key] = status
+          require(set(records) == set(manifest["generated"]), "missing or unexpected generated results")
+          selected = manifest["selected"]
+          require(len(selected) == len(set(selected)) == manifest["expected_count"], "invalid assigned count")
+          # Reversible, collision-free ASCII IDs preserve the existing checker's identifier grammar.
+          lines = ["m_" + key.encode("utf-8").hex() + ": " + records[key] for key in selected]
+          output = Path(os.environ["RUNNER_TEMP"], "vws-mutants.txt")
+          output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          subprocess.run([sys.executable, "-m", "scripts.check_mutations", str(output)], check=True)
+          print("Shard:", manifest["shard"], "complete 100% gate:", len(selected), "mutants")
+          PY
+  mutations-gate:
+    needs: mutations
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vws-core
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Require every mutation shard to succeed
+        env:
+          MUTATIONS_RESULT: ${{ needs.mutations.result }}
+        run: |
+          test "$MUTATIONS_RESULT" = success
   postgres:
     runs-on: ubuntu-latest
     timeout-minutes: 20
