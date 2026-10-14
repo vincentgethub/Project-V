@@ -12,6 +12,8 @@ jobs:
         working-directory: vws-core
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
@@ -296,7 +298,7 @@ jobs:
               writer = csv.DictWriter(handle, fieldnames=list(rows[0]) if rows else ["mutant"])
               writer.writeheader()
               writer.writerows(rows)
-          result = subprocess.run([sys.executable, "-m", "mutmut", "results", "--all"],
+          result = subprocess.run([sys.executable, "-m", "mutmut", "results", "--all", "true"],
                                   capture_output=True, text=True)
           (root / "mutmut-results.txt").write_text(result.stdout, encoding="utf-8")
           (root / "mutmut-results-stderr.txt").write_text(result.stderr, encoding="utf-8")
@@ -317,6 +319,108 @@ jobs:
           # Reserve ten minutes for metadata collection and artifact upload.
           # This diagnostic deadline leaves native per-mutant limits untouched.
           timeout --signal=TERM --kill-after=30s 140m python "$RUNNER_TEMP/tax-diagnostics-driver.py" 2>&1 | tee "$VWS_DIAGNOSTIC_DIR/driver.log"
+      - name: Reproduce the three prior SIGSEGV mutants in fresh unforked interpreters
+        if: ${{ always() }}
+        run: |
+          cat > "$RUNNER_TEMP/tax-unforked.py" <<'PY'
+          import faulthandler
+          import json
+          import os
+          import sys
+          import time
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path.cwd()))
+          import pytest
+          from mutmut.mutation.trampoline import set_mutant_under_test
+
+          case = json.loads(Path(sys.argv[1]).read_text())
+          root = Path(os.environ["VWS_DIAGNOSTIC_DIR"]) / "unforked"
+          stem = case["variant"] + "-" + case["mutant"].encode("utf-8").hex()
+          phases = []
+
+          class Timings:
+              def pytest_runtest_logreport(self, report):
+                  phases.append({"test": report.nodeid, "phase": report.when,
+                                 "seconds": report.duration, "outcome": report.outcome})
+
+          set_mutant_under_test(case["mutant"])
+          with (root / (stem + ".stacks.txt")).open("w") as stacks:
+              faulthandler.enable(file=stacks, all_threads=True)
+              faulthandler.dump_traceback_later(120, repeat=True, file=stacks)
+              started = time.monotonic()
+              try:
+                  code = int(pytest.main(case["pytest_args"], plugins=[Timings()]))
+                  (root / (stem + ".phases.json")).write_text(json.dumps(phases, indent=2))
+                  (root / (stem + ".child.json")).write_text(json.dumps({
+                      "exit_code": code, "seconds": time.monotonic() - started,
+                      "test_count": len(case["tests"]), "forked": False}, indent=2))
+              finally:
+                  faulthandler.cancel_dump_traceback_later()
+          sys.exit(code)
+          PY
+          python - <<'PY'
+          import json
+          import os
+          import shutil
+          import subprocess
+          import sys
+          import time
+          from concurrent.futures import ThreadPoolExecutor
+          from pathlib import Path
+
+          root = Path(os.environ["VWS_DIAGNOSTIC_DIR"]) / "unforked"
+          root.mkdir(exist_ok=True)
+          stats = json.loads(Path("mutants/mutmut-stats.json").read_text())
+          associations = stats["tests_by_mangled_function_name"]
+          # Reproduce the old setup as well as the repaired setup, without editing tests in the checkout.
+          baseline = Path(os.environ["RUNNER_TEMP"]) / "tax-baseline-reproduction"
+          shutil.copytree("mutants", baseline,
+                          ignore=shutil.ignore_patterns("__pycache__", "*.meta", ".pytest_cache"))
+          old_fixture = subprocess.check_output([
+              "git", "show", "0c3c90e88ed6ce334ce2daa26720e9d7175d5768:vws-core/backend/tests/conftest.py"])
+          (baseline / "backend/tests/conftest.py").write_bytes(old_fixture)
+          results = []
+          keys = ["backend.tax.lots.x\u01c1WashSaleMatcher\u01c1" + suffix for suffix in
+                  ("allocations__mutmut_100", "_inputs__mutmut_4", "_inputs__mutmut_13")]
+
+          def reproduce(key, variant, directory):
+              association_key = (key or keys[0]).partition("__mutmut_")[0]
+              tests = sorted(associations[association_key])
+              if not tests:
+                  raise SystemExit("Missing reproduction tests")
+              args = ["--rootdir=.", "--tb=native", "-x", "-q", "-p", "no:randomly",
+                      "-p", "no:random-order", *tests, "--disable-socket", "-q",
+                      "--durations=50", "-p", "no:faulthandler"]
+              case = {"mutant": key, "tests": tests, "pytest_args": args, "variant": variant}
+              stem = variant + "-" + key.encode("utf-8").hex()
+              path = root / (stem + ".case.json")
+              path.write_text(json.dumps(case, indent=2))
+              started = time.monotonic()
+              with (root / (stem + ".pytest.log")).open("w") as output:
+                  try:
+                      result = subprocess.run([sys.executable, "-X", "faulthandler",
+                                               str(Path(os.environ["RUNNER_TEMP"]) / "tax-unforked.py"),
+                                               str(path)], cwd=directory, stdout=output,
+                                              stderr=subprocess.STDOUT, timeout=1200)
+                      code = result.returncode
+                  except subprocess.TimeoutExpired:
+                      code = "reproduction timeout (failure, never skipped)"
+              return {"mutant": key, "variant": variant, "exit_code": code,
+                      "seconds": time.monotonic() - started, "test_count": len(tests), "forked": False}
+
+          # Four standalone execs match the old four-worker contention; the fourth is an unmutated control.
+          with ThreadPoolExecutor(max_workers=4) as pool:
+              futures = [pool.submit(reproduce, key, "baseline", baseline) for key in [*keys, ""]]
+              for future in futures:
+                  results.append(future.result())
+                  (root / "results.json").write_text(json.dumps(results, indent=2))
+                  print(json.dumps(results[-1], ensure_ascii=True), flush=True)
+          for key in keys:
+              results.append(reproduce(key, "optimized", Path("mutants").resolve()))
+              (root / "results.json").write_text(json.dumps(results, indent=2))
+              print(json.dumps(results[-1], ensure_ascii=True), flush=True)
+          PY
       - name: Collect every result and metadata and retain the original 100 percent check
         if: ${{ always() }}
         run: python "$RUNNER_TEMP/tax-diagnostics-summary.py"

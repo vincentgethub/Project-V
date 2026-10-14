@@ -342,7 +342,7 @@ jobs:
           require(after == expected, "configuration changed beyond shard paths")
           project.write_text(patched, encoding="utf-8")
           subprocess.run([sys.executable, "-m", "mutmut", "run", *manifest["patterns"]], check=True)
-          result = subprocess.run([sys.executable, "-m", "mutmut", "results", "--all"],
+          result = subprocess.run([sys.executable, "-m", "mutmut", "results", "--all", "true"],
                                   check=True, capture_output=True, text=True)
           records = {}
           for line in result.stdout.splitlines():

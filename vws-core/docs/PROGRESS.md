@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 14, 2026 - manual tax diagnostics runtime path correction
+Last updated: October 14, 2026 - isolated mutation setup caching and results export repair
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.

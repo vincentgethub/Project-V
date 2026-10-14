@@ -2,8 +2,10 @@
 
 import asyncio
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
+from sqlite3 import Connection
+from typing import cast
 
 import pytest
 import pytest_socket
@@ -11,6 +13,69 @@ from sqlalchemy.engine import Engine
 
 from backend.core.clock import FrozenClock
 from backend.core.database import create_database, create_schema
+from backend.data import market_calendar
+from backend.data.market_calendar import CalendarFactory, MarketCalendar
+
+
+@pytest.fixture(scope="session", autouse=True)
+def pristine_calendars() -> Iterator[None]:
+    """Cache immutable schedules only within this pytest invocation.
+
+    Every constructor still returns a distinct instance. Custom providers and
+    invalid arguments always exercise the real constructor. Session teardown
+    restores it and discards all cached values before another mutant runs.
+    """
+    original = MarketCalendar.__init__
+    official = market_calendar._official_calendar
+    instant = market_calendar._calendar_instant
+    argument = market_calendar._date_argument
+    schedules: dict[
+        tuple[str, date, date],
+        tuple[tuple[date, ...], tuple[datetime, ...], tuple[datetime, ...]],
+    ] = {}
+
+    def initialize(
+        self: MarketCalendar,
+        *,
+        name: str = "XNYS",
+        start: date = date(1990, 1, 1),
+        end: date = date(2030, 12, 31),
+        calendar_factory: CalendarFactory | None = None,
+    ) -> None:
+        cacheable = (
+            name == "XNYS"
+            and type(start) is date
+            and type(end) is date
+            and start < end
+            and calendar_factory is None
+            and market_calendar._official_calendar is official
+            and market_calendar._calendar_instant is instant
+            and market_calendar._date_argument is argument
+        )
+        key = (name, start, end)
+        if cacheable and key in schedules:
+            self._sessions, self._opens, self._closes = schedules[key]
+            return
+        original(self, name=name, start=start, end=end, calendar_factory=calendar_factory)
+        if cacheable:
+            schedules[key] = (self._sessions, self._opens, self._closes)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(MarketCalendar, "__init__", initialize)
+        yield
+    schedules.clear()
+
+
+@pytest.fixture(scope="session")
+def pristine_schema() -> Iterator[Connection]:
+    """Build a pristine in-memory schema anew for each pytest invocation."""
+    template = create_database("sqlite:///:memory:")
+    try:
+        create_schema(template)
+        with template.connect() as connection:
+            yield cast(Connection, connection.connection.driver_connection)
+    finally:
+        template.dispose()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -136,9 +201,12 @@ def clock() -> FrozenClock:
 
 
 @pytest.fixture
-def engine(tmp_path: Path) -> Iterator[Engine]:
+def engine(tmp_path: Path, pristine_schema: Connection) -> Iterator[Engine]:
     """R-02: each test gets an independent on-disk SQLite ledger."""
     database = create_database(f"sqlite:///{(tmp_path / 'ledger.db').as_posix()}")
-    create_schema(database)
-    yield database
-    database.dispose()
+    try:
+        with database.connect() as connection:
+            pristine_schema.backup(cast(Connection, connection.connection.driver_connection))
+        yield database
+    finally:
+        database.dispose()
