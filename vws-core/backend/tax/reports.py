@@ -107,6 +107,26 @@ def annual(
             )
         with localcontext() as precision:
             precision.prec = 80
+            # Preserve every supplied rate digit before the conservative cent ceiling.
+            # Signed-64-bit money and at most 100,000 rows need fewer than 32
+            # integral/carry digits; rates can have more than 80 fractional places.
+            precision.prec = max(
+                precision.prec,
+                32
+                - min(
+                    (
+                        int(rate.as_tuple().exponent)
+                        for rate in (
+                            rates.federal_st_rate,
+                            rates.federal_lt_rate,
+                            rates.state_rate,
+                            rates.niit_rate,
+                        )
+                        if rate is not None
+                    ),
+                    default=0,
+                ),
+            )
             st = sum((row.taxable_gain for row in sales if row.term == "ST"), Decimal(0))
             lt = sum((row.taxable_gain for row in sales if row.term == "LT"), Decimal(0))
             offset_st, offset_lt = _net_terms(st, lt)

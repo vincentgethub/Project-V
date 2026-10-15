@@ -107,6 +107,156 @@ def adjustment() -> WashAdjustment:
     return WashSaleMatcher(registry()).adjustments((sale(1), buy(2)), ACCOUNTS)[0]
 
 
+def marked_lot(
+    identifier: int, *, account: str = "ira", symbol: str = "AAA", acquired: datetime = NOW
+) -> TaxLot:
+    return TaxLot(
+        lot_id=UUID(int=identifier),
+        account_id=account,
+        symbol=symbol,
+        qty=3,
+        acquired_at=acquired,
+        cost_basis=Decimal("12.50"),
+    )
+
+
+@pytest.mark.parametrize("account", ["ira", "roth", "merrill", "401k"])
+@pytest.mark.parametrize(
+    "offset,review", [(-31, False), (-30, True), (0, True), (30, True), (31, False)]
+)
+def test_TX_marked_outside_accounts_review_inclusive_window(
+    account: str, offset: int, review: bool
+) -> None:
+    lot = marked_lot(20, account=account, acquired=NOW + timedelta(days=offset))
+    loss = sale(1, loss=Decimal("0.01"))
+    result = WashSaleMatcher(registry()).marked_external_lots(loss, (lot,))
+    assert result == ((lot,) if review else ())
+    # Awareness must not invent a retirement classification, disallowance or basis change.
+    assert lot.cost_basis == Decimal("12.50") and lot.qty == 3
+    assert loss.realized_loss == Decimal("0.01")
+
+
+def test_TX_marked_lots_use_declared_identity_and_external_ownership() -> None:
+    lots = (
+        marked_lot(20, symbol="BBB"),
+        marked_lot(21, symbol="CCC"),
+        marked_lot(22, account="tax"),
+        marked_lot(23, account="merrill"),
+    )
+    matcher = WashSaleMatcher(registry(grouped=True))
+    assert matcher.marked_external_lots(sale(1), lots) == (lots[0], lots[3])
+    assert matcher.marked_external_lots(sale(1, loss=Decimal(0)), lots) == ()
+    assert matcher.marked_external_lots(sale(1), ()) == ()
+
+
+def test_TX_marked_window_uses_exchange_date_across_utc_midnight() -> None:
+    sold = datetime(2026, 10, 3, 1, tzinfo=UTC)  # October 2 in New York.
+    day30 = marked_lot(20, acquired=datetime(2026, 11, 1, 23, tzinfo=UTC))
+    day31 = marked_lot(21, acquired=datetime(2026, 11, 2, 23, tzinfo=UTC))
+    assert WashSaleMatcher(registry()).marked_external_lots(sale(1, ts=sold), (day30, day31)) == (
+        day30,
+    )
+
+
+@pytest.mark.parametrize(
+    "case", ["buy", "mutable", "duplicate", "unknown", "forged_lot", "forged_sale"]
+)
+def test_TX_marked_awareness_refuses_invalid_evidence(case: str) -> None:
+    lot = marked_lot(20)
+    trade = sale(1)
+    lots: tuple[TaxLot, ...] = (lot,)
+    if case == "buy":
+        trade = buy(1)
+    elif case == "mutable":
+        lots = cast(tuple[TaxLot, ...], [lot])
+    elif case == "duplicate":
+        lots = (lot, lot)
+    elif case == "unknown":
+        lots = (marked_lot(20, symbol="ZZZ"),)
+    elif case == "forged_lot":
+        lots = (lot.model_copy(update={"qty": 0}),)
+    else:
+        trade = trade.model_copy(update={"qty": 0})
+    with pytest.raises(DataIntegrityError):
+        WashSaleMatcher(registry()).marked_external_lots(trade, lots)
+
+
+def test_cmp_02_same_time_replacements_have_stable_share_priority() -> None:
+    earlier_id = buy(2, qty=1, account="ira")
+    later_id = buy(3, qty=1, account="other")
+    rows = WashSaleMatcher(registry()).adjustments((later_id, sale(1, qty=1), earlier_id), ACCOUNTS)
+    assert len(rows) == 1
+    assert rows[0].replacement_trade_id == earlier_id.trade_id and rows[0].permanent_loss
+
+
+def test_cmp_02_partial_replacements_cannot_overallocate_remaining_loss() -> None:
+    rows = WashSaleMatcher(registry()).adjustments(
+        (
+            sale(1, qty=3, loss=Decimal("6")),
+            buy(2, qty=1),
+            buy(3, qty=5, ts=NOW + timedelta(days=1)),
+        ),
+        ACCOUNTS,
+    )
+    assert [(row.qty, row.disallowed_loss) for row in rows] == [
+        (1, Decimal("2")),
+        (2, Decimal("4")),
+    ]
+
+
+def test_cmp_02_fifo_disposal_spanning_purchases_keeps_only_retained_shares() -> None:
+    rows = WashSaleMatcher(registry()).adjustments(
+        (
+            buy(1, qty=2, account="tax", ts=NOW - timedelta(days=3)),
+            buy(2, qty=2, account="tax", ts=NOW - timedelta(days=2)),
+            sale(3, qty=3, loss=Decimal(0), held_from=None),
+            sale(4, account="other", qty=1, loss=Decimal("4"), ts=NOW + timedelta(days=1)),
+        ),
+        ACCOUNTS,
+    )
+    assert len(rows) == 1
+    assert rows[0].replacement_trade_id == UUID(int=2)
+    assert rows[0].qty == 1 and rows[0].disallowed_loss == Decimal("4")
+
+
+def test_cmp_02_one_execution_with_gain_and_loss_slices_has_only_a_loss_snapshot() -> None:
+    loss = sale(3, qty=1, price=Decimal("10"), loss=Decimal("5"), origin=UUID(int=1))
+    gain = sale(
+        4,
+        qty=1,
+        price=Decimal("10"),
+        loss=Decimal(0),
+        origin=UUID(int=2),
+        held_from=OLD + timedelta(days=1),
+    )
+    history = (
+        buy(1, account="tax", qty=1, ts=OLD, price=Decimal("15")),
+        buy(2, account="tax", qty=1, ts=OLD + timedelta(days=1), price=Decimal("5")),
+        loss.model_copy(update={"execution_id": UUID(int=100)}),
+        gain.model_copy(update={"execution_id": UUID(int=100)}),
+    )
+    matcher = WashSaleMatcher(registry())
+    ordered, _ = matcher._inputs(history, ACCOUNTS)
+    loss_snapshots = matcher._survivors(ordered)
+    assert set(loss_snapshots) == {loss.trade_id}
+    assert loss_snapshots[loss.trade_id] == {UUID(int=1): 0, UUID(int=2): 0}
+    assert matcher.adjustments(history, ACCOUNTS) == ()
+
+
+@pytest.mark.parametrize(
+    "first,assigned,requested,expected",
+    [(0, [(2, 4)], 3, ((0, 2), (4, 5))), (4, [(0, 2), (5, 6)], 2, ((4, 5), (6, 7)))],
+)
+def test_cmp_02_retained_share_ranges_skip_previous_matches_without_reusing_them(
+    first: int,
+    assigned: list[tuple[int, int]],
+    requested: int,
+    expected: tuple[tuple[int, int], ...],
+) -> None:
+    # Seven acquired shares; disposed prefixes and already washed ranges are unavailable.
+    assert WashSaleMatcher._available_slices(first, 7, assigned, requested) == expected
+
+
 @pytest.mark.parametrize("offset,expected", [(-31, 0), (-30, 100), (0, 100), (30, 100), (31, 0)])
 def test_cmp_01_cmp_02_inclusive_day_30_and_31(offset: int, expected: int) -> None:
     rows = WashSaleMatcher(registry()).adjustments(

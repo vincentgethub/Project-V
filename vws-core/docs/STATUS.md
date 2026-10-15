@@ -1,5 +1,35 @@
 # Technical status
 
+## Tax mutation follow-up - October 14, 2026
+
+Owner scope: base `3e934857`, tax shard only; no gate/timeout reductions,
+equivalence approvals, setup/key changes or other mutation shard dispatches.
+[TAX_MUTATION_KILL_REPORT.md](TAX_MUTATION_KILL_REPORT.md) is the complete
+per-ID audit, with old/current report IDs and individual reasons.
+
+| Requirement | Code boundary | Added behavior evidence |
+| --- | --- | --- |
+| TAX_PROFILE / CMP-01/02 / TX-05 outside-lot awareness | `backend/tax/lots.py:WashSaleMatcher.marked_external_lots` (unchanged) | `test_wash_sales.py:test_TX_marked_*`: IRA/Roth, Merrill, 401(k), identity/account exclusion, NY day 30/31, gains and malformed evidence. |
+| CMP-02 / TX-02/05 share ownership and exact wash basis | shared matcher and `TaxBook.compliance_lots`, `_rebuild`, `build_tax_book` (unchanged) | Stable same-time priority, retained shares, gain/loss execution snapshots, micro-unit buckets, acquisition/tacking evidence, multi-lot fees, split residuals and permanent-loss attribution. |
+| R-02 / TX-01 bounded immutable lineage | `build_tax_book` and `annual` (existing guards) | Mutable/duplicate/advertised-overflow evidence refuses; polymorphic year/cutoff comparisons cannot import another year's gains or close the wash window early. |
+| TX-06/07/10 report correctness and immutable publication | `backend/tax/reports.py` | Exact ST/LT net capital, carryover, broker income classes, 8949 boxes/status, account/year filters, CSV schemas/formula defense, capacity edges, stable publication IDs and bounded corrupt-file reads. POSIX directory privacy test supplied, skipped on Windows. |
+| R-04 / TX-08 conservative set-aside ceiling | `reports.py:annual` precision calculation (only production change) | Two accepted finite rates just above 1% produce two failing tests before the fix and two passes afterward: $1 interest must reserve $0.02, not $0.01. Unknown rates remain totals-only. |
+| OPS-06 / R-10 complete mutation gate | `scripts/check_mutations.py`, workflows and `pyproject.toml` (unchanged) | 471 focused current IDs: 264 killed, 207 surviving, zero no-test in replay. Strict checker still FAILS; 203 individual proposals are inactive and four POSIX cases are UNVERIFIED. |
+| Fixture isolation | `backend/tests/conftest.py` (unchanged) | Session-local memory caches; retained planted schema proof exits clean/mutant/restored 0/1/0 in one interpreter. |
+
+Generation: 1,724 current tax mutants (433 lots / 574 accounting / 717 reports),
+including 14 added by the precision fix. Focused replay is not a native full
+score: the prior 1,253 native kills were not recertified. Windows/absent WSL
+cannot run native mutmut; exact Linux tax-only reproduction is in the report.
+Full offline normal/random runs each passed 5,408 tests with 60 skips and
+100% required branch coverage: 7,625 statements / 2,606 branches, zero missing
+or partial and unchanged 20 exclusions. Their 5,468 case IDs match in different
+orders (seed 20261014); baseline comparison proves 93 added and none removed.
+Complete-history gitleaks before commit: 43 commits, zero leaks; final delivery
+also requires its post-commit scan. Paper/PostgreSQL skips and real services
+remain UNVERIFIED; the existing exact commands remain in FINAL_REPORT.md.
+AUTO_LIVE stays locked and MANUAL_CSV stays disabled.
+
 Audit date: 2026-10-04 America/Chicago. The initial audit results below describe the pre-fix working
 tree. Audit-fixes and Stage S results below are historical; the Stage D gate
 records the certified implementation. Amendments 01–06 supersede conflicts in the master and

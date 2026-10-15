@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -12,6 +13,7 @@ import pytest
 from backend.core.errors import DataIntegrityError
 from backend.domain.compliance_models import TaxStatus
 from backend.domain.models import Side
+from backend.tax import accounting
 from backend.tax.accounting import anniversary, build_tax_book
 from backend.tax.models import TaxAccount, TaxFill, TaxIncome
 from backend.tests.test_wash_sales import registry
@@ -240,3 +242,225 @@ def test_retained_partial_purchase_washes_only_retained_shares() -> None:
 def test_unverifiable_inventory_refuses(rows: tuple[TaxFill, ...]) -> None:
     with pytest.raises(DataIntegrityError):
         build_tax_book(rows, (account(),), registry(), "PAPER")
+
+
+def test_TX_04_february_nonleap_anniversary_preserves_day() -> None:
+    assert anniversary(date(2025, 2, 12)) == date(2026, 2, 12)
+
+
+def test_TX_02_compliance_buckets_conserve_micro_basis_and_acquisition_evidence() -> None:
+    acquired = fill(1, qty=3, fees="0.01")
+    book = build_tax_book((acquired,), (account(),), registry(), "PAPER")
+    lots = book.compliance_lots()
+    assert [(row.qty, row.cost_basis) for row in lots] == [
+        (2, Decimal("10.003333")),
+        (1, Decimal("10.003334")),
+    ]
+    assert sum(row.qty for row in lots) == 3
+    assert sum((row.qty * row.cost_basis for row in lots), Decimal(0)) == Decimal("30.01")
+    assert all(row.acquisition_trade_id == acquired.fill_id for row in lots)
+    assert all(row.holding_period_start == acquired.ts for row in lots)
+    assert len({row.lot_id for row in lots}) == 2
+    assert book.compliance_lots() == lots
+    # Published acquisition references remain stable when the same ledger is replayed.
+    assert [str(row.lot_id) for row in lots] == [
+        "b7b071c4-6a01-5205-a50f-6fccd425b18a",
+        "b7d1977a-6ddf-5796-8743-d990751007e6",
+    ]
+
+
+def test_TX_05_compliance_lots_preserve_tacked_period_and_original_acquisition() -> None:
+    replacement = fill(3, day=1, qty=3, price="8")
+    book = build_tax_book(
+        (fill(1, day=-100, qty=3), fill(2, side=Side.SELL, qty=3, price="9"), replacement),
+        (account(),),
+        registry(),
+        "PAPER",
+    )
+    lots = book.compliance_lots()
+    assert sum((row.qty * row.cost_basis for row in lots), Decimal(0)) == Decimal("27")
+    assert all(row.acquisition_trade_id == replacement.fill_id for row in lots)
+    assert all(row.holding_period_start == replacement.ts - timedelta(days=100) for row in lots)
+
+
+def test_TX_03_sell_fees_are_allocated_once_across_multiple_original_lots() -> None:
+    book = build_tax_book(
+        (
+            fill(1, day=-100, qty=1),
+            fill(2, day=-90, qty=2, price="12"),
+            fill(3, side=Side.SELL, qty=3, price="15", fees="0.01"),
+        ),
+        (account(),),
+        registry(),
+        "PAPER",
+    )
+    assert [row.proceeds for row in book.sales] == [Decimal("14.996667"), Decimal("29.993333")]
+    assert [row.basis for row in book.sales] == [Decimal("10"), Decimal("24")]
+    assert sum((row.economic_gain for row in book.sales), Decimal(0)) == Decimal("10.99")
+    for sale, trade in zip(
+        book.sales, (row for row in book.history if row.side == Side.SELL), strict=True
+    ):
+        assert trade.acquisition_trade_id == sale.acquisition_id
+
+
+def test_TX_05_partial_disposals_conserve_remaining_wash_basis() -> None:
+    book = build_tax_book(
+        (
+            fill(1, day=-100, qty=4),
+            fill(2, side=Side.SELL, qty=4, price="9"),
+            fill(3, day=1, qty=4, price="8"),
+            fill(4, side=Side.SELL, day=2, qty=1, price="10"),
+            fill(5, side=Side.SELL, day=3, qty=1, price="10"),
+        ),
+        (account(),),
+        registry(),
+        "PAPER",
+    )
+    assert [row.basis for row in book.sales] == [Decimal("40"), Decimal("9"), Decimal("9")]
+    assert [row.wash_basis for row in book.sales] == [Decimal(0), Decimal(1), Decimal(1)]
+    assert [(row.qty, row.basis, row.wash_basis) for row in book.lots] == [
+        (2, Decimal("18"), Decimal("2"))
+    ]
+
+
+def test_TX_05_wash_amount_is_invariant_to_replacement_share_segmentation() -> None:
+    rows = (
+        fill(1, day=-100, qty=3, price="10.01"),
+        fill(2, side=Side.SELL, qty=3, price="10"),
+        fill(3, day=1, qty=3, price="8"),
+    )
+    book = build_tax_book(rows, (account(),), registry(), "PAPER")
+    allocation = (book.adjustments[0], ((0, 3),))
+    sales, lots, _ = accounting._rebuild(
+        rows,
+        {"tax": account()},
+        (allocation,),
+        book.history,
+        {rows[0].fill_id: {0, 3}, rows[2].fill_id: {0, 1, 3}},
+    )
+    assert [row.basis for row in lots] == [Decimal("8.01"), Decimal("16.02")]
+    assert sum((row.wash_basis for row in lots), Decimal(0)) == Decimal("0.03")
+    assert sum((row.basis for row in sales), Decimal(0)) == Decimal("30.03")
+    assert all(row.holding_period_start == rows[2].ts - timedelta(days=100) for row in lots)
+
+
+def test_TX_02_compressed_open_lots_conserve_uneven_pool_rounding() -> None:
+    book = build_tax_book(
+        (fill(1, qty=1, fees="0.01"), fill(2, qty=2, minutes=1)),
+        (account(compressed=True),),
+        registry(),
+        "PAPER",
+    )
+    assert [row.basis for row in book.lots] == [Decimal("10.003333"), Decimal("20.006667")]
+    assert sum((row.basis for row in book.lots), Decimal(0)) == Decimal("30.01")
+
+
+def test_TX_01_live_accounting_uses_only_live_bound_fills() -> None:
+    live = fill(1).model_copy(update={"env": "LIVE"})
+    book = build_tax_book((live,), (account(),), registry(), "LIVE")
+    assert book.env == "LIVE" and book.fills == (live,)
+    assert book.lots[0].env == "LIVE" and book.lots[0].basis == Decimal("100")
+
+
+def test_TX_06_drip_acquisition_remains_identified_in_shared_history() -> None:
+    drip = fill(1).model_copy(update={"is_drip": True})
+    book = build_tax_book((drip,), (account(),), registry(), "PAPER")
+    assert book.history[0].is_drip and book.history[0].trade_id == drip.fill_id
+
+
+def test_TX_05_simultaneous_cross_account_rebuy_has_available_replacement_shares() -> None:
+    book = build_tax_book(
+        (fill(1, day=-100), fill(2, side=Side.SELL, price="9"), fill(3, owner="other", price="8")),
+        (account(), account("other")),
+        registry(),
+        "PAPER",
+    )
+    assert len(book.adjustments) == 1
+    assert book.sales[0].wash_disallowed == Decimal("10") and book.sales[0].taxable_gain == 0
+    assert book.lots[0].account_id == "other" and book.lots[0].basis == Decimal("90")
+    assert book.lots[0].holding_period_start == fill(1, day=-100).ts
+
+
+def test_TX_05_permanent_loss_is_attributed_only_to_its_own_disposal() -> None:
+    book = build_tax_book(
+        (
+            fill(1, day=-100),
+            fill(2, side=Side.SELL, price="9"),
+            fill(3, day=-100, owner="other", price="8"),
+            fill(4, side=Side.SELL, owner="other", price="11"),
+            fill(5, day=1, owner="ira"),
+        ),
+        (account(), account("other"), account("ira", status=TaxStatus.IRA)),
+        registry(),
+        "PAPER",
+    )
+    assert [
+        (row.account_id, row.wash_disallowed, row.permanent_disallowed, row.taxable_gain)
+        for row in book.sales
+    ] == [
+        ("tax", Decimal("10"), Decimal("10"), Decimal(0)),
+        ("other", Decimal(0), Decimal(0), Decimal("30")),
+    ]
+
+
+def test_TX_05_partial_washed_share_interval_preserves_undisposed_extra_basis() -> None:
+    rows = (
+        fill(1, day=-100, qty=4),
+        fill(2, side=Side.SELL, qty=4, price="9"),
+        fill(3, day=1, qty=4, price="8"),
+        fill(4, side=Side.SELL, day=2, qty=1, price="10"),
+    )
+    book = build_tax_book(rows, (account(),), registry(), "PAPER")
+    allocation = (book.adjustments[0], ((0, 4),))
+    sales, lots, _ = accounting._rebuild(
+        rows,
+        {"tax": account()},
+        (allocation,),
+        book.history,
+        {rows[0].fill_id: {0, 4}, rows[2].fill_id: {0, 4}},
+    )
+    assert sales[-1].basis == Decimal("9") and sales[-1].wash_basis == Decimal("1")
+    assert [(row.qty, row.basis, row.wash_basis) for row in lots] == [
+        (3, Decimal("27"), Decimal("3"))
+    ]
+
+
+@pytest.mark.parametrize("mutable", ["fills", "accounts"])
+def test_TX_01_public_accounting_requires_immutable_evidence(mutable: str) -> None:
+    rows: tuple[TaxFill, ...] = (fill(1),)
+    owners: tuple[TaxAccount, ...] = (account(),)
+    if mutable == "fills":
+        rows = cast(tuple[TaxFill, ...], list(rows))
+    else:
+        owners = cast(tuple[TaxAccount, ...], list(owners))
+    with pytest.raises(DataIntegrityError):
+        build_tax_book(rows, owners, registry(), "PAPER")
+
+
+def test_TX_01_duplicate_broker_activity_cannot_create_two_acquisitions() -> None:
+    duplicate = fill(2, minutes=1).model_copy(update={"activity_id": fill(1).activity_id})
+    with pytest.raises(DataIntegrityError):
+        build_tax_book((fill(1), duplicate), (account(),), registry(), "PAPER")
+
+
+def test_TX_01_untrusted_history_cannot_hide_its_advertised_capacity_overflow() -> None:
+    class OversizedEvidence(tuple[TaxFill, ...]):
+        def __len__(self) -> int:
+            return 100001
+
+    # An inconsistent collection must not become a plausible one-fill tax book.
+    rows = OversizedEvidence((fill(1),))
+    with pytest.raises(DataIntegrityError):
+        build_tax_book(rows, (account(),), registry(), "PAPER")
+
+
+def test_TX_02_row_capacity_accepts_exact_boundary_and_refuses_overflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Use a small disposable capacity to exercise the inclusive contract without a huge ledger.
+    monkeypatch.setattr(accounting, "MAX_ACCOUNTING_ROWS", 2)
+    rows = (fill(1, day=-100), fill(2, side=Side.SELL, price="11"))
+    book = build_tax_book(rows, (account(),), registry(), "PAPER")
+    assert len(book.fills) == 2 and book.sales[0].economic_gain == Decimal("10")
+    with pytest.raises(DataIntegrityError):
+        build_tax_book((*rows, fill(3, day=1)), (account(),), registry(), "PAPER")

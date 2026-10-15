@@ -1,5 +1,11 @@
 # Final build report - October 12, 2026
 
+Post-build follow-up, October 14: [Tax mutation kill report](TAX_MUTATION_KILL_REPORT.md)
+records the owner's tests-first audit, one proven exact-rate ceiling fix, fresh
+offline evidence and every individual equivalence proposal. The 100% mutation
+gate remains unmet; no proposal is approved or excluded. Historical build-stage
+counts below are retained, rather than represented as the current test count.
+
 All requested build stages are GREEN OFFLINE. Stage W is committed locally as
 `0c7823a`. Available gates pass; deployment, actual integrations and live
 readiness are not fully verified. MANUAL paper remains default, MANUAL_CSV is
