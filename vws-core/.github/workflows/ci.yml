@@ -196,7 +196,7 @@ jobs:
               - backend/agents/fundamentals.py
               - backend/notifications/callbacks.py
           - shard: tax
-            count: 1710
+            count: 1724
             paths:
               - backend/tax/accounting.py
               - backend/tax/lots.py
@@ -287,7 +287,7 @@ jobs:
           all_mutants = set().union(*generated_by_path.values())
           require(sum(map(len, generated_by_path.values())) == len(all_mutants),
                   "duplicate mutant ID across files")
-          require(len(all_mutants) == 13367, "generated total differs from 13367")
+          require(len(all_mutants) == 13381, "generated total differs from 13381")
           require(sum(map(len, selected.values())) == len(all_mutants), "overlapping mutants")
           require(set().union(*selected.values()) == all_mutants, "unassigned mutants")
           for row in rows:
@@ -309,7 +309,7 @@ jobs:
                       "generated": sorted(generated)}
           Path(os.environ["RUNNER_TEMP"], "vws-mutation-shard.json").write_text(
               json.dumps(manifest, ensure_ascii=True), encoding="utf-8")
-          print("Verified all 18 files, all functions, 13367 unique mutants; executor overlap=0, union=5159")
+          print("Verified all 18 files, all functions, 13381 unique mutants; executor overlap=0, union=5159")
           print("Shard:", row["shard"], "expected mutants:", row["count"])
           PY
       - name: Mutate every assigned mutant and enforce the unchanged 100 percent gate

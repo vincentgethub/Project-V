@@ -1,5 +1,7 @@
 # Tax mutation kill report - October 14, 2026
 
+**Historical pass 1 report. Pass 2 supersedes its remaining-proposal table: [current report](TAX_MUTATION_KILL_PASS_2.md). Diagnostic/message proposals were rejected and have now been killed by exact audit-message tests.**
+
 The 100% tax mutation gate is **not achieved**. No equivalence entry is approved or installed. Every remaining survivor still fails the unchanged checker.
 
 Base: `3e9348573f71481065a41e80bae179e9e3939715`, CI run `38640865007`; baseline diagnostics artifact from run `38640898728`.

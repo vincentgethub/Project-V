@@ -1,5 +1,11 @@
 # Final build report - October 12, 2026
 
+Post-build follow-up, October 15: [Tax kill pass 2](TAX_MUTATION_KILL_PASS_2.md)
+supersedes the first pass's message-only proposals. It records 56 added cases,
+169 newly killed focused mutants, 32 separate proposals, one unresolved bound
+and five cases awaiting POSIX execution. The strict 100% gate remains unmet;
+no equivalent allowance is installed. Delivery CI evidence is in the handoff.
+
 Post-build follow-up, October 14: [Tax mutation kill report](TAX_MUTATION_KILL_REPORT.md)
 records the owner's tests-first audit, one proven exact-rate ceiling fix, fresh
 offline evidence and every individual equivalence proposal. The 100% mutation

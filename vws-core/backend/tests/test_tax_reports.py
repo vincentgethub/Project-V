@@ -39,7 +39,7 @@ from backend.tax.reconcile import (
 from backend.tax.reports import _cell, _csv, _net_terms, annual, render_report, save_report
 from backend.tax.storage import read_fills
 from backend.tests.test_tax_accounting import account, fill
-from backend.tests.test_wash_sales import registry
+from backend.tests.test_wash_sales import exact_tax_error, registry
 
 
 def test_all_simulated_export_headers_rows_and_immutable_files(tmp_path: Path) -> None:
@@ -624,7 +624,10 @@ def test_TX_07_export_payload_capacity_is_inclusive(
         path = save_report(tmp_path, totals, files)
         assert (path / "README.txt").stat().st_size == size
     else:
-        with pytest.raises(DataIntegrityError):
+        with exact_tax_error(
+            "TX-07/10: tax report could not be safely published",
+            detail="TX-07: bounded complete tax report required",
+        ):
             save_report(tmp_path, totals, files)
         assert not tuple(tmp_path.iterdir())
 
@@ -635,7 +638,10 @@ def test_TX_07_bytearray_payload_refuses_before_publication(tmp_path: Path) -> N
         book, (), TaxProfile(), registry(), 2026, date(2027, 2, 1), simulate=True
     )
     files["README.txt"] = cast(bytes, bytearray(files["README.txt"]))
-    with pytest.raises(DataIntegrityError):
+    with exact_tax_error(
+        "TX-07/10: tax report could not be safely published",
+        detail="TX-07: bounded complete tax report required",
+    ):
         save_report(tmp_path, totals, files)
     assert not tuple(tmp_path.iterdir())
 
@@ -691,7 +697,11 @@ def test_TX_10_corrupt_existing_export_is_refused_without_reading_its_large_tail
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "open", observe)
-        with pytest.raises(DataIntegrityError):
+        with exact_tax_error(
+            "TX-07/10: tax report could not be safely published",
+            detail="TX-10: existing immutable export differs",
+            detail_type=DataIntegrityError,
+        ):
             save_report(tmp_path, totals, files)
     # Corruption after the expected small CSV must not make memory use follow file size.
     assert consumed < 64 * 1024
@@ -738,3 +748,116 @@ def test_TX_06_income_capacity_is_exact_and_never_silently_truncates(
     else:
         with pytest.raises(DataIntegrityError):
             annual(book, incomes, TaxProfile(), 2026, date(2027, 2, 1), simulate=True)
+
+
+@pytest.mark.parametrize(
+    "case,detail",
+    [
+        ("paper_mode", "TX-01: paper requires --simulate; live and paper reports stay separate"),
+        ("invalid_year", "TX-01: paper requires --simulate; live and paper reports stay separate"),
+        ("no_taxable_owner", "TX-01: no selected taxable account"),
+        ("unknown_selection", "TX-01: no selected taxable account"),
+        ("unknown_income_owner", "TX-01/06: income/fill source or date differs from the report"),
+        ("future_income", "TX-01/06: income/fill source or date differs from the report"),
+        ("duplicate_income", "TX-01/06: income/fill source or date differs from the report"),
+        ("future_fill", "TX-01/06: income/fill source or date differs from the report"),
+        ("positive_fee", "TX-06: positive fee adjustment needs verified refund attribution"),
+    ],
+)
+def test_TX_01_06_annual_refusals_have_exact_outer_and_retained_audit_text(
+    case: str, detail: str
+) -> None:
+    owners = (account(status=TaxStatus.IRA),) if case == "no_taxable_owner" else (account(),)
+    rows = (fill(1),) if case == "future_fill" else ()
+    book = build_tax_book(rows, owners, registry(), "PAPER")
+    income = TaxIncome(
+        activity_id="evidence",
+        account_id="tax",
+        env="PAPER",
+        type="INT",
+        date=date(2026, 10, 2),
+        amount=Decimal("1"),
+    )
+    incomes: tuple[TaxIncome, ...] = ()
+    if case == "unknown_income_owner":
+        incomes = (income.model_copy(update={"account_id": "unknown"}),)
+    elif case == "future_income":
+        incomes = (income.model_copy(update={"date": date(2027, 2, 2)}),)
+    elif case == "duplicate_income":
+        incomes = (income, income)
+    elif case == "positive_fee":
+        incomes = (income.model_copy(update={"type": "FEE"}),)
+    cutoff = date(2026, 10, 1) if case == "future_fill" else date(2027, 2, 1)
+    with exact_tax_error(
+        "TX-01/06..08: annual tax evidence cannot be verified",
+        detail=detail,
+        detail_type=DataIntegrityError if case == "positive_fee" else ValueError,
+    ):
+        annual(
+            book,
+            incomes,
+            TaxProfile(),
+            9999 if case == "invalid_year" else 2026,
+            cutoff,
+            simulate=case != "paper_mode",
+            account="unknown" if case == "unknown_selection" else "all",
+        )
+
+
+def test_TX_02_10_export_refusal_reports_the_exact_book_mismatch() -> None:
+    book = build_tax_book((fill(1),), (account(),), registry(), "PAPER")
+    changed = book.lots[0].model_copy(update={"basis": Decimal("101")})
+    forged = book.model_copy(update={"lots": (changed,)})
+    with exact_tax_error("TX-02/10: tax book differs from verified executed accounting"):
+        render_report(forged, (), TaxProfile(), registry(), 2026, date(2027, 2, 1), simulate=True)
+
+
+@pytest.mark.parametrize(
+    "st,lt,expected",
+    [
+        ("0.000000", "1.00", ("0.000000", "1.00")),
+        ("-1.00", "0.000000", ("-1.00", "0.000000")),
+        ("1.00", "0.000000", ("1.00", "0.000000")),
+        ("0.000000", "-1.00", ("0.000000", "-1.00")),
+        ("-0.00", "1.00", ("-0.00", "1.00")),
+        ("1.00", "-0.00", ("1.00", "-0.00")),
+    ],
+)
+def test_TX_06_zero_capital_term_does_not_change_other_term_or_attested_zero_text(
+    st: str, lt: str, expected: tuple[str, str]
+) -> None:
+    # Zero has no cross-term loss to allocate. Keep each term's own exact audit text.
+    result = _net_terms(Decimal(st), Decimal(lt))
+    assert tuple(_cell(value) for value in result) == expected
+
+
+@pytest.mark.parametrize(
+    "rate,identity",
+    [
+        (None, "bccd60f9bbff82ea0f393bfd45e35f438369c479bfc27b58b8caf2b269cdbf96"),
+        (Decimal("1E-50"), "00b4c36e2535ff6be193104f7a4527844cff58527ad5adb6c272844bf14f8341"),
+    ],
+)
+def test_TX_10_accepted_padded_income_export_keeps_its_existing_audit_address(
+    tmp_path: Path, rate: Decimal | None, identity: str
+) -> None:
+    book = build_tax_book((), (account(),), registry(), "PAPER")
+    income = TaxIncome(
+        activity_id="padded-interest",
+        account_id="tax",
+        env="PAPER",
+        type="INT",
+        date=date(2026, 10, 2),
+        amount=Decimal("1." + "0" * 120),
+    )
+    profile = TaxProfile() if rate is None else TaxProfile(federal_st_rate=rate)
+    totals, files = render_report(
+        book, (income,), profile, registry(), 2026, date(2027, 2, 1), simulate=True
+    )
+    assert totals.interest == Decimal("1") and totals.net_capital == Decimal("0")
+    assert totals.set_aside_estimate is None  # Missing LT rate still forbids an estimate.
+    # Golden 09a713b export addresses pin published audit behavior, including CSV text.
+    path = save_report(tmp_path, totals, files)
+    assert path.name == identity
+    assert save_report(tmp_path, totals, files) == path
+    assert {name: (path / name).read_bytes() for name in files} == files

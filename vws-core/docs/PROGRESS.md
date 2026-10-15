@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 14, 2026 - tax mutation behavior tests and exact rate ceiling repair
+Last updated: October 15, 2026 - exact tax audit messages and record identities
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -13,8 +13,9 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-Tax mutation tests are strengthened; the full mutation gate still needs review.
-TAX_MUTATION_KILL_REPORT.md lists each proposal and the missing Linux proof.
+Tax audit tests kill 169 more focused mutants; the full mutation gate still fails.
+TAX_MUTATION_KILL_PASS_2.md lists 32 proposals, one unresolved bound and Linux checks.
+Approved CI inventory counts include all 14 additions in the rate-fixed annual function.
 
 ## Waiting on you
 Setup later needs paper broker keys and your CASH or MARGIN account type;
@@ -26,7 +27,7 @@ Setup stores keys in the computer's secret store; do not paste them here.
 
 ## Not checked yet
 Real broker, bank, Telegram, FRED and SEC checks need setup.
-Normal and random offline suites: 5,408 passes, 60 skips each; required coverage complete.
+Normal and random offline suites: 5,463 passes, 61 skips each; required coverage complete.
 Earlier replay, warm scan and realtime fake results remain in FINAL_REPORT.md.
 Amendment 02 "MANUAL_CSV path works": DEFERRED (user decision, Oct 8 2026).
 Walk-forward speed is UNVERIFIED: 19 windows took 949.845 seconds without finishing.

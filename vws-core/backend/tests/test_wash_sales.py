@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, localcontext
 from typing import cast
@@ -14,6 +19,7 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from backend.core.errors import DataIntegrityError
+from backend.data.history import canonical_bytes
 from backend.domain.compliance_models import (
     ExternalAccount,
     Form8949Row,
@@ -34,6 +40,21 @@ ACCOUNTS = (
     ExternalAccount(account_id="ira", tax_status=TaxStatus.IRA),
     ExternalAccount(account_id="roth", tax_status=TaxStatus.ROTH),
 )
+
+
+@contextmanager
+def exact_tax_error(
+    message: str, *, detail: str | None = None, detail_type: type[Exception] = ValueError
+) -> Iterator[None]:
+    """Audit refusal type/text, including the retained reason of a wrapped refusal."""
+    with pytest.raises(DataIntegrityError) as captured:
+        yield
+    assert type(captured.value) is DataIntegrityError
+    assert str(captured.value) == message
+    if detail is not None:
+        reason = captured.value.__context__
+        assert type(reason) is detail_type
+        assert str(reason) == detail
 
 
 def registry(*, grouped: bool = False) -> InstrumentRegistry:
@@ -177,7 +198,14 @@ def test_TX_marked_awareness_refuses_invalid_evidence(case: str) -> None:
         lots = (lot.model_copy(update={"qty": 0}),)
     else:
         trade = trade.model_copy(update={"qty": 0})
-    with pytest.raises(DataIntegrityError):
+    message = "TX: external marked lot awareness cannot be validated"
+    if case in {"buy", "mutable"}:
+        message = "TX: sale awareness requires SELL and immutable marked lots"
+    elif case == "duplicate":
+        message = "TX: duplicate external marked lot"
+    elif case == "unknown":
+        message = "Symbol is absent from the instrument allowlist"
+    with exact_tax_error(message):
         WashSaleMatcher(registry()).marked_external_lots(trade, lots)
 
 
@@ -423,7 +451,7 @@ def test_cmp_02_micro_loss_proportions_and_full_residual_are_exact() -> None:
 
 
 def test_r_02_cmp_02_loss_smaller_than_micro_allocation_fails_typed() -> None:
-    with pytest.raises(DataIntegrityError, match="micro-unit"):
+    with exact_tax_error("Wash loss allocation is below supported micro-unit precision"):
         WashSaleMatcher(registry()).adjustments(
             (sale(1, qty=100, loss=Decimal("0.000001")), buy(2, qty=1)), ACCOUNTS
         )
@@ -616,14 +644,14 @@ def test_cmp_02_explicit_origin_can_supply_tacked_earlier_holding_start() -> Non
 def test_r_02_cmp_02_registry_ingress_forgery_and_unexpected_fault_are_typed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with pytest.raises(DataIntegrityError):
+    with exact_tax_error("Wash matcher requires an explicit instrument registry"):
         WashSaleMatcher(cast(InstrumentRegistry, None))
 
     def fault(_: InstrumentRegistry) -> InstrumentRegistry:
         raise RuntimeError("registry failure")
 
     monkeypatch.setattr(InstrumentRegistry, "validated_copy", fault)
-    with pytest.raises(DataIntegrityError, match="registry"):
+    with exact_tax_error("Cannot verify wash-sale registry"):
         WashSaleMatcher(registry())
 
 
@@ -634,12 +662,12 @@ def test_r_02_cmp_02_matching_unexpected_fault_is_typed(monkeypatch: pytest.Monk
         raise RuntimeError("inventory failure")
 
     monkeypatch.setattr(matcher, "_survivors", fault)
-    with pytest.raises(DataIntegrityError, match="matching"):
+    with exact_tax_error("Cannot verify wash-sale matching evidence"):
         matcher.adjustments((sale(1), buy(2)), ACCOUNTS)
 
 
 def test_r_02_cmp_02_tied_disposal_without_original_metadata_is_unverifiable() -> None:
-    with pytest.raises(DataIntegrityError, match="Tied"):
+    with exact_tax_error("Tied BUY/SELL execution requires original-lot metadata"):
         WashSaleMatcher(registry()).adjustments(
             (buy(1, account="tax"), sale(2, loss=Decimal(0), held_from=None)), ACCOUNTS
         )
@@ -647,17 +675,17 @@ def test_r_02_cmp_02_tied_disposal_without_original_metadata_is_unverifiable() -
 
 def test_r_02_cmp_02_adjustment_helper_cannot_guess_missing_holding_period() -> None:
     forged = sale(1).model_copy(update={"holding_period_start": None})
-    with pytest.raises(DataIntegrityError, match="holding-period"):
+    with exact_tax_error("Loss sale lacks holding-period metadata"):
         WashSaleMatcher._adjustment(forged, buy(2), 1, Decimal("1"), {"other": TaxStatus.TAXABLE})
 
 
 def test_r_02_cmp_02_exporter_revalidates_and_rejects_duplicate_slices() -> None:
     row = adjustment()
-    with pytest.raises(DataIntegrityError):
+    with exact_tax_error("Form 8949 evidence repeats a loss/replacement slice"):
         WashSaleMatcher.form_8949_rows((row, row))
-    with pytest.raises(DataIntegrityError):
+    with exact_tax_error("Form 8949 evidence must be an immutable tuple"):
         WashSaleMatcher.form_8949_rows(cast(tuple[WashAdjustment, ...], [row]))
-    with pytest.raises(DataIntegrityError):
+    with exact_tax_error("Cannot verify Form 8949 wash-sale evidence"):
         WashSaleMatcher.form_8949_rows(
             (row.model_copy(update={"disallowed_loss": Decimal("999")}),)
         )
@@ -687,3 +715,118 @@ def test_r_02_cmp_02_form_8949_model_checks_totals_and_dates() -> None:
         Form8949Row.model_validate({**row.model_dump(), "gain_or_loss": Decimal("1")})
     with pytest.raises(ValidationError):
         Form8949Row.model_validate({**row.model_dump(), "date_acquired": date(2030, 1, 1)})
+
+
+@pytest.mark.parametrize(
+    "case,message",
+    [
+        ("mutable_trades", "Wash-sale evidence must be immutable tuples"),
+        ("mutable_accounts", "Wash-sale evidence must be immutable tuples"),
+        ("duplicate_accounts", "Tax account identifiers must be unique"),
+        ("duplicate_trades", "Executed trade identifiers must be unique"),
+        ("unknown_owner", "Executed trade ownership/tax status is unknown"),
+        (
+            "execution_slices",
+            "Disposal execution slices differ in account, symbol, timestamp or price",
+        ),
+        ("unavailable_origin", "SELL references an unavailable original purchase"),
+        ("wrong_owner_origin", "SELL references an unavailable original purchase"),
+        ("later_holding", "SELL holding-period evidence disagrees with purchase"),
+        ("ambiguous_origin", "SELL original purchase is ambiguous; supply its ID"),
+        ("oversell", "SELL exceeds verified original-purchase inventory"),
+    ],
+)
+def test_cmp_02_refusal_audit_identifies_the_exact_evidence_fault(case: str, message: str) -> None:
+    acquired = NOW - timedelta(days=5)
+    original = buy(1, account="tax", ts=acquired)
+    loss = sale(2, held_from=acquired, origin=original.trade_id)
+    history: tuple[TradeRecord, ...] = (original, loss)
+    accounts: tuple[ExternalAccount, ...] = ACCOUNTS
+    if case == "mutable_trades":
+        history = cast(tuple[TradeRecord, ...], list(history))
+    elif case == "mutable_accounts":
+        accounts = cast(tuple[ExternalAccount, ...], list(accounts))
+    elif case == "duplicate_accounts":
+        accounts = (*accounts, accounts[0])
+    elif case == "duplicate_trades":
+        history = (original, original)
+    elif case == "unknown_owner":
+        history = (buy(1, account="unknown"),)
+    elif case == "execution_slices":
+        history = (sale(2, price=Decimal("9")), sale(3, price=Decimal("8")))
+        history = tuple(row.model_copy(update={"execution_id": UUID(int=100)}) for row in history)
+    elif case == "unavailable_origin":
+        history = (sale(2, origin=UUID(int=99)),)
+    elif case == "wrong_owner_origin":
+        history = (original, sale(2, account="other", origin=original.trade_id))
+    elif case == "later_holding":
+        history = (original, sale(2, origin=original.trade_id, held_from=NOW - timedelta(days=1)))
+    elif case == "ambiguous_origin":
+        history = (original, buy(3, account="tax", ts=acquired), sale(2, held_from=acquired))
+    elif case == "oversell":
+        history = (original, sale(2, qty=101, held_from=acquired, origin=original.trade_id))
+    with exact_tax_error(message):
+        WashSaleMatcher(registry()).adjustments(history, accounts)
+
+
+@pytest.mark.skipif(
+    not hasattr(time, "tzset"), reason="Changing process local timezone requires POSIX tzset"
+)
+def test_cmp_02_tacked_utc_instant_at_date_limit_is_independent_of_host_timezone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    last_instant = datetime(9999, 12, 31, 23, 59, tzinfo=UTC)
+    loss = sale(1, ts=last_instant, held_from=last_instant, qty=1, loss=Decimal("1"))
+    replacement = buy(2, ts=last_instant, qty=1)
+    tzset = cast(Callable[[], None], vars(time)["tzset"])
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("TZ", "TEST-14")
+            tzset()
+            assert os.environ["TZ"] == "TEST-14"
+            row = WashSaleMatcher(registry()).adjustments((loss, replacement), ACCOUNTS)[0]
+            assert row.holding_period_start == last_instant
+            assert row.holding_period_start.tzinfo is UTC
+            assert row.disallowed_loss == Decimal("1") and row.adjusted_basis == Decimal("11")
+    finally:
+        tzset()
+
+
+def test_cmp_02_accepted_padded_loss_keeps_its_existing_wash_audit_identity() -> None:
+    row = WashSaleMatcher._adjustment(
+        sale(1), buy(2), 1, Decimal("1." + "0" * 120), {"other": TaxStatus.TAXABLE}
+    )
+    assert (row.proceeds, row.cost_basis, row.disallowed_loss, row.adjusted_basis) == (
+        Decimal("9"),
+        Decimal("10"),
+        Decimal("1"),
+        Decimal("11"),
+    )
+    # Frozen accepted 09a713b audit record: retries must retain the same evidence identity.
+    assert hashlib.sha256(canonical_bytes(row)).hexdigest() == (
+        "a60a51d22bb25688176ee57c36ebbcb1f8dbf1ae5c41691134732476924fecfa"
+    )
+
+
+def test_cmp_02_accepted_padded_8949_slice_keeps_its_existing_audit_identity() -> None:
+    evidence = WashAdjustment.model_validate(
+        adjustment().model_copy(
+            update={
+                "proceeds": Decimal("900." + "0" * 120),
+                "cost_basis": Decimal("1000." + "0" * 120),
+                "disallowed_loss": Decimal("100.00"),
+            }
+        )
+    )
+    row = WashSaleMatcher.form_8949_rows((evidence,))[0]
+    assert (row.proceeds, row.cost_basis, row.adjustment, row.gain_or_loss) == (
+        Decimal("900"),
+        Decimal("1000"),
+        Decimal("100"),
+        Decimal("0"),
+    )
+    assert row.code == "W" and row.loss_trade_id == evidence.loss_trade_id
+    # Frozen accepted 09a713b Form 8949 evidence, including its exact serialized zero.
+    assert hashlib.sha256(canonical_bytes(row)).hexdigest() == (
+        "99b0be10ab1d3de68a6f9af94ec1a41b6f663defa7fef600c152a43e6e37dca3"
+    )

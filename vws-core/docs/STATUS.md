@@ -1,5 +1,28 @@
 # Technical status
 
+## Tax mutation kill pass 2 - October 15, 2026
+
+Current per-ID evidence and proposals: [TAX_MUTATION_KILL_PASS_2.md](TAX_MUTATION_KILL_PASS_2.md).
+This supersedes the first pass's diagnostic/message equivalence proposals.
+56 added cases in 16 functions; tax production code and all equivalent allowances remain unchanged.
+
+| Requirement | Code boundary | Pass-2 evidence |
+| --- | --- | --- |
+| CMP-02 / TX-01/05 audit refusals | Matcher, accounting, annual/export error boundaries | Exact outer and retained inner exception types/text; 153 diagnostic-only mutants plus three diagnostic-changing accounting guards killed. All twelve marked-lot message cases killed. |
+| CMP-02 / TX-02/05 basis lineage | `_rebuild`, shared allocations | Hand-computed partial chained losses check retained prior basis and unused shares under FIFO/compressed FIFO and taxable/IRA/Roth ownership; missing disposition refuses. |
+| R-04 / TX-06/10 audit serialization | `_net_terms`, wash/8949 records, report publication | Zero-term netting preserves attested decimal text; valid padded-money records and report addresses retain frozen 09a713b audit identities. |
+| R-05 UTC storage | `_adjustment` | POSIX UTC+14/date-limit test restores process TZ and checks the exact tacked UTC instant; Windows skip remains unverified. |
+| OPS-06 complete mutation results | Unchanged strict checker/configuration | 207 Windows focused replays: 169 killed, 38 surviving (lots 6/accounting 10/reports 22), every replay executes tests. Remaining: 32 separate proposals, one unresolved bound, five POSIX cases. No allowance installed. |
+| Fixture isolation | Unchanged session fixtures | Calendar/schema caches remain in memory per invocation; planted schema clean/planted/restored proof is retained. |
+
+Final offline counts, coverage, scan results and delivery are recorded in the pass-2 report.
+Current local mypy rerun is unavailable: Windows Application Control blocks its compiled extension;
+the prior successful check predates the final arithmetic-trap case. Current typing remains unverified locally.
+Normal CI on 09a713b finished with six mutation preflight failures from stale inventory assertions,
+not mutation timeouts. The owner approved only 13367-to-13381 and 1710-to-1724 in both
+byte-identical workflow copies. All 14 added mutants are in the rate-fixed annual function;
+no workflow selector, threshold, timeout or allowance has been changed.
+
 ## Tax mutation follow-up - October 14, 2026
 
 Owner scope: base `3e934857`, tax shard only; no gate/timeout reductions,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, Rounded, localcontext
 from typing import cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -15,8 +15,10 @@ from backend.domain.compliance_models import TaxStatus
 from backend.domain.models import Side
 from backend.tax import accounting
 from backend.tax.accounting import anniversary, build_tax_book
-from backend.tax.models import TaxAccount, TaxFill, TaxIncome
-from backend.tests.test_wash_sales import registry
+from backend.tax.lots import WashSaleMatcher
+from backend.tax.models import Environment, TaxAccount, TaxFill, TaxIncome
+from backend.tests.test_wash_sales import ACCOUNTS, buy, exact_tax_error, registry
+from backend.tests.test_wash_sales import sale as loss_sale
 
 NOW = datetime(2026, 10, 2, 16, tzinfo=UTC)
 
@@ -464,3 +466,171 @@ def test_TX_02_row_capacity_accepts_exact_boundary_and_refuses_overflow(
     assert len(book.fills) == 2 and book.sales[0].economic_gain == Decimal("10")
     with pytest.raises(DataIntegrityError):
         build_tax_book((*rows, fill(3, day=1)), (account(),), registry(), "PAPER")
+
+
+@pytest.mark.parametrize(
+    "case,detail",
+    [
+        ("mutable_fills", "TX-01: bounded immutable evidence and explicit environment required"),
+        ("mutable_accounts", "TX-01: bounded immutable evidence and explicit environment required"),
+        ("environment", "TX-01: bounded immutable evidence and explicit environment required"),
+        ("empty_owners", "TX-01: account/fill identities must be unique"),
+        ("duplicate_owners", "TX-01: account/fill identities must be unique"),
+        ("duplicate_fill", "TX-01: account/fill identities must be unique"),
+        ("duplicate_activity", "TX-01: account/fill identities must be unique"),
+        ("unknown_owner", "TX-01: fill ownership/environment differs"),
+        ("mixed_environment", "TX-01: fill ownership/environment differs"),
+        ("tied_execution", "TX-02: tied BUY/SELL fills cannot establish an intraday sequence"),
+    ],
+)
+def test_TX_01_accounting_refusals_preserve_exact_audit_reason(case: str, detail: str) -> None:
+    rows: tuple[TaxFill, ...] = (fill(1),)
+    owners: tuple[TaxAccount, ...] = (account(),)
+    env = "PAPER"
+    if case == "mutable_fills":
+        rows = cast(tuple[TaxFill, ...], list(rows))
+    elif case == "mutable_accounts":
+        owners = cast(tuple[TaxAccount, ...], list(owners))
+    elif case == "environment":
+        env = "UNKNOWN"
+    elif case == "empty_owners":
+        rows, owners = (), ()
+    elif case == "duplicate_owners":
+        owners = (*owners, owners[0])
+    elif case == "duplicate_fill":
+        rows = (*rows, rows[0])
+    elif case == "duplicate_activity":
+        rows = (*rows, fill(2, minutes=1).model_copy(update={"activity_id": "fill-1"}))
+    elif case == "unknown_owner":
+        rows = (fill(1, owner="unknown"),)
+    elif case == "mixed_environment":
+        rows = (fill(1).model_copy(update={"env": "LIVE"}),)
+    elif case == "tied_execution":
+        rows = (*rows, fill(2, side=Side.SELL))
+    with exact_tax_error("TX-01..05: tax accounting evidence is unverifiable", detail=detail):
+        build_tax_book(rows, owners, registry(), cast(Environment, env))
+
+
+def test_TX_02_oversell_audit_names_the_inventory_failure() -> None:
+    with exact_tax_error("TX-02: sale exceeds verified long inventory"):
+        build_tax_book(
+            (fill(1), fill(2, side=Side.SELL, day=1, qty=11)), (account(),), registry(), "PAPER"
+        )
+
+
+@pytest.mark.parametrize("value", [date(9999, 1, 1), datetime(2026, 1, 1, tzinfo=UTC)])
+def test_TX_04_unusable_anniversary_has_exact_audit_refusal(value: date) -> None:
+    with exact_tax_error("TX-04: acquisition date cannot establish an anniversary"):
+        anniversary(value)
+
+
+@pytest.mark.parametrize("case", ["missing_execution", "unavailable_shares"])
+def test_TX_05_unverifiable_wash_allocation_has_specific_audit_refusal(case: str) -> None:
+    purchase = fill(3, owner="other", day=1, qty=4, price="8")
+    loss = loss_sale(2, qty=4, loss=Decimal("4"))
+    if case == "missing_execution":
+        purchase = fill(3, owner="other", qty=4, price="8")
+    else:
+        loss = loss.model_copy(update={"execution_id": UUID(int=2)})
+    matcher = WashSaleMatcher(registry())
+    adjusted = matcher.adjustments(
+        (loss, buy(3, account="other", qty=4, ts=purchase.ts)), ACCOUNTS
+    )[0]
+    ranges = ((0, 4),) if case == "missing_execution" else ((0, 3),)
+    message = (
+        "TX-05: wash allocation lacks an actual disposition"
+        if case == "missing_execution"
+        else "TX-05: replacement share intervals are unavailable"
+    )
+    with exact_tax_error(message):
+        accounting._rebuild(
+            (purchase,),
+            {"other": account("other")},
+            ((adjusted, ranges),),
+            (loss,),
+            {purchase.fill_id: {0, 3, 4}},
+        )
+
+
+def test_TX_02_interval_capacity_refusal_is_auditable(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = (fill(1), fill(2, day=1))
+    with monkeypatch.context() as patch:
+        patch.setattr(accounting, "MAX_ACCOUNTING_ROWS", 2)
+        with exact_tax_error("TX-02: bounded accounting intervals exceeded"):
+            build_tax_book(rows, (account(),), registry(), "PAPER")
+    assert (
+        sum(lot.qty for lot in build_tax_book(rows, (account(),), registry(), "PAPER").lots) == 20
+    )
+
+
+def test_TX_05_unfinished_wash_chain_refuses_with_exact_audit_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = (
+        fill(1, day=-100),
+        fill(2, side=Side.SELL, price="9"),
+        fill(3, day=1, price="8"),
+        fill(4, side=Side.SELL, day=2, price="7"),
+        fill(5, day=3, price="6"),
+    )
+    # A one-pass disposable budget cannot certify this real chain; restore the production bound.
+    with monkeypatch.context() as patch:
+        patch.setattr(accounting, "MAX_WASH_PASSES", 1)
+        with exact_tax_error("TX-05: wash basis/tacking did not converge within its bound"):
+            build_tax_book(rows, (account(),), registry(), "PAPER")
+    final = build_tax_book(rows, (account(),), registry(), "PAPER")
+    assert final.lots[0].basis == Decimal("80")
+    assert [row.wash_disallowed for row in final.sales] == [Decimal("10"), Decimal("20")]
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+@pytest.mark.parametrize("third_status", [TaxStatus.TAXABLE, TaxStatus.IRA, TaxStatus.ROTH])
+def test_TX_05_shared_capacity_keeps_old_wash_basis_when_later_loss_uses_unmatched_shares(
+    compressed: bool, third_status: TaxStatus
+) -> None:
+    other = account("other", compressed=compressed)
+    third = account("third", status=third_status)
+    book = build_tax_book(
+        (
+            fill(1, day=-100, qty=6),
+            fill(2, side=Side.SELL, qty=3, price="8"),
+            fill(3, owner="other", qty=4, price="7"),
+            fill(4, owner="other", side=Side.SELL, day=1, qty=2, price="6"),
+            fill(5, owner="third", day=2, qty=2, price="5"),
+        ),
+        (account(), other, third),
+        registry(),
+        "PAPER",
+    )
+    assert [(row.economic_gain, row.wash_disallowed, row.taxable_gain) for row in book.sales] == [
+        (Decimal("-6"), Decimal("6"), Decimal("0")),
+        (Decimal("-6"), Decimal("6"), Decimal("0")),
+    ]
+    retained = tuple(row for row in book.lots if row.account_id == "other")
+    assert [(row.qty, row.basis, row.wash_basis) for row in retained] == [
+        (1, Decimal("9"), Decimal("2")),
+        (1, Decimal("10"), Decimal("3")),
+    ]
+    # The first match used only three of four shares. The later loss can use the fourth,
+    # while its extra remaining share goes to the third owner with IRA/Roth treatment.
+    external = tuple(row for row in book.lots if row.account_id == "third")
+    assert sum((row.basis for row in external), Decimal(0)) == (
+        Decimal("13") if third_status == TaxStatus.TAXABLE else Decimal("10")
+    )
+    assert book.sales[-1].permanent_disallowed == (
+        Decimal("0") if third_status == TaxStatus.TAXABLE else Decimal("3")
+    )
+
+
+def test_TX_01_arithmetic_trap_refuses_with_exact_audit_type_and_text() -> None:
+    evidence = (fill(1, qty=1, price="0.01", fees="1." + "0" * 80),)
+    # A strict caller context turns a rounding signal into an arithmetic fault.
+    # Retain both the public accounting envelope and its numeric audit reason.
+    with localcontext() as context:
+        context.traps[Rounded] = True
+        with exact_tax_error(
+            "TX-01..05: tax accounting evidence is unverifiable",
+            detail="[<class 'decimal.Rounded'>]",
+            detail_type=Rounded,
+        ):
+            build_tax_book(evidence, (account(),), registry(), "PAPER")
