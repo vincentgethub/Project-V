@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 15, 2026 - non-tax mutation setup measurements
+Last updated: October 16, 2026 - approved mutation job split
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -13,10 +13,10 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-NON_TAX_MUTATION_SPEED.md records five shards' setup/call costs and isolation proofs.
-Only pure indicator seeds are reused within a test run; every mutable test starts fresh.
-TAX_EQUIVALENT_PROPOSALS.md lists 32 proposals and one unresolved bound; none is allowed.
-The full mutation gate still fails. No test cases, assertions or gate settings changed.
+MUTATION_PASS4.md records the approved 63 jobs and complete 13,381-ID check.
+Native mutmut is restored. The slower indicator seed cache is removed.
+Six individual tax equivalents are approved; the other 27 remain gate failures.
+Risk test selections add five supporting files. Limits and timeouts stay the same.
 
 ## Waiting on you
 Setup later needs paper broker keys and your CASH or MARGIN account type;
@@ -28,7 +28,7 @@ Setup stores keys in the computer's secret store; do not paste them here.
 
 ## Not checked yet
 Real broker, bank, Telegram, FRED and SEC checks need setup.
-Normal and random offline suites: 5,463 passes, 61 skips each; required coverage complete.
+Normal and random offline suites: 5,538 passes, 61 skips each; coverage complete.
 Earlier replay, warm scan and realtime fake results remain in FINAL_REPORT.md.
 Amendment 02 "MANUAL_CSV path works": DEFERRED (user decision, Oct 8 2026).
 Walk-forward speed is UNVERIFIED: 19 windows took 949.845 seconds without finishing.

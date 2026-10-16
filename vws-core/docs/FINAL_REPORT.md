@@ -1,5 +1,16 @@
 # Final build report - October 12, 2026
 
+Post-build follow-up, October 16: [Approved mutation Pass 4](MUTATION_PASS4.md)
+restores native mutmut and removes the regressing indicator seed cache. The
+owner's exact 63-bin split covers all 13,381 IDs once; per-job 100% gates and
+120-minute limits stay fixed. The aggregate rejects incomplete evidence and
+all unlisted survivors/no-tests/timeouts. Only six individually approved tax
+equivalents are accepted. The other 27 remain unlisted, with public Decimal
+assertions and separate individual proof obligations. Executor coverage is
+documented without changing it. Normal and random offline suites: 5,538 passed, 61 skipped, 4 performance cases deselected each; zero failures. Required coverage remains 100% (7,625 statements, 2,606 branches).
+The final one-push CI result, all 63 job counts and links are recorded in
+`build/pass4/FINAL_REPORT.md`; no second push updates this historical report.
+
 Post-build follow-up, October 15: [Non-tax mutation profiling](NON_TAX_MUTATION_SPEED.md)
 records before/after setup and call observations, all five planted-mutant proofs,
 and the limited in-memory indicator seed change. No test cases, assertions,

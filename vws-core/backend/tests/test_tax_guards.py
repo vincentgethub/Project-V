@@ -57,6 +57,110 @@ from backend.tests.test_tax_accounting import account, fill
 from backend.tests.test_wash_sales import ACCOUNTS, registry, sale
 
 
+@pytest.mark.parametrize("known_rates", [False, True])
+def test_TX_empty_public_totals_are_exact_decimal_money(known_rates: bool) -> None:
+    profile = (
+        TaxProfile(federal_st_rate=Decimal("0.24"), federal_lt_rate=Decimal("0.15"))
+        if known_rates
+        else TaxProfile()
+    )
+    book = build_tax_book((), (account(),), registry(), "PAPER")
+    result, files = render_report(
+        book, (), profile, registry(), 2026, date(2027, 2, 1), simulate=True
+    )
+    zero_fields = (
+        "net_st",
+        "net_lt",
+        "offset_st",
+        "offset_lt",
+        "net_capital",
+        "loss_deduction_estimate",
+        "carryover_st_estimate",
+        "carryover_lt_estimate",
+        "wash_disallowed",
+        "permanent_disallowed",
+        "dividends",
+        "interest",
+        "fees",
+    )
+    for field in zero_fields:
+        value = result.model_dump(mode="python")[field]
+        assert type(value) is Decimal, field
+        assert value.as_tuple() == Decimal(0).as_tuple(), field
+    assert type(result.loss_deduction_limit) is Decimal
+    assert result.loss_deduction_limit == Decimal(3000)
+    if known_rates:
+        assert type(result.set_aside_estimate) is Decimal
+        assert result.set_aside_estimate.as_tuple() == Decimal("0.00").as_tuple()
+    else:
+        assert result.set_aside_estimate is None
+    assert files["form8949.csv"].count(b"\n") == 1
+    assert files["income.csv"].count(b"\n") == 1
+    assert files["lots_open.csv"].count(b"\n") == 1
+
+
+@pytest.mark.parametrize("gain", [True, False])
+def test_TX_unwashed_disposal_has_decimal_zero_adjustments(gain: bool) -> None:
+    book = build_tax_book(
+        (
+            fill(1, day=-100, qty=1),
+            fill(2, side=Side.SELL, qty=1, price="11.00" if gain else "9.00"),
+        ),
+        (account(),),
+        registry(),
+        "PAPER",
+    )
+    row = book.sales[0]
+    assert not book.adjustments
+    assert type(row.wash_disallowed) is Decimal
+    assert type(row.permanent_disallowed) is Decimal
+    assert row.wash_disallowed.as_tuple() == Decimal(0).as_tuple()
+    assert row.permanent_disallowed.as_tuple() == Decimal(0).as_tuple()
+    assert type(row.taxable_gain) is Decimal
+    assert row.taxable_gain.as_tuple() == Decimal("1.00" if gain else "-1.00").as_tuple()
+
+
+@pytest.mark.parametrize("owner", ["Merrill-é", "账户", "Roth-Δ"])
+def test_TX_unicode_account_exports_bind_bytes_and_immutable_path(
+    tmp_path: Path, owner: str
+) -> None:
+    import hashlib
+
+    book = build_tax_book((), (account(owner),), registry(), "PAPER")
+    result, files = render_report(
+        book, (), TaxProfile(), registry(), 2026, date(2027, 2, 1), simulate=True
+    )
+    assert ("Owner accounts: " + owner + "\n").encode("utf-8") in files["README.txt"]
+    destination = save_report(tmp_path, result, files)
+    assert hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16] in str(destination)
+    assert save_report(tmp_path, result, files) == destination
+    for name, payload in files.items():
+        assert (destination / name).read_bytes() == payload
+
+
+@pytest.mark.parametrize("rate_mask", range(16))
+def test_TX_empty_income_estimate_requires_every_rate(rate_mask: int) -> None:
+    names = ("federal_st_rate", "federal_lt_rate", "state_rate", "niit_rate")
+    rates = {
+        name: Decimal("0.125") if rate_mask & (1 << i) else None for i, name in enumerate(names)
+    }
+    profile = TaxProfile.model_validate(rates)
+    result = annual(
+        build_tax_book((), (account(),), registry(), "PAPER"),
+        (),
+        profile,
+        2026,
+        date(2027, 2, 1),
+        simulate=True,
+    )
+    assert result.net_capital.as_tuple() == Decimal(0).as_tuple()
+    if rate_mask == 15:
+        assert type(result.set_aside_estimate) is Decimal
+        assert result.set_aside_estimate.as_tuple() == Decimal("0.00").as_tuple()
+    else:
+        assert result.set_aside_estimate is None
+
+
 @pytest.mark.parametrize("value", ["wrong", "&a {symbol: symbol}\nother: *a", "[" * 21 + "]" * 21])
 def test_TX_mapping_rejects_aliases_and_excessive_nesting(tmp_path: Path, value: str) -> None:
     path = tmp_path / "mapping.yaml"

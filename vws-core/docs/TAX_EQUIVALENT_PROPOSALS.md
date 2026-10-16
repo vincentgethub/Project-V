@@ -1,6 +1,6 @@
 # Tax equivalent proposals for individual owner review
 
-Base commit: `2bd8ea28ff1d08ef5f25a16886a3e351f48a4022`. Documentation only. No ID is approved or added to the allow-list. Every survivor remains a gate failure. The last row is unresolved and is included for review, not asserted equivalent.
+Base commit: `2bd8ea28ff1d08ef5f25a16886a3e351f48a4022`. Historical proposal diffs, retained individually for audit. Pass 4 owner approval adds ONLY six IDs to config/tax-equivalent-mutants.json; every other proposal is rejected and remains unlisted. See TAX_EQUIVALENCE_PROOFS.md for individual executable proof obligations. This table is not an allow-list. The last row was explicitly approved by the owner in Pass 4; its original unresolved analysis is preserved below.
 
 Each exact diff below compares the original function body with the named generated mutant, using standard-library AST normalization to remove incidental formatting and generated function names. No mutation is grouped or suppressed.
 

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": "backend.tax.lots.x\u01c1WashSaleMatcher\u01c1_available_slices__mutmut_4",
+      "approved_by": "owner",
+      "approved_on": "2026-10-16",
+      "reason": "Individual approval in Pass 4; no other entry is approved."
+    },
+    {
+      "id": "backend.tax.reports.x__csv__mutmut_18",
+      "approved_by": "owner",
+      "approved_on": "2026-10-16",
+      "reason": "Individual approval in Pass 4; no other entry is approved."
+    },
+    {
+      "id": "backend.tax.reports.x__cell__mutmut_6",
+      "approved_by": "owner",
+      "approved_on": "2026-10-16",
+      "reason": "Individual approval in Pass 4; no other entry is approved."
+    },
+    {
+      "id": "backend.tax.accounting.x_build_tax_book__mutmut_104",
+      "approved_by": "owner",
+      "approved_on": "2026-10-16",
+      "reason": "Individual approval in Pass 4; no other entry is approved."
+    },
+    {
+      "id": "backend.tax.reports.x_save_report__mutmut_74",
+      "approved_by": "owner",
+      "approved_on": "2026-10-16",
+      "reason": "Individual approval in Pass 4; no other entry is approved."
+    },
+    {
+      "id": "backend.tax.accounting.x_build_tax_book__mutmut_78",
+      "approved_by": "owner",
+      "approved_on": "2026-10-16",
+      "reason": "Individual approval in Pass 4; no other entry is approved."
+    }
+  ]
+}

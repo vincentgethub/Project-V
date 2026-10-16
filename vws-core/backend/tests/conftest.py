@@ -78,22 +78,6 @@ def pristine_schema() -> Iterator[Connection]:
         template.dispose()
 
 
-@pytest.fixture(scope="session")
-def pristine_research_indicators() -> Iterator[
-    dict[tuple[object, ...], tuple[tuple[tuple[str, str, date], str, int, str], ...]]
-]:
-    """DAT-05: keep serialized pure indicator seeds only within this test run.
-
-    Tests receive fresh memos and revalidated models; no mutable memo, model,
-    ledger or clock is shared. Teardown removes every seed before another mutant.
-    """
-    seeds: dict[tuple[object, ...], tuple[tuple[tuple[str, str, date], str, int, str], ...]] = {}
-    try:
-        yield seeds
-    finally:
-        seeds.clear()
-
-
 def pytest_addoption(parser: pytest.Parser) -> None:
     """R-07: real paper credentials are read only from an explicitly named file."""
     parser.addoption(

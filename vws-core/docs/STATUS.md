@@ -1,5 +1,21 @@
 # Technical status
 
+## Approved mutation Pass 4 - October 16, 2026
+
+[MUTATION_PASS4.md](MUTATION_PASS4.md) supersedes the seed-cache and six-job
+runtime changes below. Original calendar/schema isolation remains in memory.
+
+| Requirement | Code boundary | Evidence |
+| --- | --- | --- |
+| OPS-06 / exact ownership | `config/mutation-shards.json`, `scripts/mutation_inventory.py` | Exact approved 63 bins; authentic pinned generation proves 13,381 IDs, no missing/duplicate ownership, correct source membership. |
+| OPS-06 / complete native results | `run_mutation_shard.py`, `aggregate_mutations.py`, both mirrored `ci.yml` files | Native `python -m mutmut run`; 100% and 120 minutes per job; commit/inventory/assignment-bound reports; final check rejects missing, unprocessed, no-test, timed-out and unlisted-surviving evidence. |
+| Owner-approved selection | Inventory additions and native configuration selection | All original 17 files retained; five unique supporting files added only to the two approved risk families, covering ten previously omitted functions. |
+| Individual approvals | `tax-equivalent-mutants.json`, `check_mutations.py` | Exactly six owner-approved IDs; no patterns or additional approvals. No-test/timeout evidence never accepted. |
+| TX / rejected proposals | Selected `test_tax_guards.py`; separate `test_tax_equivalence_proofs.py` | 23 public cases plus 27 individual proof obligations; all 27 remain unlisted. Authentic-body replay still survives and is not misreported killed. |
+| Executor coverage audit | Unchanged TOML/CLI inclusion lines | `backend.execution` absent from required sources; all 13 functions documented; no executor test or coverage change. |
+
+Normal and random offline suites: 5,538 passed, 61 skipped, 4 performance cases deselected each; zero failures. Required coverage remains 100% (7,625 statements, 2,606 branches).
+
 ## Non-tax mutation setup pass - October 15, 2026
 
 [NON_TAX_MUTATION_SPEED.md](NON_TAX_MUTATION_SPEED.md) records paired setup/call
