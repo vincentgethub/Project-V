@@ -1,5 +1,26 @@
 # Technical status
 
+## Non-tax mutation setup pass - October 15, 2026
+
+[NON_TAX_MUTATION_SPEED.md](NON_TAX_MUTATION_SPEED.md) records paired setup/call
+observations for 100 authentic mutants, unchanged before/after mappings, and
+the observer's byte-identical single-line workflow change. It explicitly
+distinguishes lower setup cost from overall runtime and native gate results.
+
+| Requirement | Code boundary | Evidence |
+| --- | --- | --- |
+| DAT-05 / fixture isolation | Session `pristine_research_indicators`; `make_research_harness` | Immutable serialized indicator seeds; new memo and JSON-validated models per test; no disk/shared-mutant cache; session teardown clears seeds. Real hunt/CRO/sizing/ledger still execute. |
+| R-02 / clean test state | Same fixture boundary | Five real generated mutants: clean/planted/restored 0/1/0; original planted schema proof retained; two-existing-test poisoned-local-model proof passes with distinct memos and unchanged seed bytes. |
+| OPS-06 / complete mutation gate | `scripts.profile_mutations`, unchanged checker/config | Native CLI arguments, outcomes, worker limits, selectors, assignments, thresholds and 120-minute timeouts unchanged. Added observation only; partial timing records never count as complete mutation results. |
+| Required coverage / mapping audit | Unchanged normal coverage and 17-file mutation selection | [All 23 no-test functions](NON_TAX_NO_TEST_FUNCTIONS.md), 1,445 mutants: 650 in required coverage are selection gaps; 795 executor mutants lie outside required coverage. Independent original-code call monitoring confirms zero selected-suite calls, with a positive control. No tests or coverage settings added. |
+| Individual equivalence review | Documentation only | [33 rows with exact normalized diffs](TAX_EQUIVALENT_PROPOSALS.md): 32 unapproved proposals and unresolved `x_build_tax_book__mutmut_78`. No equivalent allowance installed. |
+
+All 184 test files retain identical ASTs for 1,854 test functions and 3,936
+assertions. Whole strict typing now passes for 420 authored sources; the prior
+local Application Control limitation recorded below no longer reproduces.
+Final offline/security results are recorded in the speed report; actual Linux
+counts and any proposed split remain in the one-push delivery handoff.
+
 ## Tax mutation kill pass 2 - October 15, 2026
 
 Current per-ID evidence and proposals: [TAX_MUTATION_KILL_PASS_2.md](TAX_MUTATION_KILL_PASS_2.md).

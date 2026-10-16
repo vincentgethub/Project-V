@@ -1,5 +1,13 @@
 # Final build report - October 12, 2026
 
+Post-build follow-up, October 15: [Non-tax mutation profiling](NON_TAX_MUTATION_SPEED.md)
+records before/after setup and call observations, all five planted-mutant proofs,
+and the limited in-memory indicator seed change. No test cases, assertions,
+production sources, shard assignments or gates change. The full no-test function
+inventory and 33 individual tax review rows are linked there. Native Linux
+counts, slowest observed mutants and any proposed split are in the delivery handoff;
+no second push is used to update this document after CI.
+
 Post-build follow-up, October 15: [Tax kill pass 2](TAX_MUTATION_KILL_PASS_2.md)
 supersedes the first pass's message-only proposals. It records 56 added cases,
 169 newly killed focused mutants, 32 separate proposals, one unresolved bound

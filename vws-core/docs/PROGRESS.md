@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 15, 2026 - exact tax audit messages and record identities
+Last updated: October 15, 2026 - non-tax mutation setup measurements
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -13,9 +13,10 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-Tax audit tests kill 169 more focused mutants; the full mutation gate still fails.
-TAX_MUTATION_KILL_PASS_2.md lists 32 proposals, one unresolved bound and Linux checks.
-Approved CI inventory counts include all 14 additions in the rate-fixed annual function.
+NON_TAX_MUTATION_SPEED.md records five shards' setup/call costs and isolation proofs.
+Only pure indicator seeds are reused within a test run; every mutable test starts fresh.
+TAX_EQUIVALENT_PROPOSALS.md lists 32 proposals and one unresolved bound; none is allowed.
+The full mutation gate still fails. No test cases, assertions or gate settings changed.
 
 ## Waiting on you
 Setup later needs paper broker keys and your CASH or MARGIN account type;

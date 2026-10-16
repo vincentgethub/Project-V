@@ -3,10 +3,11 @@
 import asyncio
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from decimal import Decimal
+from datetime import date, datetime, timedelta
+from decimal import Decimal, getcontext
 from pathlib import Path
-from typing import Any
+from types import FunctionType
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -15,12 +16,16 @@ from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from backend.agents import indicators as indicator_module
+from backend.agents import scanner as scanner_module
+from backend.agents import setup_hunter as hunter_module
 from backend.agents.flow_tracker import FlowTracker
-from backend.agents.indicators import IndicatorMemo
+from backend.agents.indicators import IndicatorMemo, IndicatorSeries
 from backend.agents.llm_client import FakeLLMClient
 from backend.agents.news_reader import NewsReader
 from backend.agents.setup_hunter import SetupHunter
 from backend.agents.swarm_runner import ResearchRequest, SwarmRunner
+from backend.core import money as money_module
 from backend.core.config import Settings, YamlConfig, load_yaml_config
 from backend.core.database import (
     Alert,
@@ -172,11 +177,60 @@ def make_research_harness(engine: Engine, request: pytest.FixtureRequest) -> Har
     )
     accounts = (ExternalAccount(account_id=portfolio.account_id, tax_status=TaxStatus.TAXABLE),)
     memo = IndicatorMemo()
+    # Cache only pure indicator values for this exact synthetic input. The real
+    # hunt, CRO cap, validation, ledger and every mutable memo still run per test.
+    seeds = cast(
+        dict[tuple[object, ...], tuple[tuple[tuple[str, str, date], str, int, str], ...]],
+        request.getfixturevalue("pristine_research_indicators"),
+    )
+    decimal_context = getcontext()
+    seed_key = (
+        json.dumps(fixture, sort_keys=True, separators=(",", ":")),
+        tuple(
+            (value, value.__code__, getattr(getattr(value, "__wrapped__", None), "__code__", None))
+            for module in (indicator_module, money_module, scanner_module, hunter_module)
+            for _, value in sorted(vars(module).items())
+            if isinstance(value, FunctionType)
+        ),
+        tuple(
+            (name, value)
+            for module in (indicator_module, money_module)
+            for name, value in sorted(vars(module).items())
+            if type(value) in (str, int, bool, Decimal)
+        ),
+        IndicatorMemo.__init__,
+        IndicatorMemo.__init__.__code__,
+        IndicatorMemo.calculate,
+        IndicatorMemo.calculate.__code__,
+        getattr(getattr(IndicatorMemo.calculate, "__wrapped__", None), "__code__", None),
+        Bar.__pydantic_validator__,
+        Bar.validate_integrity.__code__,
+        Bar.valid_ohlc.__code__,
+        IndicatorSeries.__pydantic_validator__,
+        decimal_context.prec,
+        decimal_context.rounding,
+        decimal_context.Emin,
+        decimal_context.Emax,
+        decimal_context.clamp,
+        decimal_context.capitals,
+        tuple(decimal_context.traps.items()),
+        calendar._sessions,
+        calendar._opens,
+        calendar._closes,
+    )
+    cacheable = memo._disk is None and memo._feed == "SIP"
+    for key, digest, anchor, payload in seeds.get(seed_key, ()) if cacheable else ():
+        memo._entries[key] = (digest, anchor, IndicatorSeries.model_validate_json(payload))
     candidate = (
         SetupHunter(risk.cro, config, memo)
         .hunt("NVDA", bars, portfolio, market, clock.now())
         .candidates[0]
     )
+    if cacheable and seed_key not in seeds:
+        seeds[seed_key] = tuple(
+            (key, digest, anchor, series.model_dump_json())
+            for key, (digest, anchor, series) in memo._entries.items()
+        )
     recorded = state.ledger.append(
         DataSnapshot,
         symbol="NVDA",
