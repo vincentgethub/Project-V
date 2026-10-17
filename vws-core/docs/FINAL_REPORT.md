@@ -1,5 +1,14 @@
 # Final build report - October 12, 2026
 
+Post-build follow-up, October 16: [Safety mutation Pass 5](MUTATION_PASS5.md)
+adds 180 offline behavior cases in the existing risk/executor selections and
+includes the executor module in required coverage without lowering 100%.
+The complete baseline function inventory and six individual, unapproved
+proposals are committed. All six former looping mutants fail focused replay.
+Coverage is not certified green: the broader target exposes remaining and
+unreachable branches. Final local counts are in MUTATION_PASS5.md; completed
+single-push CI outcomes and links are in `build/pass5/FINAL_REPORT.md`.
+
 Post-build follow-up, October 16: [Approved mutation Pass 4](MUTATION_PASS4.md)
 restores native mutmut and removes the regressing indicator seed cache. The
 owner's exact 63-bin split covers all 13,381 IDs once; per-job 100% gates and

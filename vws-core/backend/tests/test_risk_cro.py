@@ -42,6 +42,322 @@ from backend.domain.models import (
 from backend.risk.risk_cro import ChiefRiskOfficer
 
 
+@pytest.fixture(autouse=True)
+def advisory_work_budget(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The legacy sizing examples must also yield rather than hang on a broken policy."""
+    if not request.node.name.startswith("test_CRO_03_to_08_max_qty_is_largest_whole_share"):
+        return
+    original = ChiefRiskOfficer.evaluate
+    calls = 0
+
+    def evaluate(officer: ChiefRiskOfficer, *args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls > 64:
+            raise AssertionError("Advisory sizing exhausted the protective-work budget")
+        return original(officer, *args, **kwargs)
+
+    monkeypatch.setattr(ChiefRiskOfficer, "evaluate", evaluate)
+
+
+@pytest.mark.parametrize(
+    "day,expected", [(2, False), (3, False), (5, False), (6, False), (7, True), (10, True)]
+)
+def test_CRO_13_confirmed_event_audit_keeps_inclusive_session_boundaries(
+    clock: FrozenClock, risk_calendar: MarketCalendar, day: int, expected: bool
+) -> None:
+    clock = FrozenClock(datetime(2026, 10, 2, 16, tzinfo=UTC))
+    cro = ChiefRiskOfficer(
+        Settings(broker_account_type="CASH", earnings_blackout_sessions=2),
+        _registry(),
+        risk_calendar,
+    )
+    event = date(2026, 10, day)
+    verdict = cro.evaluate(
+        _proposal(clock),
+        _snapshot(clock),
+        _market(clock, next_earnings_date=event),
+        SystemState.RUNNING,
+        clock.now(),
+        deployable=_capital(),
+    )
+    row = verdict.results[12]
+    assert (row.rule_id, row.passed, row.severity, row.observed, row.limit, row.message) == (
+        "CRO-13",
+        expected,
+        Severity.BLOCK,
+        event.isoformat(),
+        "outside 2 XNYS sessions",
+        "known earnings within inclusive blackout or unresolved past date blocks",
+    )
+    assert verdict.decision == (Decision.APPROVED if expected else Decision.VETOED)
+
+
+@pytest.mark.parametrize(
+    "start,end,blackout,overlap",
+    [
+        (2, 5, 0, True),
+        (5, 8, 0, False),
+        (5, 8, 2, True),
+        (3, 5, 2, True),
+        (10, 12, 2, False),
+        (1, 1, 2, False),
+    ],
+)
+def test_CRO_13_estimated_window_retains_exact_warning_and_never_claims_known_clearance(
+    clock: FrozenClock,
+    risk_calendar: MarketCalendar,
+    start: int,
+    end: int,
+    blackout: int,
+    overlap: bool,
+) -> None:
+    from backend.domain.models import EarningsInfo, EarningsStatus
+
+    clock = FrozenClock(datetime(2026, 10, 2, 16, tzinfo=UTC))
+    cro = ChiefRiskOfficer(
+        Settings(broker_account_type="CASH", earnings_blackout_sessions=blackout),
+        _registry(),
+        risk_calendar,
+    )
+    evidence = EarningsInfo(
+        status=EarningsStatus.ESTIMATED,
+        source="offline filing interval",
+        window_start=date(2026, 10, start),
+        window_end=date(2026, 10, end),
+    )
+    verdict = cro.evaluate(
+        _proposal(clock),
+        _snapshot(clock),
+        _market(clock, earnings=evidence),
+        SystemState.RUNNING,
+        clock.now(),
+        deployable=_capital(),
+    )
+    row = verdict.results[12]
+    message = (
+        "estimated earnings window overlaps the blackout; operator review required"
+        if overlap
+        else "earnings window is estimated; next confirmed date remains unavailable"
+    )
+    assert (row.rule_id, row.passed, row.severity, row.observed, row.limit, row.message) == (
+        "CRO-13",
+        False,
+        Severity.WARN,
+        f"estimated 2026-10-{start:02d}..2026-10-{end:02d}",
+        "verified earnings date",
+        message,
+    )
+    assert verdict.decision == Decision.APPROVED
+
+
+def test_CRO_audit_contains_the_hand_calculated_one_share_paper_example(
+    clock: FrozenClock, risk_calendar: MarketCalendar
+) -> None:
+    """$10k equity, one $100 share, $95 stop: $5 risk + $0.20 slippage."""
+    cro = ChiefRiskOfficer(Settings(broker_account_type="CASH"), _registry(), risk_calendar)
+    verdict = cro.evaluate(
+        _proposal(clock),
+        _snapshot(clock),
+        _market(clock),
+        SystemState.RUNNING,
+        clock.now(),
+        deployable=_capital(),
+    )
+    assert verdict.decision == Decision.APPROVED
+    assert verdict.recommended_state == SystemState.RUNNING
+    assert [
+        (r.rule_id, r.passed, r.severity.value, r.observed, r.limit, r.message)
+        for r in verdict.results
+    ] == [
+        (
+            "CRO-01",
+            True,
+            "BLOCK",
+            "RUNNING",
+            "RUNNING, or permitted reduction/exit",
+            "system operating state permits proposal",
+        ),
+        (
+            "CRO-02",
+            True,
+            "BLOCK",
+            "AAPL",
+            "valid long-only allowlisted instrument",
+            "entry/add intent, stop, expiry, account, inventory and market are verified",
+        ),
+        ("CRO-03", True, "BLOCK", "100.00", "1000.00", "post-trade single-name value fits cap"),
+        (
+            "CRO-04",
+            True,
+            "BLOCK",
+            "5.20000",
+            "100.00",
+            "reserved stop risk plus slippage fits budget",
+        ),
+        (
+            "CRO-05",
+            True,
+            "BLOCK",
+            "sectors=[('Information Technology', Decimal('100.00'))]; themes=[]",
+            "configured sector/theme fractions",
+            "sector look-through and theme caps fit",
+        ),
+        (
+            "CRO-06",
+            True,
+            "BLOCK",
+            "gross=100.00; positions=1; cash=9900.00",
+            "gross<=10000.00; positions<=15; cash>=500.00",
+            "gross exposure, number of names, and cash buffer all fit",
+        ),
+        (
+            "CRO-07",
+            True,
+            "BLOCK",
+            "price=100.00; reference=100.00; age=0:00:00",
+            "collar=0.03; min=5.00; age<=60s",
+            "limit price and calendar-aware quote freshness are sane",
+        ),
+        ("CRO-08", True, "BLOCK", "100.00", "10000.00", "notional fits average-volume cap"),
+        ("CRO-09", True, "BLOCK", "0", "0.08", "persisted drawdown below reduce-only tier"),
+        (
+            "CRO-10",
+            True,
+            "BLOCK",
+            "0",
+            "0.02",
+            "loss below session entry limit; baseline rolls at next XNYS open",
+        ),
+        (
+            "CRO-11",
+            True,
+            "BLOCK",
+            "clear",
+            "outside all applicable UTC blackouts",
+            "scheduled blackout includes both endpoint instants",
+        ),
+        (
+            "CRO-12",
+            True,
+            "BLOCK",
+            "OK",
+            "OK",
+            "checking buffer and funding reading must be available",
+        ),
+        (
+            "CRO-13",
+            False,
+            "WARN",
+            "unknown",
+            "verified earnings date",
+            "earnings unavailable; operator must review unknown event risk",
+        ),
+        (
+            "CRO-14",
+            True,
+            "BLOCK",
+            "5.00",
+            "400.00",
+            "total held, pending and new stop risk fits the portfolio cap",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "fault", ["market_missing", "bad_daily_block", "proposal_qty", "snapshot_equity"]
+)
+def test_CRO_invalid_entry_emits_fourteen_exact_fail_closed_audit_rows(
+    clock: FrozenClock, risk_calendar: MarketCalendar, fault: str
+) -> None:
+    cro = ChiefRiskOfficer(Settings(broker_account_type="CASH"), _registry(), risk_calendar)
+    proposal, snapshot, market = _proposal(clock), _snapshot(clock), _market(clock)
+    if fault == "proposal_qty":
+        proposal = proposal.model_copy(update={"qty": 0})
+    if fault == "snapshot_equity":
+        snapshot = snapshot.model_copy(update={"equity": "not-money"})
+    verdict = cro.evaluate(
+        proposal,
+        snapshot,
+        None if fault == "market_missing" else market,
+        SystemState.RUNNING,
+        clock.now(),
+        daily_loss_blocked=cast(Any, 1 if fault == "bad_daily_block" else False),
+    )
+    assert verdict.decision == Decision.VETOED and verdict.recommended_state == SystemState.HALTED
+    assert verdict.snapshot_hash == "0" * 64
+    assert verdict.evaluated_at == clock.now()
+    assert verdict.proposal_id == proposal.proposal_id
+    error = (
+        "DataIntegrityError"
+        if fault in {"market_missing", "bad_daily_block"}
+        else "ValidationError"
+    )
+    assert [
+        (row.rule_id, row.passed, row.severity, row.observed, row.limit, row.message)
+        for row in verdict.results
+    ] == [
+        (
+            f"CRO-{i:02d}",
+            False,
+            Severity.BLOCK,
+            error,
+            "verifiable inputs",
+            "input or policy evaluation failed closed",
+        )
+        for i in range(1, 15)
+    ]
+
+
+@pytest.mark.parametrize("fault", ["registry", "calendar", "policy"])
+def test_CRO_bad_policy_is_an_exact_typed_configuration_refusal(
+    risk_calendar: MarketCalendar, fault: str
+) -> None:
+    settings = Settings(broker_account_type="CASH")
+    if fault == "policy":
+        settings = settings.model_copy(update={"max_open_positions": 0})
+    with pytest.raises(ConfigurationError) as caught:
+        ChiefRiskOfficer(
+            settings,
+            cast(Any, None) if fault == "registry" else _registry(),
+            cast(Any, None) if fault == "calendar" else risk_calendar,
+        )
+    assert type(caught.value) is ConfigurationError
+    assert str(caught.value) == "CRO-01..13: cannot verify immutable risk policy"
+
+
+@pytest.mark.parametrize(
+    "requested,cash,expected", [(1, "10000", 1), (2, "10000", 2), (10000, "10000", 10), (1, "0", 0)]
+)
+def test_CRO_03_advisory_size_returns_with_bounded_risk_work(
+    clock: FrozenClock,
+    risk_calendar: MarketCalendar,
+    monkeypatch: pytest.MonkeyPatch,
+    requested: int,
+    cash: str,
+    expected: int,
+) -> None:
+    """One advisory request cannot monopolize the broker's protective work loop."""
+    cro = ChiefRiskOfficer(Settings(broker_account_type="CASH"), _registry(), risk_calendar)
+    evaluate = cro.evaluate
+    calls = 0
+
+    def bounded(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls > 64:
+            raise AssertionError("Advisory sizing exhausted the protective-work budget")
+        return evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(cro, "evaluate", bounded)
+    snapshot = _snapshot(clock, cash=Decimal(cash))
+    assert (
+        cro.max_allowed_qty(_proposal(clock, qty=requested), snapshot, _market(clock), clock.now())
+        == expected
+    )
+    assert calls <= 64
+
+
 @pytest.fixture(scope="module")
 def risk_calendar() -> MarketCalendar:
     return MarketCalendar(start=date(2025, 1, 1), end=date(2027, 12, 31))

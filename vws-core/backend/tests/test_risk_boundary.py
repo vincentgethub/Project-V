@@ -39,6 +39,91 @@ from backend.risk.boundary import LoggingVetoSink, RiskBoundary, VetoSink
 from backend.risk.portfolio_marks import PersistedPortfolioMarks
 from backend.risk.risk_cro import ChiefRiskOfficer
 
+
+@pytest.mark.parametrize(
+    "fault,message",
+    [
+        ("proposal", "R-02: risk verdict identity or rule evidence is invalid"),
+        ("policy", "R-02: risk verdict identity or rule evidence is invalid"),
+        ("duplicate", "R-02: risk verdict identity or rule evidence is invalid"),
+        ("unknown", "R-02: risk verdict identity or rule evidence is invalid"),
+        ("incomplete", "R-02: approval lacks complete bound rule evidence"),
+        ("reordered", "R-02: approval lacks complete bound rule evidence"),
+        ("snapshot", "R-02: approval lacks complete bound rule evidence"),
+        ("daily_block", "CRO-10: approval concealed a witnessed session loss block"),
+        ("reduce_only", "CRO-01: approved entry cannot recommend a restricted state"),
+        ("blocking_warn", "R-02: approval has altered blocking-rule evidence"),
+        ("earnings", "CRO-13: approval has invalid earnings evidence"),
+        ("market_missing", "CRO-13: approval has invalid earnings evidence"),
+        ("reasonless_veto", "R-02: veto lacks a blocking reason"),
+    ],
+)
+def test_R_02_altered_approval_has_exact_auditable_refusal(
+    engine: Engine, boundary_cro: ChiefRiskOfficer, fault: str, message: str
+) -> None:
+    from uuid import uuid4
+
+    gate = boundary(engine, boundary_cro, VetoRecorder())
+    proposal, snapshot, market = trade(), book(), quote()
+    verdict = gate.evaluate(proposal, snapshot, market, deployable=capital())
+    assert verdict.decision == Decision.APPROVED
+    rows = list(verdict.results)
+    updates: dict[str, object] = {}
+    if fault == "proposal":
+        updates["proposal_id"] = uuid4()
+    elif fault == "policy":
+        updates["config_hash"] = "0" * 64
+    elif fault == "duplicate":
+        rows[1] = rows[0]
+    elif fault == "unknown":
+        rows[1] = rows[1].model_copy(update={"rule_id": "CRO-99"})
+    elif fault == "incomplete":
+        rows.pop()
+    elif fault == "reordered":
+        rows[0], rows[1] = rows[1], rows[0]
+    elif fault == "snapshot":
+        updates["snapshot_hash"] = "0" * 64
+    elif fault == "reduce_only":
+        updates["recommended_state"] = SystemState.REDUCE_ONLY
+    elif fault == "blocking_warn":
+        rows[1] = rows[1].model_copy(update={"severity": Severity.WARN})
+    elif fault == "earnings":
+        rows[12] = rows[12].model_copy(update={"message": "unverified earnings called clear"})
+    elif fault == "reasonless_veto":
+        updates["decision"] = Decision.VETOED
+    changed = verdict.model_copy(update={**updates, "results": tuple(rows)})
+    with pytest.raises(DataIntegrityError) as caught:
+        gate._checked(
+            changed,
+            proposal,
+            snapshot,
+            None if fault == "market_missing" else market,
+            fault == "daily_block",
+        )
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == message
+
+
+def test_R_07_veto_sink_records_exact_safe_audit_text(caplog: pytest.LogCaptureFixture) -> None:
+    sink = LoggingVetoSink()
+    with caplog.at_level(logging.WARNING, logger="backend.risk.boundary"):
+        sink.record("CRO-09", TRADE_ID)
+    assert [(row.name, row.levelno, row.getMessage()) for row in caplog.records] == [
+        (
+            "backend.risk.boundary",
+            logging.WARNING,
+            "risk_veto rule_id=CRO-09 proposal_id=50000000-0000-0000-0000-000000000001",
+        )
+    ]
+
+
+def test_R_02_unimplemented_audit_sink_refuses_with_exact_error() -> None:
+    with pytest.raises(DataIntegrityError) as caught:
+        VetoSink.record(cast(VetoSink, object()), "CRO-09", TRADE_ID)
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == "R-02: veto audit sink has no implementation"
+
+
 NOW = datetime(2026, 10, 2, 16, tzinfo=UTC)
 TRADE_ID = UUID("50000000-0000-0000-0000-000000000001")
 SIGNAL_ID = UUID("50000000-0000-0000-0000-000000000002")

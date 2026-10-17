@@ -66,7 +66,7 @@ ignore_missing_imports = true
 
 [tool.coverage.run]
 branch = true
-source = ["backend.core.system_state", "backend.risk", "backend.domain.compliance_models"]
+source = ["backend.core.system_state", "backend.risk", "backend.domain.compliance_models", "backend.execution.alpaca_executor"]
 
 [tool.bandit]
 exclude_dirs = ["backend/tests", ".venv", "mutants"]

@@ -30,6 +30,7 @@ from backend.execution.alpaca_executor import (
     AlpacaExecutor,
     ExactLimit,
     ExactStop,
+    parse_order,
 )
 from backend.execution.models import AutoPrerequisites
 from backend.execution.modes import ModeStore
@@ -46,6 +47,224 @@ AUTO = {
     "broker_secret_key": SecretStr("TEST_ONLY_PAPER_SECRET"),
     "healthcheck_ping_url": SecretStr("https://hc-ping.com/test-only"),
 }
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("qty", True, "Broker share quantity must be exact text or integer"),
+        ("qty", 1.0, "Broker share quantity must be exact text or integer"),
+        ("qty", "1.5", "Broker share quantity is not a bounded whole number"),
+        ("qty", "0", "Broker share quantity is not a bounded whole number"),
+        ("qty", "-1", "Broker share quantity is not a bounded whole number"),
+        ("qty", "2147483648", "Broker share quantity is not a bounded whole number"),
+        ("filled_qty", "-1", "Broker share quantity is not a bounded whole number"),
+        ("filled_qty", False, "Broker share quantity must be exact text or integer"),
+        ("limit_price", True, "Broker price must retain exact money"),
+        ("limit_price", 100.0, "Broker price must retain exact money"),
+        ("submitted_at", None, "Broker order timestamp is unavailable"),
+        ("submitted_at", "x" * 65, "Broker order timestamp is unavailable"),
+        ("submitted_at", "tomorrow", "Broker order timestamp is invalid"),
+        ("legs", {}, "Broker bracket leg collection is invalid"),
+        ("legs", [{}, {}, {}], "Broker bracket leg collection is invalid"),
+        ("id", "not-a-uuid", "Broker order identity or shape cannot be verified"),
+        ("side", "short", "Broker order identity or shape cannot be verified"),
+        ("status", "unrecognized", "Broker order identity or shape cannot be verified"),
+    ],
+)
+def test_AX_31_raw_broker_faults_have_exact_typed_audit_messages(
+    clock: Any, field: str, value: object, message: str
+) -> None:
+    from backend.core.errors import DataIntegrityError
+
+    raw = {
+        "id": str(UUID(int=700)),
+        "client_order_id": "paper-raw",
+        "symbol": "NVDA",
+        "side": "buy",
+        "type": "limit",
+        "order_class": "simple",
+        "time_in_force": "day",
+        "qty": "1",
+        "filled_qty": "0",
+        "status": "new",
+        "limit_price": "100.00",
+        "stop_price": None,
+        "submitted_at": clock.now().isoformat(),
+        "legs": None,
+    }
+    with pytest.raises(DataIntegrityError) as caught:
+        parse_order({**raw, field: value})
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == message
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("side", "buy"),
+        ("time_in_force", "day"),
+        ("order_class", "bracket"),
+        ("extended_hours", False),
+        ("notional", Decimal(1)),
+    ],
+)
+def test_AX_27_stop_repairs_refuse_unsafe_shapes_with_exact_reason(
+    field: str, value: object
+) -> None:
+    from pydantic import ValidationError
+
+    payload: dict[str, Any] = {
+        "symbol": "NVDA",
+        "qty": 3,
+        "side": "sell",
+        "type": "stop",
+        "time_in_force": "gtc",
+        "client_order_id": "vws-paper-repair",
+        "stop_price": Decimal("95.00"),
+    }
+    with pytest.raises(ValidationError) as caught:
+        ExactStop.model_validate({**payload, field: value})
+    assert type(caught.value) is ValidationError
+    message = {
+        "order_class": "bracket orders require take_profit.limit_price.",
+        "notional": "Both qty and notional can not be set.",
+    }.get(field, "Stop repair requires one whole-share SELL GTC stop")
+    assert caught.value.errors()[0]["msg"] == "Value error, " + message
+
+
+@pytest.mark.parametrize("kind", ["bracket", "oto", "oco", "simple"])
+def test_AX_23_27_exact_order_shapes_preserve_integer_shares_and_cent_text(kind: str) -> None:
+    payload: dict[str, Any] = {
+        "symbol": "NVDA",
+        "qty": 3,
+        "side": "sell" if kind in {"simple", "oco"} else "buy",
+        "type": "limit",
+        "time_in_force": "day" if kind == "simple" else "gtc",
+        "order_class": kind,
+        "client_order_id": "vws-paper-shape",
+        "limit_price": Decimal("100.10"),
+    }
+    expected: dict[str, Any] = {
+        "symbol": "NVDA",
+        "qty": "3",
+        "side": payload["side"],
+        "type": "limit",
+        "time_in_force": payload["time_in_force"],
+        "order_class": kind,
+        "client_order_id": "vws-paper-shape",
+        "limit_price": "100.10",
+    }
+    if kind != "simple":
+        payload["stop_loss"] = {"stop_price": Decimal("95.20")}
+        expected["stop_loss"] = {"stop_price": "95.20"}
+    if kind in {"bracket", "oco"}:
+        target = "100.10" if kind == "oco" else "110.30"
+        payload["take_profit"] = {"limit_price": Decimal(target)}
+        expected["take_profit"] = {"limit_price": target}
+    if kind == "oco":
+        del expected["limit_price"]
+    request = ExactLimit.model_validate(payload)
+    assert request.to_request_fields() == expected
+
+
+@pytest.mark.parametrize("kind", ["bracket", "oto", "oco", "simple"])
+def test_AX_23_no_order_shape_can_serialize_without_a_side(kind: str) -> None:
+    from pydantic import ValidationError
+
+    payload: dict[str, Any] = {
+        "symbol": "NVDA",
+        "qty": 3,
+        "side": "sell" if kind in {"simple", "oco"} else "buy",
+        "time_in_force": "day" if kind == "simple" else "gtc",
+        "order_class": kind,
+        "client_order_id": "vws-paper-no-side",
+        "limit_price": Decimal("100.10"),
+    }
+    if kind != "simple":
+        payload["stop_loss"] = {"stop_price": Decimal("95.20")}
+    if kind in {"bracket", "oco"}:
+        payload["take_profit"] = {
+            "limit_price": Decimal("100.10") if kind == "oco" else Decimal("110.30")
+        }
+    valid = ExactLimit.model_validate(payload)
+    corrupt = valid.model_copy(update={"side": None})
+    with pytest.raises(ValidationError) as caught:
+        corrupt.to_request_fields()
+    assert type(caught.value) is ValidationError
+    assert (
+        caught.value.errors()[0]["msg"]
+        == "Value error, side is required for all order classes other than mleg."
+    )
+
+
+@pytest.mark.parametrize(
+    "kind,changes,message",
+    [
+        (
+            "bracket",
+            {"side": "sell"},
+            "Entry requires one BUY GTC bracket with ordered cent prices",
+        ),
+        (
+            "bracket",
+            {"time_in_force": "day"},
+            "Entry requires one BUY GTC bracket with ordered cent prices",
+        ),
+        ("bracket", {"take_profit": None}, "bracket orders require take_profit.limit_price."),
+        ("oto", {"side": "sell"}, "EX-02: OTO is BUY GTC LIMIT with a protective stop only"),
+        ("oto", {"stop_loss": None}, "oto orders require either take_profit or stop_loss."),
+        (
+            "oto",
+            {"stop_loss": {"stop_price": Decimal("100.10")}},
+            "EX-02: OTO is BUY GTC LIMIT with a protective stop only",
+        ),
+        ("oco", {"side": "buy"}, "EX-05: OCO is a protected SELL GTC exit with an exact target"),
+        (
+            "oco",
+            {"time_in_force": "day"},
+            "EX-05: OCO is a protected SELL GTC exit with an exact target",
+        ),
+        (
+            "oco",
+            {"take_profit": {"limit_price": Decimal("101.00")}},
+            "EX-05: OCO is a protected SELL GTC exit with an exact target",
+        ),
+        ("simple", {"side": "buy"}, "Plain limits are DAY SELL exits only"),
+        ("simple", {"time_in_force": "gtc"}, "Plain limits are DAY SELL exits only"),
+        (
+            "simple",
+            {"extended_hours": False},
+            "Only whole-share regular-hours equity orders are allowed",
+        ),
+    ],
+)
+def test_AX_23_27_unsafe_order_shapes_keep_exact_refusal(
+    kind: str, changes: dict[str, Any], message: str
+) -> None:
+    import re
+
+    from pydantic import ValidationError
+
+    payload: dict[str, Any] = {
+        "symbol": "NVDA",
+        "qty": 3,
+        "side": "sell" if kind in {"simple", "oco"} else "buy",
+        "time_in_force": "day" if kind == "simple" else "gtc",
+        "order_class": kind,
+        "client_order_id": "vws-paper-shape",
+        "limit_price": Decimal("100.10"),
+    }
+    if kind != "simple":
+        payload["stop_loss"] = {"stop_price": Decimal("95.20")}
+    if kind in {"bracket", "oco"}:
+        payload["take_profit"] = {
+            "limit_price": Decimal("100.10") if kind == "oco" else Decimal("110.30")
+        }
+    with pytest.raises(ValidationError, match=re.escape(message)) as caught:
+        ExactLimit.model_validate({**payload, **changes})
+    assert type(caught.value) is ValidationError
+    assert caught.value.errors()[0]["msg"] == "Value error, " + message
 
 
 def api_error(status: int) -> APIError:

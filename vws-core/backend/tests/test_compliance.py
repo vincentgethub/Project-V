@@ -49,6 +49,189 @@ FLAGS = AccountFlags(
 )
 
 
+def test_CMP_seven_rule_audit_for_one_cash_share_is_exact(engine: ComplianceEngine) -> None:
+    """A $100 purchase uses $9,900 settled cash; no history or borrowing exists."""
+    results = check(engine)
+    assert [
+        (r.rule_id, r.passed, r.severity.value, r.observed, r.limit, r.message)
+        for r in results.values()
+    ] == [
+        ("CMP-01", True, "BLOCK", "0", "0", "No forward wash-sale replacement"),
+        (
+            "CMP-02",
+            True,
+            "WARN",
+            "buy",
+            "loss sale only",
+            "Backward wash-sale rule is not applicable",
+        ),
+        (
+            "CMP-03",
+            True,
+            "BLOCK",
+            "100.00",
+            "9900",
+            "BUY plus pending buys requires confirmed settled cash",
+        ),
+        (
+            "CMP-04",
+            True,
+            "BLOCK",
+            "cash_required=100.00;equity=10000",
+            "cash=9900;minimum_margin_equity=2000",
+            "No borrowing; managed margin-account minimum equity is an operator guard",
+        ),
+        (
+            "CMP-05",
+            True,
+            "WARN",
+            "same_day=False;completed=0;equity=10000",
+            "legacy>=3 and equity<25000; default same-day WARN",
+            "No same-day round trip",
+        ),
+        (
+            "CMP-06",
+            True,
+            "BLOCK",
+            '{"trading_blocked":false,"account_blocked":false,"trade_suspended_by_user":false,"status":"ACTIVE"}',
+            "ACTIVE and all flags false",
+            "Broker account is active and unrestricted",
+        ),
+        (
+            "CMP-07",
+            True,
+            "BLOCK",
+            "AAPL",
+            "tradable allowlist minus restricted names",
+            "Explicit instrument allowlist and restricted-list policy",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["mutable_history", "duplicate_trade", "future_trade", "unknown_owner", "duplicate_lot"],
+)
+def test_CMP_bad_evidence_is_seven_exact_auditable_halt_reasons(
+    engine: ComplianceEngine, fault: str
+) -> None:
+    from typing import Any
+
+    history: Any = ()
+    lots: tuple[TaxLot, ...] = ()
+    if fault == "mutable_history":
+        history = []
+    elif fault == "duplicate_trade":
+        history = (trade(1), trade(1))
+    elif fault == "future_trade":
+        history = (trade(1, ts=NOW + timedelta(seconds=1)),)
+    elif fault == "unknown_owner":
+        history = (trade(1, account="unknown-account"),)
+    else:
+        lots = (lot(), lot())
+    assessment = engine.assess(proposal(), snapshot(), lots, history, ACCOUNTS, NOW, flags=FLAGS)
+    assert assessment.proposal_id == proposal().proposal_id
+    assert assessment.evaluated_at == NOW and assessment.recommended_state == SystemState.HALTED
+    assert [
+        (r.rule_id, r.passed, r.severity, r.observed, r.limit, r.message)
+        for r in assessment.results
+    ] == [
+        (
+            f"CMP-{n:02d}",
+            False,
+            Severity.BLOCK,
+            "DataIntegrityError",
+            "verified state",
+            "Unverifiable compliance input; HALTED required",
+        )
+        for n in range(1, 8)
+    ]
+
+
+@pytest.mark.parametrize("selling", [False, True])
+@pytest.mark.parametrize(
+    "fault", ["missing", "trading_blocked", "account_blocked", "trade_suspended_by_user"]
+)
+def test_CMP_broker_refusal_keeps_exact_audit_without_trapping_held_exit(
+    engine: ComplianceEngine, selling: bool, fault: str
+) -> None:
+    flags = None if fault == "missing" else FLAGS.model_copy(update={fault: True})
+    result = check(engine, selling=selling, lots=(lot(),) if selling else (), flags=flags)["CMP-06"]
+    assert result.rule_id == "CMP-06" and result.passed is False
+    assert result.severity == (Severity.WARN if selling else Severity.BLOCK)
+    assert result.limit == (
+        "explicit current account flags" if fault == "missing" else "ACTIVE and all flags false"
+    )
+    assert result.message == (
+        "Unverifiable broker flags; HALTED required"
+        if fault == "missing"
+        else "Broker account blocked; HALTED required"
+    )
+    if fault == "missing":
+        assert result.observed == "missing"
+    else:
+        assert (
+            result.observed
+            == '{"trading_blocked":'
+            + str(fault == "trading_blocked").lower()
+            + ',"account_blocked":'
+            + str(fault == "account_blocked").lower()
+            + ',"trade_suspended_by_user":'
+            + str(fault == "trade_suspended_by_user").lower()
+            + ',"status":"ACTIVE"}'
+        )
+
+
+@pytest.mark.parametrize("mutable", ["lots", "history", "accounts"])
+def test_CMP_mutable_evidence_cannot_receive_an_audit_hash(
+    engine: ComplianceEngine, mutable: str
+) -> None:
+    from typing import Any
+
+    values: dict[str, Any] = {"lots": (), "history": (), "accounts": ACCOUNTS}
+    values[mutable] = []
+    with pytest.raises(DataIntegrityError) as caught:
+        engine.input_hash(
+            proposal(), snapshot(), values["lots"], values["history"], values["accounts"], FLAGS
+        )
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == "CMP-01..07: cannot hash verified compliance evidence"
+    assert isinstance(caught.value.__cause__, DataIntegrityError)
+    assert str(caught.value.__cause__) == "CMP-01..07: evidence must be immutable tuples"
+
+
+@pytest.mark.parametrize("fault", ["baseline_type", "blank_account", "duplicate", "future"])
+def test_CMP_settled_cash_refuses_unverifiable_history_with_exact_reason(
+    engine: ComplianceEngine, fault: str
+) -> None:
+    from typing import Any
+
+    history: tuple[TradeRecord, ...] = (trade(1),)
+    baseline: Any = Decimal("10000")
+    if fault == "baseline_type":
+        baseline = "10000"
+    elif fault == "duplicate":
+        history = (trade(1), trade(1))
+    elif fault == "future":
+        history = (trade(1, ts=NOW + timedelta(seconds=1)),)
+    with pytest.raises(DataIntegrityError) as caught:
+        engine.settled_cash_as_of(
+            baseline, history, NOW, account_id=" " if fault == "blank_account" else "paper"
+        )
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == "CMP-03: cannot reconstruct verified settled cash"
+    assert isinstance(caught.value.__cause__, DataIntegrityError)
+    assert (
+        str(caught.value.__cause__)
+        == {
+            "baseline_type": "CMP-03: Decimal baseline and account are required",
+            "blank_account": "CMP-03: Decimal baseline and account are required",
+            "duplicate": "CMP-03: duplicate trade identifier",
+            "future": "CMP-03: future executed trade",
+        }[fault]
+    )
+
+
 def uid(value: int) -> UUID:
     return UUID(int=value)
 

@@ -1210,3 +1210,20 @@ python -c "import os; from backend.core.clock import SystemClock; from backend.c
 Use only a fresh isolated test database, never a production URL. This command
 checks schema/chain runtime; it does not certify PostgreSQL concurrency, which
 still needs the specified CI service suite. No remote workflow run is claimed.
+
+
+## Mutation Pass 5 safety traceability - October 16, 2026
+
+| Contract | Source / changed scope | Evidence |
+| --- | --- | --- |
+| AX-11/15/16 prerequisites, account and single attempts | Unchanged alpaca_executor; test_auto_safety / test_auto_contracts | Exact typed refusals, no fake broker posts, paper-only binding and cleanup |
+| AX-24/27/30 cancels and protection | Unchanged alpaca_executor; test_auto_safety | One DELETE, fresh confirmation GETs, exact ambiguous audit, no conflicting replacement |
+| EX-05/06 trail and paper evidence | Unchanged alpaca_executor; selected tests use actual ledger/fill scenarios | Sibling target fills, repair outcomes, 30-second windows, read-only cancellation publisher |
+| AX-28 stream retry bound | Unchanged ManagedTradingStream; test_auto_contracts | Three attempts, exact delays/failure audit, HALT and REST-protection notice; former timeout mutants fail replay |
+| CRO-01..14 / CMP-01..07 | Unchanged pure risk/compliance; existing selected test files | Full exact rule audit, forged verdict refusals, bounded sizing, settlement faults, inclusive earnings boundaries |
+| Mutation gate | Unchanged config/split/selection/allowances/native runner | 63-job baseline inventory by function, all 13,381 IDs, every unlisted failure still counted |
+| Required executor coverage | Add module to existing coverage source lists only | Exact diff in MUTATION_PASS5.md; 100% remains mandatory; unreachable side guard and other gaps remain failures |
+
+No new production bug or production fix is claimed. No production source, existing test
+assertion, selector, threshold, timeout, shard assignment or equivalent allowance
+was changed. Full local/CI evidence and honest gate status accompany delivery.
