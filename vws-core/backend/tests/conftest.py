@@ -210,3 +210,38 @@ def engine(tmp_path: Path, pristine_schema: Connection) -> Iterator[Engine]:
         yield database
     finally:
         database.dispose()
+
+
+@pytest.fixture(autouse=True)
+def bounded_advisory_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sizing request must return its answer within the existing 64-step budget.
+
+    Keep the counter local to one call and one test, including nested property
+    examples. This is the same work bound as the legacy sizing regression.
+    """
+    from contextvars import ContextVar
+    from typing import Any
+
+    from backend.risk.risk_cro import ChiefRiskOfficer
+
+    work: ContextVar[int | None] = ContextVar("advisory_work", default=None)
+    original_size = ChiefRiskOfficer.max_allowed_qty
+    original_evaluate = ChiefRiskOfficer.evaluate
+
+    def evaluate(officer: ChiefRiskOfficer, *args: Any, **kwargs: Any) -> Any:
+        count = work.get()
+        if count is not None:
+            if count >= 64:
+                raise AssertionError("Advisory sizing exhausted the protective-work budget")
+            work.set(count + 1)
+        return original_evaluate(officer, *args, **kwargs)
+
+    def size(officer: ChiefRiskOfficer, *args: Any, **kwargs: Any) -> int:
+        token = work.set(0)
+        try:
+            return original_size(officer, *args, **kwargs)
+        finally:
+            work.reset(token)
+
+    monkeypatch.setattr(ChiefRiskOfficer, "evaluate", evaluate)
+    monkeypatch.setattr(ChiefRiskOfficer, "max_allowed_qty", size)

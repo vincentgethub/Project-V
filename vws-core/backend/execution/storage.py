@@ -5,6 +5,7 @@ Broker-generated bracket children are proved by the persisted nested parent;
 unbound non-vws orders remain reconciliation faults.
 """
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -35,6 +36,9 @@ from backend.execution.models import (
     SubmitOutcome,
 )
 from backend.execution.stop_evidence import authorized_stop, child_root, validate_stop_event
+
+if TYPE_CHECKING:
+    from backend.core.ledger import Ledger
 
 
 def approval_evidence(
@@ -126,6 +130,75 @@ def entry_filled_quantity(session: Session, order_id: UUID) -> int:
             )
         )
     )
+
+
+def finalize_shared_order(
+    ledger: "Ledger", session: Session, order_id: UUID, *, reason: str
+) -> str | None:
+    """EX-01/SEC-73: terminal state requires every entry leg and matching fills."""
+    latest = session.scalar(
+        select(OrderEvent)
+        .where(OrderEvent.order_id == order_id)
+        .order_by(OrderEvent.seq.desc())
+        .limit(1)
+    )
+    if latest is None:
+        raise LedgerIntegrityError("Shared order has no lifecycle")
+    if latest.state in {"FILLED", "CANCELED", "REJECTED"}:
+        return latest.state
+    legs = tuple(
+        session.scalars(
+            select(ExecutionOrderRecord)
+            .where(ExecutionOrderRecord.order_id == order_id, ExecutionOrderRecord.role == "ENTRY")
+            .order_by(ExecutionOrderRecord.seq)
+        )
+    )
+    if not legs:
+        return None
+    proved = bindings(session)
+    outcomes = {}
+    for row in session.scalars(
+        select(SecurityEvent)
+        .where(SecurityEvent.kind == "EXECUTION_SUBMIT_OUTCOME")
+        .order_by(SecurityEvent.seq)
+    ):
+        evidence = SubmitOutcome.model_validate(row.detail)
+        outcomes[evidence.execution_order_id] = evidence.outcome
+    statuses = []
+    for leg in legs:
+        quantity = filled_quantity(session, leg.id)
+        broker = proved.get(leg.id)
+        if broker is None:
+            outcome = outcomes.get(leg.id)
+            if quantity or outcome not in {"NOT_SENT", "REJECTED"}:
+                return None
+            statuses.append("rejected" if outcome == "REJECTED" else "not_sent")
+        else:
+            if (
+                broker.status not in {"filled", "canceled", "expired", "rejected"}
+                or broker.filled_qty != quantity
+            ):
+                return None
+            statuses.append(broker.status)
+    total = sum(filled_quantity(session, leg.id) for leg in legs)
+    if total == sum(leg.qty for leg in legs):
+        state = "FILLED"
+    elif (
+        not total
+        and all(status == "rejected" for status in statuses)
+        and latest.state != "CANCEL_REQUESTED"
+    ):
+        state = "REJECTED"
+    else:
+        state = "CANCELED"
+    if len(legs) == 2 and all(status == "rejected" for status in statuses):
+        if state == "CANCELED":
+            reason += "; canceled"
+        reason += "; both legs broker-rejected"
+    ledger.append_in_session(
+        session, OrderEvent, order_id=order_id, state=state, reason=reason, broker_order_id=None
+    )
+    return state
 
 
 def validate_record(session: Session, record: LedgerRecord) -> None:
@@ -323,6 +396,19 @@ def validate_record(session: Session, record: LedgerRecord) -> None:
     elif isinstance(record, ExecutionFillRecord):
         intent = session.get(ExecutionOrderRecord, record.execution_order_id)
         proved = bindings(session, before_seq=record.seq).get(record.execution_order_id)
+        if intent is not None and intent.role == "ENTRY":
+            latest = session.scalar(
+                select(OrderEvent)
+                .where(OrderEvent.order_id == intent.order_id, OrderEvent.seq < record.seq)
+                .order_by(OrderEvent.seq.desc())
+                .limit(1)
+            )
+            if latest is None or latest.state not in {
+                "SUBMITTED",
+                "PARTIALLY_FILLED",
+                "CANCEL_REQUESTED",
+            }:
+                raise LedgerIntegrityError("Invalid appended order lifecycle transition")
         if (
             intent is None
             or proved is None
@@ -492,6 +578,7 @@ def validate_record(session: Session, record: LedgerRecord) -> None:
             or checked.observed_at != ensure_utc(record.ts)
             or checked.observed_at > record.created_at
             or broker.submitted_at > checked.observed_at
+            or (broker.rejected_at is not None and broker.rejected_at > checked.observed_at)
             or broker.client_order_id != intent.client_order_id
             or broker.qty > intent.qty
             or broker.symbol != intent.symbol

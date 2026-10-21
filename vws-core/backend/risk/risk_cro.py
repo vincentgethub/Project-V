@@ -8,9 +8,19 @@ notional. Unconfigured known sectors use 35%; unconfigured themes use zero.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
-from decimal import Decimal, localcontext
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DecimalException,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from typing import cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -125,6 +135,20 @@ def earnings_rule(
     )
 
 
+def _risk_decimal_context() -> Context:
+    """R-04: own ordinary Decimal semantics without inheriting caller mutations."""
+    return Context(
+        prec=28,
+        rounding=ROUND_HALF_EVEN,
+        Emin=-999999,
+        Emax=999999,
+        capitals=1,
+        clamp=0,
+        flags=[],
+        traps=[InvalidOperation, DivisionByZero, Overflow],
+    )
+
+
 class ChiefRiskOfficer:
     """CRO-01..13: injected immutable policy and prebuilt calendar; no I/O."""
 
@@ -180,79 +204,83 @@ class ChiefRiskOfficer:
         Unknown
         earnings is a failed WARN and cannot veto an otherwise valid buy.
         """
-        try:
-            instant = ensure_utc(now)
-            proposal = TradeProposal.model_validate(proposal)
-            snapshot = PortfolioSnapshot.model_validate(snapshot)
-            state_result = _result(
-                "CRO-01",
-                isinstance(state, SystemState)
-                and state_allows(state, proposal.intent, proposal.source),
-                state,
-                "RUNNING, or permitted reduction/exit",
-                "system operating state permits proposal",
-            )
-            recommended = financial_state(
-                snapshot.equity, snapshot.high_water_mark, snapshot.day_start_equity, self.config
-            )
-            if not state_result.passed:
-                return self._verdict(proposal, snapshot, instant, (state_result,), recommended)
-            if not _entry(proposal):
-                shape = self._shape(proposal, snapshot, None, instant)
-                return self._verdict(
-                    proposal, snapshot, instant, (state_result, shape), recommended
-                )
-            if type(daily_loss_blocked) is not bool:
-                raise DataIntegrityError("CRO-10: session entry-block evidence must be boolean")
-            if market is None:
-                raise DataIntegrityError("CRO-02: entry requires verified market context")
-            market = MarketContext.model_validate(market)
-            if deployable is not None:
-                deployable = DeployableCapital.model_validate(deployable)
-            limits = [self.config.__dict__[name] for name in self.config.DECIMAL_BOUNDS]
-            limits.extend(self.config.sector_caps.values())
-            limits.extend(self.config.theme_caps.values())
-            with localcontext() as context:
-                context.prec = max(
-                    80,
-                    len(str(proposal.qty)) + 40,
-                    max(len(value.as_tuple().digits) for value in limits) + 40,
-                )
-                shape = self._shape(proposal, snapshot, market, instant)
-                results = self._rules(
-                    proposal, snapshot, market, instant, deployable, daily_loss_blocked
-                )
-            return self._verdict(
-                proposal, snapshot, instant, (state_result, shape, *results), recommended
-            )
-        except Exception as exc:
+        with localcontext(_risk_decimal_context()):
             try:
                 instant = ensure_utc(now)
-                if not isinstance(proposal.proposal_id, UUID):
-                    raise DataIntegrityError("CRO-02: invalid proposal identity")
-                failures = tuple(
-                    _result(
-                        f"CRO-{number:02d}",
-                        False,
-                        type(exc).__name__,
-                        "verifiable inputs",
-                        "input or policy evaluation failed closed",
+                proposal = TradeProposal.model_validate(proposal)
+                snapshot = PortfolioSnapshot.model_validate(snapshot)
+                state_result = _result(
+                    "CRO-01",
+                    isinstance(state, SystemState)
+                    and state_allows(state, proposal.intent, proposal.source),
+                    state,
+                    "RUNNING, or permitted reduction/exit",
+                    "system operating state permits proposal",
+                )
+                recommended = financial_state(
+                    snapshot.equity,
+                    snapshot.high_water_mark,
+                    snapshot.day_start_equity,
+                    self.config,
+                )
+                if not state_result.passed:
+                    return self._verdict(proposal, snapshot, instant, (state_result,), recommended)
+                if not _entry(proposal):
+                    shape = self._shape(proposal, snapshot, None, instant)
+                    return self._verdict(
+                        proposal, snapshot, instant, (state_result, shape), recommended
                     )
-                    for number in range(1, 15)
+                if type(daily_loss_blocked) is not bool:
+                    raise DataIntegrityError("CRO-10: session entry-block evidence must be boolean")
+                if market is None:
+                    raise DataIntegrityError("CRO-02: entry requires verified market context")
+                market = MarketContext.model_validate(market)
+                if deployable is not None:
+                    deployable = DeployableCapital.model_validate(deployable)
+                limits = [self.config.__dict__[name] for name in self.config.DECIMAL_BOUNDS]
+                limits.extend(self.config.sector_caps.values())
+                limits.extend(self.config.theme_caps.values())
+                with localcontext() as context:
+                    context.prec = max(
+                        80,
+                        len(str(proposal.qty)) + 40,
+                        max(len(value.as_tuple().digits) for value in limits) + 40,
+                    )
+                    shape = self._shape(proposal, snapshot, market, instant)
+                    results = self._rules(
+                        proposal, snapshot, market, instant, deployable, daily_loss_blocked
+                    )
+                return self._verdict(
+                    proposal, snapshot, instant, (state_result, shape, *results), recommended
                 )
-                return Verdict(
-                    proposal_id=proposal.proposal_id,
-                    decision=Decision.VETOED,
-                    results=failures,
-                    config_hash=self._config_hash,
-                    snapshot_hash="0" * 64,
-                    evaluated_at=instant,
-                    recommended_state=SystemState.HALTED,
-                )
-            except Exception as audit_error:
-                raise DataIntegrityError(
-                    "CRO-02: cannot construct an auditable veto"
-                ) from audit_error
+            except Exception as exc:
+                try:
+                    instant = ensure_utc(now)
+                    if not isinstance(proposal.proposal_id, UUID):
+                        raise DataIntegrityError("CRO-02: invalid proposal identity")
+                    failures = tuple(
+                        _result(
+                            f"CRO-{number:02d}",
+                            False,
+                            type(exc).__name__,
+                            "verifiable inputs",
+                            "input or policy evaluation failed closed",
+                        )
+                        for number in range(1, 15)
+                    )
+                    return Verdict(
+                        proposal_id=proposal.proposal_id,
+                        decision=Decision.VETOED,
+                        results=failures,
+                        config_hash=self._config_hash,
+                        snapshot_hash="0" * 64,
+                        evaluated_at=instant,
+                        recommended_state=SystemState.HALTED,
+                    )
+                except Exception as audit_error:
+                    raise DataIntegrityError(
+                        "CRO-02: cannot construct an auditable veto"
+                    ) from audit_error
 
     def _verdict(
         self,
@@ -569,44 +597,61 @@ class ChiefRiskOfficer:
         Advisory reduction only. Complete unique CRO-02..08 evidence is required,
         so an empty/failed evaluation cannot look eligible. Sizing is monotone.
         """
-        try:
-            proposal = TradeProposal.model_validate(proposal)
-            snapshot = PortfolioSnapshot.model_validate(snapshot)
-            market = MarketContext.model_validate(market)
-            instant = ensure_utc(now)
-            if not _entry(proposal):
-                return 0
-            with localcontext() as context:
-                context.prec = 80
-                upper = max(
-                    0,
-                    min(
-                        proposal.qty,
-                        int(min(snapshot.cash, snapshot.equity) / proposal.limit_price),
-                    ),
-                )
-            lower = 0
-            while lower < upper:
-                midpoint = (lower + upper + 1) // 2
-                candidate = proposal.model_copy(update={"qty": midpoint})
-                verdict = self.evaluate(candidate, snapshot, market, SystemState.RUNNING, instant)
-                evidence = tuple(
-                    result for result in verdict.results if result.rule_id in SIZING_RULES
-                )
-                eligible = (
-                    len(evidence) == len(SIZING_RULES)
-                    and {result.rule_id for result in evidence} == SIZING_RULES
-                    and all(
-                        result.passed and result.severity == Severity.BLOCK for result in evidence
+        with localcontext(_risk_decimal_context()):
+            try:
+                proposal = TradeProposal.model_validate(proposal)
+                snapshot = PortfolioSnapshot.model_validate(snapshot)
+                market = MarketContext.model_validate(market)
+                instant = ensure_utc(now)
+                if not _entry(proposal):
+                    return 0
+                with localcontext() as context:
+                    context.prec = 80
+                    upper = max(
+                        0,
+                        min(
+                            proposal.qty,
+                            int(min(snapshot.cash, snapshot.equity) / proposal.limit_price),
+                        ),
                     )
-                )
-                if eligible:
-                    lower = midpoint
-                else:
-                    upper = midpoint - 1
-            return lower
-        except Exception as exc:
-            raise DataIntegrityError("CRO-03..08: deterministic sizing failed closed") from exc
+                lower = 0
+                while lower < upper:
+                    midpoint = (lower + upper + 1) // 2
+                    candidate = proposal.model_copy(update={"qty": midpoint})
+                    verdict = self.evaluate(
+                        candidate, snapshot, market, SystemState.RUNNING, instant
+                    )
+                    if verdict.snapshot_hash == "0" * 64:
+                        logging.getLogger(__name__).error(
+                            "risk_sizing_fault reason=%s",
+                            verdict.results[0].observed
+                            if verdict.results
+                            else "unverifiable evidence",
+                        )
+                        return 0
+                    evidence = tuple(
+                        result for result in verdict.results if result.rule_id in SIZING_RULES
+                    )
+                    if (
+                        len(evidence) != len(SIZING_RULES)
+                        or {result.rule_id for result in evidence} != SIZING_RULES
+                        or any(result.severity != Severity.BLOCK for result in evidence)
+                    ):
+                        logging.getLogger(__name__).error(
+                            "risk_sizing_fault reason=incomplete sizing evidence"
+                        )
+                        return 0
+                    eligible = all(result.passed for result in evidence)
+                    if eligible:
+                        lower = midpoint
+                    else:
+                        upper = midpoint - 1
+                return lower
+            except DecimalException as exc:
+                logging.getLogger(__name__).error("risk_sizing_fault reason=%s", type(exc).__name__)
+                return 0
+            except Exception as exc:
+                raise DataIntegrityError("CRO-03..08: deterministic sizing failed closed") from exc
 
     def evaluate_batch(
         self,

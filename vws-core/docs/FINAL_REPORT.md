@@ -1,5 +1,39 @@
 # Final build report - October 12, 2026
 
+October 20 continuation: the owner approved the narrow correction to
+[the Pass 6 sizing regression](MUTATION_PASS6_SIZING_STOP.md), plus a final full
+CRO check immediately before each physical entry submission. The old snapshot
+fails the eight-share regression; the corrected source passes. The 7,296-case
+matrix has zero sizing disagreements or oversizing. All six timed CRO blockers
+refuse the fake order with the exact rule and persisted refusal; a clear check
+sends one paper order. Decimal context changes remain local to the two risk
+methods and their one helper; formulas and policy limits are unchanged.
+Current collection adds 889 cases and removes no behaviors; only the original
+four perf cases are deselected. The exact 15,457-ID partition passes across
+63 unchanged jobs, with no retained ID reassigned. Both full suites pass:
+6,607 passed, 61 skipped and four original perf-only deselections each; required
+coverage is 100% for 9,503 statements and 3,386 branches. Executor reaches 100%
+for 1,864 statements and 776 branches. Frozen hashes and case parity are verified.
+GD-07, lint/format, all pre-commit hooks and whole strict typing pass. Pre-commit
+history scan: 48 commits, zero leaks. The 27 individual risk proposals remain
+unapproved and must fail the gate if they survive. The single-push handoff
+records the commit, post-commit gitleaks and completed native Linux CI results;
+native outcomes are pending at this commit. [The current report](MUTATION_PASS6.md)
+supersedes historical STOPs.
+
+Post-build follow-up, October 18: [Mutation Pass 6](MUTATION_PASS6.md) is
+continuing inside the clarified nine-function boundary. The original strict
+fresh-price check and standalone repair contract are restored: 15 focused
+repair cases pass without changing the original standalone assertion.
+The independent entry veto passes 12 cases; GD-07 passes 337 without guard or
+allowlist changes. Whole-repository lint/format and strict typing pass.
+The fresh offline suite passes 6,090 tests with 61 skips and four perf-only
+deselections; every required statement/branch coverage target reaches 100%.
+Executor covers 1,838 statements and 762 branches. The 15,300-ID preflight
+passes with 63 unchanged jobs and zero retained-owner moves. Kill passes,
+final suites, post-commit gitleaks and CI remain unfinished. No Pass 6 commit
+or push. Earlier STOP narratives are historical.
+
 Post-build follow-up, October 16: [Safety mutation Pass 5](MUTATION_PASS5.md)
 adds 180 offline behavior cases in the existing risk/executor selections and
 includes the executor module in required coverage without lowering 100%.

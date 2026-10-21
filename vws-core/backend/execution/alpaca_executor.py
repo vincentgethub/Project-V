@@ -65,6 +65,7 @@ from backend.core.system_state import SystemState, SystemStateStore, financial_s
 from backend.data.fill_polling import ObservedFill
 from backend.data.market_calendar import MarketCalendar
 from backend.domain.models import (
+    BlackoutWindow,
     Decision,
     Intent,
     MarketContext,
@@ -114,6 +115,7 @@ from backend.execution.storage import (
     exit_approvals,
     exit_cycles,
     filled_quantity,
+    finalize_shared_order,
     held_quantity,
 )
 from backend.execution.worker import SingleAttemptWorker
@@ -124,6 +126,7 @@ from backend.notifications.card_formatter import display_time
 from backend.risk.boundary import RiskBoundary
 from backend.risk.compliance import day_trade_activity
 from backend.risk.compliance_boundary import ComplianceBoundary
+from backend.risk.risk_cro import ChiefRiskOfficer
 from backend.security.secrets import SecretStore
 
 _EXACT_REQUEST_CONFIG = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
@@ -147,6 +150,70 @@ class ExactStopLoss(StopLossRequest):
     def to_request_fields(self) -> dict[str, Any]:
         checked = ExactStopLoss.model_validate(self)
         return {"stop_price": format(checked.stop_price, ".2f")}
+
+
+def _require_side(order: LimitOrderRequest) -> OrderSide:
+    if order.side is None:
+        raise DataIntegrityError("Validated order has no side")
+    return order.side
+
+
+def _require_fill_parent(instruction: ExecutionOrderRecord) -> UUID | None:
+    if instruction.role != "ENTRY" and instruction.parent_execution_id is None:
+        raise ReconciliationError("Fill notification lost its managed entry")
+    return instruction.parent_execution_id
+
+
+def _require_acquisition_basis(buys: tuple[ExecutionFillRecord, ...]) -> None:
+    if not buys:
+        raise ReconciliationError("Fill notice has no verified acquisition basis")
+
+
+def _require_entry_projection(control: SystemControl | None) -> SystemControl:
+    if control is None:
+        raise DataIntegrityError("Entry state projection is missing")
+    return control
+
+
+def _require_fresh_cancel_roots(
+    parent: BrokerOrder | None, target: BrokerOrder | None
+) -> tuple[BrokerOrder, BrokerOrder]:
+    if parent is None or target is None:
+        raise DataIntegrityError("EX-06: fresh paper roots unavailable")
+    return parent, target
+
+
+def _require_active_durable_repair(confirmed: BrokerOrder | None) -> None:
+    if (
+        confirmed is None
+        or not confirmed.is_open
+        or confirmed.status in {"held", "suspended", "pending_cancel"}
+    ):
+        raise ReconciliationError("EX-05: durable repair cannot be repeated")
+
+
+def _require_known_sell_outcome(broker: BrokerOrder | None, confirmed_absence: bool) -> None:
+    if broker is None and not confirmed_absence:
+        raise ReconciliationError(
+            "An unknown sell outcome prevents a conflicting stop or replacement"
+        )
+
+
+def _require_absent_sell_unfilled(quantity: int) -> None:
+    if quantity != 0:
+        raise ReconciliationError("Absent sell intent has captured fills")
+
+
+def _require_cancel_lifecycle(latest: OrderEvent | None) -> OrderEvent:
+    if latest is None:
+        raise ReconciliationError("Cancellation has no order lifecycle")
+    return latest
+
+
+def _require_oco_entry(held_entry: ExecutionOrderRecord | None) -> ExecutionOrderRecord:
+    if held_entry is None or held_entry.role != "ENTRY":
+        raise ReconciliationError("EX-05: OCO stop child lost its held entry")
+    return held_entry
 
 
 class ExactLimit(LimitOrderRequest):
@@ -209,12 +276,11 @@ class ExactLimit(LimitOrderRequest):
 
     def to_request_fields(self) -> dict[str, Any]:
         checked = ExactLimit.model_validate(self)
-        if checked.side is None:
-            raise DataIntegrityError("Validated order has no side")
+        side = _require_side(checked)
         result: dict[str, Any] = {
             "symbol": checked.symbol,
             "qty": str(checked.qty),
-            "side": checked.side.value,
+            "side": side.value,
             "type": "limit",
             "time_in_force": checked.time_in_force.value,
             "order_class": "bracket"
@@ -386,6 +452,8 @@ def parse_order(raw: object, *, parent_id: UUID | None = None) -> BrokerOrder:
             stop_price=_price(raw.get("stop_price")),
             submitted_at=_instant(raw["submitted_at"]),
             parent_id=parent_id,
+            rejection_reason=raw.get("reject_reason"),
+            rejected_at=raw.get("failed_at"),
             legs=tuple(parse_order(row, parent_id=identifier) for row in legs or ()),
         )
     except Exception as error:
@@ -986,6 +1054,64 @@ class AlpacaExecutor:
     async def enter(self, proposal_id: UUID, *, click: CallbackClick | None = None) -> Submission:
         async with account_lock(self.modes.account_id, self.environment):
             try:
+                broker_held: dict[str, int] = {}
+                broker_stops: dict[UUID, BrokerOrder] = {}
+
+                def protection_veto(session: DatabaseSession, *, coverage: bool = True) -> None:
+                    if self._protection_repairs(session):
+                        raise ExecutionDisabledError("Open protection repair blocks entry")
+                    if not coverage:
+                        return
+                    held = dict(broker_held)
+                    captured: dict[str, int] = {}
+                    for entry in session.scalars(
+                        select(ExecutionOrderRecord).where(
+                            ExecutionOrderRecord.account_id == self.modes.account_id,
+                            ExecutionOrderRecord.environment == self.environment,
+                            ExecutionOrderRecord.role == "ENTRY",
+                        )
+                    ):
+                        captured[entry.symbol] = captured.get(entry.symbol, 0) + held_quantity(
+                            session, entry.id
+                        )
+                    for symbol, qty in captured.items():
+                        held[symbol] = max(held.get(symbol, 0), qty)
+                    protected: dict[str, int] = {}
+                    for stop in broker_stops.values():
+                        if (
+                            stop.side == "sell"
+                            and stop.order_type == "stop"
+                            and stop.is_open
+                            and stop.status not in {"held", "suspended", "pending_cancel"}
+                        ):
+                            protected[stop.symbol] = protected.get(stop.symbol, 0) + (
+                                stop.qty - stop.filled_qty
+                            )
+                    for symbol in sorted(held):
+                        if held[symbol] <= 0:
+                            continue
+                        if protected.get(symbol, 0) == 0:
+                            raise ExecutionDisabledError(
+                                f"Protection veto: {symbol} has held shares but no active stop"
+                            )
+                        if held[symbol] > protected[symbol]:
+                            raise ExecutionDisabledError(
+                                f"Protection veto: {symbol} held shares exceed protected shares"
+                            )
+
+                async def refresh_protection() -> None:
+                    nonlocal broker_held, broker_stops
+                    with DatabaseSession(self.state.engine) as session:
+                        protection_veto(session, coverage=False)
+                    broker_held = await self._positions()
+                    opened = await self._open_orders()
+                    broker_stops = {
+                        leg.order_id: leg for root in opened for leg in (root, *root.legs)
+                    }
+                    with DatabaseSession(self.state.engine) as session:
+                        protection_veto(session)
+
+                await refresh_protection()
                 self._assert_ops()
                 if not self.modes.entries_enabled or (
                     self.risk.marks is not None
@@ -1144,6 +1270,7 @@ class AlpacaExecutor:
                     raise ExecutionDisabledError(
                         "AX-25 existing position or pending order blocks duplicate entry"
                     )
+                await refresh_protection()
                 requests = self._entry_requests(proposal)
                 for planned in requests:
                     if await self._lookup(planned.client_order_id) is not None:
@@ -1160,8 +1287,12 @@ class AlpacaExecutor:
                         "Bracket stop lacks Alpaca's one-cent base-price distance"
                     )
 
+                physical_proposal: TradeProposal | None = None
+
                 def submit_guard() -> None:
                     try:
+                        with DatabaseSession(self.state.engine) as session:
+                            protection_veto(session)
                         self._assert_ops()
                         self._assert_entry_variant()
                         self._assert_playbook(alert.playbook)
@@ -1187,13 +1318,73 @@ class AlpacaExecutor:
                             "Final mode, state, expiry or freshness guard blocks entry"
                         )
                     assert_auto_binding(self.settings, self.store)
+                    if physical_proposal is not None:
+                        # Finish durable observations before the final pure
+                        # evaluation. An approved result has no following I/O.
+                        officer = self.risk.cro
+                        if self.risk.additional_blackouts is not None:
+                            extra = self.risk.additional_blackouts()
+                            if not isinstance(extra, tuple) or len(extra) > 500:
+                                raise DataIntegrityError(
+                                    "CRO-11: bounded immutable extra windows required"
+                                )
+                            officer = ChiefRiskOfficer(
+                                officer.config,
+                                officer.registry,
+                                officer.calendar,
+                                blackout_windows=tuple(
+                                    window
+                                    for window in officer.blackout_windows
+                                    if window not in officer.registry.blackout_windows
+                                )
+                                + tuple(BlackoutWindow.model_validate(window) for window in extra),
+                            )
+                        final_snapshot = inputs.portfolio
+                        final_daily_loss = False
+                        if self.risk.marks is not None:
+                            final_snapshot = self.risk.marks.observe(final_snapshot)
+                            final_daily_loss = self.risk.marks.daily_loss_blocked(
+                                self.state.clock.now()
+                            )
+                        final_state = self.state.current()
+                        final_verdict = officer.evaluate(
+                            physical_proposal,
+                            final_snapshot,
+                            inputs.market,
+                            final_state,
+                            ensure_utc(self.state.clock.now()),
+                            deployable=inputs.capital,
+                            daily_loss_blocked=final_daily_loss,
+                        )
+                        final_verdict = self.risk._checked(
+                            final_verdict,
+                            physical_proposal,
+                            final_snapshot,
+                            inputs.market,
+                            final_daily_loss,
+                        )
+                        if final_verdict.decision != Decision.APPROVED:
+                            self.state.escalate(
+                                final_verdict.recommended_state, "Final full CRO entry recheck"
+                            )
+                            for row in final_verdict.results:
+                                if not row.passed and row.severity == Severity.BLOCK:
+                                    self.risk.veto_sink.record(
+                                        row.rule_id, final_verdict.proposal_id
+                                    )
+                            blockers = ",".join(
+                                row.rule_id
+                                for row in final_verdict.results
+                                if not row.passed and row.severity == Severity.BLOCK
+                            )
+                            raise EntryAdmissionRevoked(f"Final full CRO blocks entry: {blockers}")
 
                 submit_guard()
                 with transaction(self.state.engine) as session:
+                    protection_veto(session)
                     control = session.get(SystemControl, 1)
                     mode, paused = self.modes.in_session(session)
-                    if control is None:
-                        raise DataIntegrityError("Entry state projection is missing")
+                    control = _require_entry_projection(control)
                     self.state._verify_projection(session, control)
                     if (
                         mode == "MANUAL"
@@ -1275,28 +1466,52 @@ class AlpacaExecutor:
                     submitted = []
                     recovered = False
                     for instruction, request in zip(instructions, requests, strict=True):
+                        try:
+                            await refresh_protection()
+                        except ExecutionDisabledError as error:
+                            raise EntryAdmissionRevoked(str(error)) from None
+                        inputs = FreshInputs.model_validate(
+                            await self.source.refresh(proposal.symbol)
+                        )
+                        physical_proposal = TradeProposal.model_validate(
+                            proposal.model_copy(
+                                update={
+                                    "symbol": request.symbol,
+                                    "qty": request.qty,
+                                    "limit_price": request.limit_price,
+                                    "stop_price": None
+                                    if request.stop_loss is None
+                                    else request.stop_loss.stop_price,
+                                }
+                            )
+                        )
                         broker, ambiguous = await self._submit(
                             instruction, request, guard=submit_guard
                         )
                         recovered = recovered or ambiguous
                         self._register_children(instruction, broker)
                         submitted.append(broker)
-                except EntryAdmissionRevoked:
-                    self.state.ledger.append(
-                        OrderEvent,
-                        order_id=order.id,
-                        state="CANCELED",
+                except EntryAdmissionRevoked as revocation:
+                    for pending in instructions[len(submitted) :]:
+                        if not self._confirmed_absence(pending):
+                            self._outcome(pending, "NOT_SENT", revocation)
+                    await self._finalize_entry_cancellation(
+                        instructions[0],
                         reason="final guard revoked admission before physical request; no submit",
-                        broker_order_id=None,
                     )
+                    for managed in instructions:
+                        with DatabaseSession(self.state.engine) as session:
+                            qty = held_quantity(session, managed.id)
+                        if qty:
+                            await self._ensure_stop(managed, qty)
                     raise
-                except OrderRejectedError:
-                    self.state.ledger.append(
-                        OrderEvent,
-                        order_id=order.id,
-                        state="REJECTED",
+                except OrderRejectedError as rejection:
+                    for pending in instructions[len(submitted) + 1 :]:
+                        self._outcome(pending, "NOT_SENT", rejection)
+                    await self._finalize_entry_cancellation(
+                        instructions[0],
                         reason="broker rejection confirmed; no retry",
-                        broker_order_id=None,
+                        cancel_open=False,
                     )
                     raise
                 await self._trade_notice(
@@ -1356,9 +1571,7 @@ class AlpacaExecutor:
         if parent.role == "REPAIR" and broker.order_class == "oco":
             with DatabaseSession(self.state.engine) as session:
                 held_entry = session.get(ExecutionOrderRecord, parent.parent_execution_id)
-            if held_entry is None or held_entry.role != "ENTRY":
-                raise ReconciliationError("EX-05: OCO stop child lost its held entry")
-            parent = held_entry
+            parent = _require_oco_entry(held_entry)
         elif parent.role != "ENTRY":
             return
         for child in broker.legs:
@@ -1526,8 +1739,7 @@ class AlpacaExecutor:
                 proved = bindings(session)
                 parent = proved.get(oto.id)
                 target = proved.get(oco.id)
-                if parent is None or target is None:
-                    raise DataIntegrityError("EX-06: fresh paper roots unavailable")
+                parent, target = _require_fresh_cancel_roots(parent, target)
                 stops = tuple(
                     session.scalars(
                         select(ExecutionOrderRecord).where(
@@ -1578,15 +1790,20 @@ class AlpacaExecutor:
         return tuple(parse_order(row) for row in raw)
 
     async def _cancel_confirmed(
-        self, instruction: ExecutionOrderRecord, broker: BrokerOrder, *, deadline_seconds: int = 30
+        self,
+        instruction: ExecutionOrderRecord,
+        broker: BrokerOrder,
+        *,
+        deadline_seconds: int = 30,
+        verify_fills: bool = True,
     ) -> BrokerOrder:
         if type(deadline_seconds) is not int or not 1 <= deadline_seconds <= 30:
             raise ProviderError("Cancel confirmation requires a bounded deadline")
         async with asyncio.timeout(deadline_seconds):
-            return await self._cancel_and_poll(instruction, broker)
+            return await self._cancel_and_poll(instruction, broker, verify_fills=verify_fills)
 
     async def _cancel_and_poll(
-        self, instruction: ExecutionOrderRecord, broker: BrokerOrder
+        self, instruction: ExecutionOrderRecord, broker: BrokerOrder, *, verify_fills: bool = True
     ) -> BrokerOrder:
         if not broker.is_open:
             return broker
@@ -1619,11 +1836,115 @@ class AlpacaExecutor:
         if checked.is_open:
             raise ProviderError("Cancellation is unconfirmed; no replacement or retry")
         with DatabaseSession(self.state.engine) as session:
-            if checked.filled_qty != filled_quantity(session, instruction.id):
+            if verify_fills and checked.filled_qty != filled_quantity(session, instruction.id):
                 raise ReconciliationError(
                     "Cancellation raced a fill; capture activities before recovery"
                 )
         return checked
+
+    async def _finalize_entry_cancellation(
+        self,
+        entry: ExecutionOrderRecord,
+        *,
+        reason: str,
+        deadline: float | None = None,
+        cancel_open: bool = True,
+    ) -> str:
+        """SEC-73/EX-01: one shared order remains pending until every entry leg is proved done."""
+        loop = asyncio.get_running_loop()
+        if deadline is None:
+            deadline = loop.time() + self.settings.panic_cancel_timeout_seconds
+        legs = tuple(
+            row
+            for row in self._instructions()
+            if row.role == "ENTRY" and row.order_id == entry.order_id
+        )
+        legs = tuple(sorted(legs, key=lambda row: row.id != entry.id))
+        absent = {row.id for row in legs if self._confirmed_absence(row)}
+        fresh: set[UUID] = set()
+        for leg in legs:
+            try:
+                async with asyncio.timeout_at(deadline):
+                    await self._read_bound(leg)
+                fresh.add(leg.id)
+            except (ProviderError, ReconciliationError, TimeoutError):
+                continue
+        with transaction(self.state.engine) as session:
+            latest = session.scalar(
+                select(OrderEvent)
+                .where(OrderEvent.order_id == entry.order_id)
+                .order_by(OrderEvent.seq.desc())
+                .limit(1)
+            )
+            latest = _require_cancel_lifecycle(latest)
+            if latest.state in {"FILLED", "CANCELED", "REJECTED"}:
+                return latest.state
+            completed = (
+                finalize_shared_order(self.state.ledger, session, entry.order_id, reason=reason)
+                if len(fresh) == len(legs)
+                else None
+            )
+            if completed is not None:
+                return completed
+            if not cancel_open:
+                return latest.state
+            if latest.state != "CANCEL_REQUESTED":
+                self.state.ledger.append_in_session(
+                    session,
+                    OrderEvent,
+                    order_id=entry.order_id,
+                    state="CANCEL_REQUESTED",
+                    reason=reason,
+                    broker_order_id=None,
+                )
+        faults: dict[str, str] = {}
+        for leg in legs:
+            if leg.id in absent:
+                continue
+            try:
+                async with asyncio.timeout_at(deadline):
+                    broker = await self._read_bound(leg)
+                    if broker is not None and broker.is_open and broker.status != "pending_cancel":
+                        await self._cancel_confirmed(leg, broker, verify_fills=False)
+            except (ProviderError, ReconciliationError, TimeoutError) as error:
+                faults[leg.client_order_id] = type(error).__name__
+        unresolved = [row.client_order_id for row in legs if row.id not in absent]
+        while loop.time() < deadline:
+            observed: dict[UUID, BrokerOrder] = {}
+            for leg in legs:
+                if leg.id in absent:
+                    continue
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        broker = await self._read_bound(leg)
+                    if broker is not None:
+                        observed[leg.id] = broker
+                except (ProviderError, ReconciliationError, TimeoutError) as error:
+                    faults[leg.client_order_id] = type(error).__name__
+            with transaction(self.state.engine) as session:
+                unresolved = [
+                    leg.client_order_id
+                    for leg in legs
+                    if leg.id not in absent
+                    and (
+                        leg.id not in observed
+                        or observed[leg.id].is_open
+                        or observed[leg.id].status
+                        not in {"filled", "canceled", "expired", "rejected"}
+                        or observed[leg.id].filled_qty != filled_quantity(session, leg.id)
+                    )
+                ]
+                if not unresolved:
+                    completed = finalize_shared_order(
+                        self.state.ledger, session, entry.order_id, reason=reason
+                    )
+                    if completed is not None:
+                        return completed
+            await asyncio.sleep(min(0.05, max(0, deadline - loop.time())))
+        self.state.escalate(SystemState.HALTED, "Cancellation confirmation remains unresolved")
+        raise ReconciliationError(
+            "Cancellation confirmation unresolved for legs: " + ", ".join(unresolved)
+        )
 
     async def _repair_stop(
         self,
@@ -1754,6 +2075,649 @@ class AlpacaExecutor:
             )
             raise ReconciliationError("Protective stop could not be confirmed; HALTED") from None
 
+    def _protection_repairs(
+        self, session: DatabaseSession | None = None
+    ) -> tuple[dict[str, Any], ...]:
+        if session is None:
+            with DatabaseSession(self.state.engine) as read:
+                return self._protection_repairs(read)
+        pending: dict[str, dict[str, Any]] = {}
+        rows = session.scalars(
+            select(SecurityEvent)
+            .where(SecurityEvent.kind == "PROTECTION_REPAIR")
+            .order_by(SecurityEvent.seq)
+        )
+        for row in rows:
+            detail = row.detail
+            if (
+                detail.get("account_id") != self.modes.account_id
+                or detail.get("environment") != self.environment
+            ):
+                continue
+            if detail.get("phase") in {"OPEN", "FAILED"}:
+                pending[detail["repair_id"]] = detail
+            elif detail.get("phase") == "CLOSED":
+                pending.pop(detail["repair_id"], None)
+            else:
+                raise ReconciliationError("Protection repair journal has an invalid phase")
+        return tuple(pending.values())
+
+    def _begin_protection_repair(
+        self,
+        entry: ExecutionOrderRecord,
+        qty: int,
+        old_stop: Decimal,
+        new_stop: Decimal,
+        approval: StopRaiseApproval | None = None,
+    ) -> dict[str, Any]:
+        from backend.core.database import AppendControl
+        from backend.execution.models import ModeOverride
+
+        repair_id = uuid4().hex
+        actor = "auto-protection:" + repair_id
+        running = self.state.current() == SystemState.RUNNING
+        with transaction(self.state.engine) as session:
+            # Serialize pause ownership with every other append-only control
+            # writer before inspecting the latest operator or repair control.
+            session.execute(
+                select(AppendControl).where(AppendControl.id == 1).with_for_update()
+            ).scalar_one()
+            active = self._protection_repairs(session)
+            for pending in active:
+                if pending["entry_id"] == str(entry.id):
+                    return pending
+            previous = self.modes._latest(session)
+            mode, paused = self.modes.in_session(session)
+            shared = next(
+                (
+                    pending
+                    for pending in active
+                    if previous is not None
+                    and previous.paused
+                    and previous.actor == pending["pause_actor"]
+                ),
+                None,
+            )
+            if shared is not None:
+                actor = shared["pause_actor"]
+            children = tuple(
+                session.scalars(
+                    select(ExecutionOrderRecord).where(
+                        ExecutionOrderRecord.parent_execution_id == entry.id
+                    )
+                )
+            )
+            prefix = "vws-j-" + repair_id
+            detail = {
+                "repair_id": repair_id,
+                "phase": "OPEN",
+                "entry_id": str(entry.id),
+                "order_id": str(entry.order_id),
+                "account_id": entry.account_id,
+                "environment": entry.environment,
+                "config_hash": self.settings.config_hash,
+                "qty": qty,
+                "old_stop": format(validate_cent_price(old_stop), ".2f"),
+                "new_stop": format(validate_cent_price(new_stop), ".2f"),
+                "old_exit_ids": [str(row.id) for row in children],
+                "old_broker_ids": [
+                    str(broker.order_id)
+                    for key, broker in bindings(session).items()
+                    if key in {row.id for row in children}
+                ],
+                "new_client_id": prefix + "-new"
+                if approval is None
+                else "vws-m-" + approval.raise_id.hex,
+                "old_client_id": prefix + "-old"
+                if approval is None
+                else "vws-m-" + approval.raise_id.hex + "-r",
+                "approval": None if approval is None else approval.model_dump(mode="json"),
+                "pause_actor": actor,
+                "release_pause": shared["release_pause"]
+                if shared is not None
+                else (
+                    running
+                    and not paused
+                    and mode != "MANUAL"
+                    and (previous is None or not previous.paused)
+                ),
+            }
+            pause = ModeOverride(
+                account_id=entry.account_id,
+                environment=self.modes.environment,
+                mode=mode,
+                paused=True,
+                action="PAUSE",
+                actor=actor,
+                config_hash=self.settings.config_hash,
+            )
+            self.state.ledger.append_in_session(
+                session,
+                SecurityEvent,
+                kind="EXECUTION_MODE_OVERRIDE",
+                detail=pause.model_dump(mode="json"),
+            )
+            self.state.ledger.append_in_session(
+                session, SecurityEvent, kind="PROTECTION_REPAIR", detail=detail
+            )
+        return detail
+
+    def _finish_protection_repair(self, journal: dict[str, Any], *, result: str) -> None:
+        from backend.core.database import AppendControl
+        from backend.execution.models import ModeOverride
+
+        running = self.state.current() == SystemState.RUNNING
+        with transaction(self.state.engine) as session:
+            session.execute(
+                select(AppendControl).where(AppendControl.id == 1).with_for_update()
+            ).scalar_one()
+            active_repairs = self._protection_repairs(session)
+            if not any(row["repair_id"] == journal["repair_id"] for row in active_repairs):
+                return
+            other_repairs = any(row["repair_id"] != journal["repair_id"] for row in active_repairs)
+            entry_id = UUID(journal["entry_id"])
+            held = held_quantity(session, entry_id)
+            target = Decimal(journal["new_stop"] if result == "LIVE" else journal["old_stop"])
+            proof = bindings(session)
+            protected = sum(
+                broker.qty - broker.filled_qty
+                for row in session.scalars(
+                    select(ExecutionOrderRecord).where(
+                        ExecutionOrderRecord.parent_execution_id == entry_id,
+                        ExecutionOrderRecord.order_type == "STOP",
+                    )
+                )
+                if (broker := proof.get(row.id)) is not None
+                and broker.is_open
+                and broker.status not in {"held", "suspended", "pending_cancel"}
+                and broker.stop_price == target
+            )
+            if (result == "FLAT" and held != 0) or protected < held:
+                raise ReconciliationError(
+                    "Cannot close a protection repair without confirmed stop coverage"
+                )
+            self.state.ledger.append_in_session(
+                session,
+                SecurityEvent,
+                kind="PROTECTION_REPAIR",
+                detail={**journal, "phase": "CLOSED", "result": result},
+            )
+            latest = self.modes._latest(session)
+            if (
+                journal["release_pause"]
+                and running
+                and not other_repairs
+                and latest is not None
+                and latest.paused
+                and latest.actor == journal["pause_actor"]
+                and latest.config_hash == self.settings.config_hash
+            ):
+                release = ModeOverride(
+                    account_id=latest.account_id,
+                    environment=latest.environment,
+                    mode=latest.mode,
+                    paused=False,
+                    action="RESUME",
+                    actor=journal["pause_actor"],
+                    config_hash=self.settings.config_hash,
+                )
+                self.state.ledger.append_in_session(
+                    session,
+                    SecurityEvent,
+                    kind="EXECUTION_MODE_OVERRIDE",
+                    detail=release.model_dump(mode="json"),
+                )
+
+    async def _repair_position(self, entry: ExecutionOrderRecord) -> int:
+        await self._verify_account()
+        positions = await self._positions()
+        with DatabaseSession(self.state.engine) as session:
+            proof = bindings(session)
+            managed = set(
+                session.scalars(
+                    select(ExecutionOrderRecord.id).where(
+                        ExecutionOrderRecord.account_id == entry.account_id,
+                        ExecutionOrderRecord.environment == entry.environment,
+                    )
+                )
+            )
+            known = {proof[key].order_id for key in managed if key in proof}
+            held = held_quantity(session, entry.id)
+            total = sum(
+                held_quantity(session, row.id)
+                for row in session.scalars(
+                    select(ExecutionOrderRecord).where(
+                        ExecutionOrderRecord.account_id == entry.account_id,
+                        ExecutionOrderRecord.environment == entry.environment,
+                        ExecutionOrderRecord.symbol == entry.symbol,
+                        ExecutionOrderRecord.role == "ENTRY",
+                    )
+                )
+            )
+        if positions.get(entry.symbol, 0) != total:
+            raise ReconciliationError("Protection repair cannot reconcile broker-held shares")
+        if any(broker.order_id not in known for broker in await self._open_orders()):
+            raise ReconciliationError("Unknown broker order forbids a journaled protection repair")
+        return held
+
+    async def _repair_stop_attempt(
+        self,
+        entry: ExecutionOrderRecord,
+        journal: dict[str, Any],
+        *,
+        restore: bool,
+    ) -> BrokerOrder:
+        identity = journal["old_client_id" if restore else "new_client_id"]
+        level = validate_cent_price(
+            Decimal(
+                journal["old_stop"]
+                if restore
+                else journal.get("selected_stop", journal["new_stop"])
+            )
+        )
+        qty = await self._repair_position(entry)
+        if qty <= 0:
+            raise ReconciliationError("Protection repair has no remaining held shares")
+        approval = (
+            None if journal["approval"] is None else StopRaiseApproval.recorded(journal["approval"])
+        )
+        restoring = restore or level == Decimal(journal["old_stop"])
+        if approval is not None:
+            try:
+                inputs = await self._fresh_exit_inputs(entry)
+            except ExecutionDisabledError as error:
+                if not restoring:
+                    raise EntryAdmissionRevoked(str(error)) from None
+            else:
+                if level >= inputs.market.last_price:
+                    raise EntryAdmissionRevoked(
+                        "EX-05: protective stop must be below the fresh price"
+                    )
+        if approval is not None and not restore and approval.qty != qty:
+            raise EntryAdmissionRevoked("Stop-raise quantity changed before journaled submit")
+        with DatabaseSession(self.state.engine) as session:
+            previous = session.scalar(
+                select(ExecutionOrderRecord).where(ExecutionOrderRecord.client_order_id == identity)
+            )
+        if previous is not None:
+            confirmed = await self._read_bound(previous)
+            if confirmed is None and self._confirmed_absence(previous):
+                raise OrderRejectedError(
+                    "Journaled protection attempt was refused; never resubmit its client ID"
+                )
+            if confirmed is None:
+                raise ReconciliationError(
+                    "Journaled protection outcome is unresolved; no duplicate submit"
+                )
+        else:
+            if await self._lookup(identity) is not None:
+                raise ReconciliationError(
+                    "Journaled protection client ID exists without its durable intent"
+                )
+            target = (
+                entry.target_price
+                if approval is not None and not restore and not journal.get("standalone", False)
+                else None
+            )
+            instruction = self.state.ledger.append(
+                ExecutionOrderRecord,
+                order_id=entry.order_id,
+                parent_execution_id=entry.id,
+                client_order_id=identity,
+                account_id=entry.account_id,
+                environment=entry.environment,
+                symbol=entry.symbol,
+                role="REPAIR",
+                side="SELL",
+                order_type="STOP" if target is None else "LIMIT",
+                qty=qty,
+                limit_price=target,
+                stop_price=level,
+                target_price=target,
+                time_in_force="GTC",
+                config_hash=self.settings.config_hash,
+                valid_until=None,
+            )
+            request: ExactStop | ExactLimit = (
+                ExactStop(
+                    symbol=entry.symbol,
+                    qty=qty,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    client_order_id=identity,
+                    stop_price=level,
+                )
+                if target is None
+                else ExactLimit(
+                    symbol=entry.symbol,
+                    qty=qty,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    client_order_id=identity,
+                    order_class=OrderClass.OCO,
+                    limit_price=target,
+                    take_profit=ExactTakeProfit(limit_price=target),
+                    stop_loss=ExactStopLoss(stop_price=level),
+                )
+            )
+
+            def guard() -> None:
+                assert_auto_binding(self.settings, self.store)
+                if self.modes.entries_enabled:
+                    raise EntryAdmissionRevoked("Protection repair lost its durable entry block")
+                with DatabaseSession(self.state.engine) as session:
+                    if held_quantity(session, entry.id) != qty:
+                        raise EntryAdmissionRevoked(
+                            "Held shares changed during journaled protection repair"
+                        )
+                if (
+                    approval is not None
+                    and not restoring
+                    and not timedelta(0)
+                    <= self.state.clock.now() - approval.quote_at
+                    <= timedelta(seconds=self.settings.stale_quote_seconds)
+                ):
+                    raise EntryAdmissionRevoked("EX-05: stop-raise quote expired before submit")
+
+            await self._submit(instruction, request, guard=guard)
+            confirmed = await self._read_bound(instruction)
+        if (
+            confirmed is None
+            or not confirmed.is_open
+            or confirmed.status in {"held", "suspended", "pending_cancel"}
+        ):
+            raise ReconciliationError("Journaled replacement stop is not confirmed active")
+        stops = (confirmed,) if confirmed.order_type == "stop" else confirmed.legs
+        if not any(
+            stop.order_type == "stop"
+            and stop.is_open
+            and stop.status not in {"held", "suspended", "pending_cancel"}
+            and stop.stop_price == level
+            and stop.qty - stop.filled_qty == qty
+            for stop in stops
+        ):
+            raise ReconciliationError("Journaled replacement lacks exact live stop coverage")
+        if await self._repair_position(entry) != qty:
+            raise ReconciliationError("Held shares changed before repair confirmation")
+        return confirmed
+
+    async def _journaled_stop_repair(
+        self,
+        entry: ExecutionOrderRecord,
+        qty: int,
+        old_stop: Decimal,
+        new_stop: Decimal,
+        *,
+        approval: StopRaiseApproval | None = None,
+        restore_only: bool = False,
+        standalone_repair: bool = False,
+    ) -> tuple[Decimal, dict[str, Any]]:
+        journal = self._begin_protection_repair(entry, qty, old_stop, new_stop, approval)
+        old_stop = validate_cent_price(Decimal(journal["old_stop"]))
+        new_stop = validate_cent_price(Decimal(journal["new_stop"]))
+        approval = (
+            None if journal["approval"] is None else StopRaiseApproval.recorded(journal["approval"])
+        )
+        if approval is not None:
+            with DatabaseSession(self.state.engine) as session:
+                completed = any(
+                    move.approval.raise_id == approval.raise_id
+                    for move in moved_stops(session, entry)
+                )
+                protected_level = current_stop(session, entry)
+            if completed:
+                # A completed raise is now the minimum protection level. Its
+                # original failed/canceled client IDs are not new repair IDs.
+                journal = self._record_repair_progress(
+                    {
+                        **journal,
+                        "approval": None,
+                        "superseded_approval": journal["approval"],
+                        "old_stop": format(protected_level, ".2f"),
+                        "new_stop": format(protected_level, ".2f"),
+                        "selected_stop": format(protected_level, ".2f"),
+                        "new_client_id": "vws-j-" + journal["repair_id"] + "-new",
+                        "old_client_id": "vws-j-" + journal["repair_id"] + "-old",
+                        "standalone": True,
+                    },
+                    "REBASE",
+                )
+                old_stop = new_stop = protected_level
+                approval = None
+        try:
+            if self.worker.has_pending_attempts:
+                raise ReconciliationError(
+                    "EX-05: unresolved physical attempt forbids a conflicting repair"
+                )
+            journal = self._record_repair_progress(journal, "CANCEL")
+            await self._cancel_sells(entry)
+            qty = await self._repair_position(entry)
+            if qty == 0:
+                self._finish_protection_repair(journal, result="FLAT")
+                return old_stop, journal
+            restore = restore_only
+            selected = new_stop
+            restoring_selected = False
+            if standalone_repair:
+                assert approval is not None
+                level = approval.old_stop
+                try:
+                    inputs = await self._fresh_exit_inputs(entry)
+                    if approval.new_stop < inputs.market.last_price:
+                        level = approval.new_stop
+                except ExecutionDisabledError:
+                    # Protect at the proved old level when a fresh quote is unavailable.
+                    pass
+                selected = level
+                restoring_selected = level == old_stop
+                primary_identity = "vws-m-" + approval.raise_id.hex
+                with DatabaseSession(self.state.engine) as session:
+                    primary_exists = session.scalar(
+                        select(ExecutionOrderRecord.id).where(
+                            ExecutionOrderRecord.client_order_id == primary_identity
+                        )
+                    )
+                journal = self._record_repair_progress(
+                    {
+                        **journal,
+                        "standalone": True,
+                        "selected_stop": format(level, ".2f"),
+                        "new_client_id": "vws-m-" + approval.raise_id.hex + "-r",
+                        "old_client_id": primary_identity
+                        if primary_exists is None
+                        else "vws-j-" + journal["repair_id"] + "-old",
+                    },
+                    "SELECT",
+                )
+            try:
+                journal = self._record_repair_progress(journal, "RESTORE" if restore else "SUBMIT")
+                await self._repair_stop_attempt(entry, journal, restore=restore)
+            except (ProviderError, ReconciliationError, EntryAdmissionRevoked, OrderRejectedError):
+                if restore or restoring_selected:
+                    raise
+                # Never overlap an ambiguous new sell with the fallback. A
+                # confirmed no-send/rejection permits the distinct old-level ID.
+                journal = self._record_repair_progress(journal, "CANCEL_NEW")
+                await self._cancel_sells(entry)
+                await self._repair_position(entry)
+                restore = True
+                journal = self._record_repair_progress(journal, "RESTORE")
+                await self._repair_stop_attempt(entry, journal, restore=True)
+            level = old_stop if restore else selected
+            if approval is None or standalone_repair:
+                self._finish_protection_repair(
+                    journal, result="RESTORED" if level == old_stop else "LIVE"
+                )
+            return level, journal
+        except (
+            ProviderError,
+            ReconciliationError,
+            EntryAdmissionRevoked,
+            OrderRejectedError,
+        ) as error:
+            self.state.ledger.append(
+                SecurityEvent,
+                kind="PROTECTION_REPAIR",
+                detail={**journal, "phase": "FAILED", "error_type": type(error).__name__},
+            )
+            self.state.halt_for_error(error)
+            await self._trade_notice(
+                f"{self.environment} · HALTED: journaled protection repair failed for {entry.symbol}; entries blocked; inspect broker stops urgently.",
+                True,
+                entry.order_id,
+            )
+            raise ReconciliationError(
+                "Journaled protection and old-level restoration could not be confirmed; HALTED"
+            ) from error
+
+    def _record_repair_progress(self, journal: dict[str, Any], step: str) -> dict[str, Any]:
+        detail = {**journal, "phase": "OPEN", "step": step}
+        self.state.ledger.append(SecurityEvent, kind="PROTECTION_REPAIR", detail=detail)
+        return detail
+
+    async def _resume_protection_repairs(self) -> None:
+        for journal in self._protection_repairs():
+            if self.modes.entries_enabled:
+                error = ReconciliationError(
+                    "Open protection repair has lost its durable entry block"
+                )
+                self.state.halt_for_error(error)
+                await self.notify(
+                    f"{self.environment} · HALTED: unfinished protection repair lost its entry block.",
+                    True,
+                )
+                raise error
+            with DatabaseSession(self.state.engine) as session:
+                entry = session.get(ExecutionOrderRecord, UUID(journal["entry_id"]))
+            if entry is None or entry.role != "ENTRY":
+                raise ReconciliationError("Open protection repair has no managed entry")
+            qty = await self._repair_position(entry)
+            if qty == 0:
+                await self._cancel_sells(entry)
+                self._finish_protection_repair(journal, result="FLAT")
+                continue
+            if journal.get("exit_cycle_id") is not None:
+                with DatabaseSession(self.state.engine) as session:
+                    cycles = tuple(row for row in exit_cycles(session) if row.entry_id == entry.id)
+                    exits = tuple(
+                        session.scalars(
+                            select(ExecutionOrderRecord)
+                            .where(
+                                ExecutionOrderRecord.parent_execution_id == entry.id,
+                                ExecutionOrderRecord.role == "EXIT",
+                            )
+                            .order_by(ExecutionOrderRecord.seq.desc())
+                        )
+                    )
+                if (
+                    cycles
+                    and cycles[-1].state == "ACTIVE"
+                    and str(cycles[-1].cycle_id) == journal["exit_cycle_id"]
+                    and exits
+                ):
+                    exiting = await self._read_bound(exits[0])
+                    if exiting is None and not self._confirmed_absence(exits[0]):
+                        raise ReconciliationError("Journaled exit has an unresolved broker outcome")
+                    if exiting is not None and exiting.is_open:
+                        if exiting.qty - exiting.filled_qty != qty:
+                            raise ReconciliationError(
+                                "Journaled exit does not cover the remaining held shares"
+                            )
+                        # Existing AX-29/30 bounded flatten, not permission to
+                        # ignore an arbitrary gap. Its durable journal retains
+                        # the entry veto until flat or broker-stop restoration.
+                        continue
+            live_level = None
+            for key, price_key in (("new_client_id", "new_stop"), ("old_client_id", "old_stop")):
+                with DatabaseSession(self.state.engine) as session:
+                    intent = session.scalar(
+                        select(ExecutionOrderRecord).where(
+                            ExecutionOrderRecord.client_order_id == journal[key]
+                        )
+                    )
+                if intent is None:
+                    continue
+                broker = await self._read_bound(intent)
+                level = validate_cent_price(
+                    Decimal(
+                        journal.get("selected_stop", journal[price_key])
+                        if price_key == "new_stop"
+                        else journal[price_key]
+                    )
+                )
+                if broker is not None:
+                    stops = (broker,) if broker.order_type == "stop" else broker.legs
+                    if any(
+                        stop.order_type == "stop"
+                        and stop.is_open
+                        and stop.status not in {"held", "suspended", "pending_cancel"}
+                        and stop.stop_price == level
+                        and stop.qty - stop.filled_qty == qty
+                        for stop in stops
+                    ):
+                        live_level = level
+                        break
+            plan = (
+                None
+                if journal["approval"] is None
+                else StopRaiseApproval.recorded(journal["approval"])
+            )
+            if live_level is None:
+                live_level, _ = await self._journaled_stop_repair(
+                    entry,
+                    qty,
+                    Decimal(journal["old_stop"]),
+                    Decimal(journal["new_stop"]),
+                    approval=plan,
+                    restore_only=True,
+                )
+                if plan is None:
+                    continue
+            if plan is not None:
+                with DatabaseSession(self.state.engine) as session:
+                    completed = any(
+                        move.approval.raise_id == plan.raise_id
+                        for move in moved_stops(session, entry)
+                    )
+                if not completed:
+                    self._stop_moved(
+                        plan, "APPLIED" if live_level == plan.new_stop else "REPAIRED", live_level
+                    )
+            self._finish_protection_repair(
+                journal, result="LIVE" if live_level == Decimal(journal["new_stop"]) else "RESTORED"
+            )
+
+    async def _check_cycle_protection(self) -> None:
+        repairing = {row["entry_id"] for row in self._protection_repairs()}
+        instructions = self._instructions()
+        for entry in (row for row in instructions if row.role == "ENTRY"):
+            with DatabaseSession(self.state.engine) as session:
+                held = held_quantity(session, entry.id)
+            # Contingent held legs of a zero-fill BUY need not be active stops.
+            if held == 0 or str(entry.id) in repairing:
+                continue
+            protected = 0
+            for child in instructions:
+                if child.parent_execution_id != entry.id or child.order_type != "STOP":
+                    continue
+                broker = await self._read_bound(child)
+                if (
+                    broker is not None
+                    and broker.is_open
+                    and broker.status not in {"held", "suspended", "pending_cancel"}
+                ):
+                    protected += broker.qty - broker.filled_qty
+            with DatabaseSession(self.state.engine) as session:
+                held = held_quantity(session, entry.id)
+            if protected < held:
+                error = ReconciliationError("Held shares exceed confirmed broker stop protection")
+                self.state.halt_for_error(error)
+                await self.notify(
+                    f"{self.environment} · HALTED: {entry.symbol} held shares exceed confirmed broker stop protection; entries blocked; no further automatic cancellation.",
+                    True,
+                )
+                raise error
+
     async def _ensure_stop(self, entry: ExecutionOrderRecord, qty: int) -> None:
         with DatabaseSession(self.state.engine) as session:
             proved = bindings(session)
@@ -1786,13 +2750,7 @@ class AlpacaExecutor:
         covered = sum(order.qty - order.filled_qty for _, order in active)
         if covered == qty and all(order.stop_price == level for _, order in active):
             return
-        # Clear known old sell reservations, including inactive bracket legs,
-        # before one exact repair. Canceling a group leg may cancel its sibling.
-        for row, _broker in opened:
-            current = await self._read_bound(row)
-            if current is not None and current.is_open:
-                await self._cancel_confirmed(row, current)
-        await self._repair_stop(entry, qty)
+        await self._journaled_stop_repair(entry, qty, level, level)
 
     def _cycle_event(self, cycle: ExitCycleEvidence, state: str) -> None:
         checked = ExitCycleEvidence.model_validate(cycle.model_copy(update={"state": state}))
@@ -1823,6 +2781,11 @@ class AlpacaExecutor:
         self, entry: ExecutionOrderRecord, *, deadline_seconds: int = 30
     ) -> None:
         with DatabaseSession(self.state.engine) as session:
+            cycles = tuple(row for row in exit_cycles(session) if row.entry_id == entry.id)
+            plans = stop_approvals(session, entry)
+            finished = {row.approval.raise_id for row in moved_stops(session, entry)}
+            qty = held_quantity(session, entry.id)
+            level = current_stop(session, entry)
             proved = bindings(session)
             rows = tuple(
                 row
@@ -1833,14 +2796,39 @@ class AlpacaExecutor:
                 )
                 if row.id not in proved or proved[row.id].is_open
             )
+        # No cancellation authority is needed for a proved no-op. In
+        # particular, a never-submitted split sibling has no exit orders.
+        has_open_sell = False
         for row in rows:
             current = await self._read_bound(row)
+            _require_known_sell_outcome(current, current is None and self._confirmed_absence(row))
+            if current is not None and current.is_open:
+                has_open_sell = True
+        if not has_open_sell:
+            return
+        flattening = bool(cycles and cycles[-1].state == "ACTIVE")
+        repairing = any(row["entry_id"] == str(entry.id) for row in self._protection_repairs())
+        if flattening and not repairing and qty > 0:
+            journal = self._begin_protection_repair(entry, qty, level, level)
+            self._record_repair_progress(
+                {**journal, "exit_cycle_id": str(cycles[-1].cycle_id)}, "EXIT"
+            )
+            repairing = True
+        pending = next((plan for plan in reversed(plans) if plan.raise_id not in finished), None)
+        if not repairing and not flattening and pending is not None and qty > 0:
+            self._begin_protection_repair(entry, qty, pending.old_stop, pending.new_stop, pending)
+            repairing = True
+        if repairing and self.modes.entries_enabled:
+            raise ReconciliationError("Repair cancellation requires a durable entry block")
+        if not repairing and not flattening and not await self._exits_are_orphaned(entry):
+            raise ReconciliationError(
+                "Exit cancellation requires terminal, flatten or journaled repair proof"
+            )
+        for row in rows:
+            current = await self._read_bound(row)
+            _require_known_sell_outcome(current, current is None and self._confirmed_absence(row))
             if current is not None and current.is_open:
                 await self._cancel_confirmed(row, current, deadline_seconds=deadline_seconds)
-            elif current is None and not self._confirmed_absence(row):
-                raise ReconciliationError(
-                    "An unknown sell outcome prevents a conflicting stop or replacement"
-                )
 
     def _confirmed_absence(self, instruction: ExecutionOrderRecord) -> bool:
         with DatabaseSession(self.state.engine) as session:
@@ -2238,8 +3226,7 @@ class AlpacaExecutor:
             if broker is None:
                 if instruction.role != "ENTRY" and self._confirmed_absence(instruction):
                     with DatabaseSession(self.state.engine) as session:
-                        if filled_quantity(session, instruction.id) != 0:
-                            raise ReconciliationError("Absent sell intent has captured fills")
+                        _require_absent_sell_unfilled(filled_quantity(session, instruction.id))
                     continue
                 with DatabaseSession(self.state.engine) as session:
                     latest = session.scalar(
@@ -2275,6 +3262,11 @@ class AlpacaExecutor:
             with DatabaseSession(self.state.engine) as session:
                 if broker.filled_qty != filled_quantity(session, instruction.id):
                     raise ReconciliationError("Broker order fills differ from captured activities")
+        with transaction(self.state.engine) as session:
+            for order_id in {entry.order_id for entry in entries}:
+                finalize_shared_order(
+                    self.state.ledger, session, order_id, reason="all entry legs reconciled"
+                )
         self.state.ledger.append(
             SecurityEvent,
             kind="AUTO_RECONCILED",
@@ -2361,15 +3353,11 @@ class AlpacaExecutor:
         if broker is None or broker.filled_qty != captured or not captured_children:
             return
         if broker.is_open:
-            canceled = await self._cancel_confirmed(entry, broker)
-            if canceled.status in {"canceled", "expired", "rejected"}:
-                self.state.ledger.append(
-                    OrderEvent,
-                    order_id=entry.order_id,
-                    state="REJECTED" if canceled.status == "rejected" else "CANCELED",
-                    reason="reconciliation halt canceled verified unfilled remainder",
-                    broker_order_id=str(canceled.order_id),
-                )
+            await self._finalize_entry_cancellation(
+                entry, reason="reconciliation halt canceled verified unfilled remainder"
+            )
+        with DatabaseSession(self.state.engine) as session:
+            qty = held_quantity(session, entry.id)
         if protection_only:
             if qty:
                 await self._ensure_stop(entry, qty)
@@ -2409,12 +3397,11 @@ class AlpacaExecutor:
             approvals = {row.client_order_id: row for row in exit_approvals(session)}
             for fill in fills:
                 instruction = instructions[fill.execution_order_id]
+                parent_id = _require_fill_parent(instruction)
                 if instruction.role == "ENTRY":
                     entry = instruction
-                elif instruction.parent_execution_id is not None:
-                    entry = instructions[instruction.parent_execution_id]
                 else:
-                    raise ReconciliationError("Fill notification lost its managed entry")
+                    entry = instructions[cast(UUID, parent_id)]
                 buys = tuple(
                     row
                     for row in session.scalars(
@@ -2423,8 +3410,7 @@ class AlpacaExecutor:
                         )
                     )
                 )
-                if not buys:
-                    raise ReconciliationError("Fill notice has no verified acquisition basis")
+                _require_acquisition_basis(buys)
                 with localcontext() as precision:
                     precision.prec = 80
                     average_cost = sum((row.price * row.qty for row in buys), Decimal(0)) / sum(
@@ -2459,6 +3445,8 @@ class AlpacaExecutor:
     async def reconcile(self) -> None:
         async with account_lock(self.modes.account_id, self.environment):
             try:
+                await self._resume_protection_repairs()
+                await self._check_cycle_protection()
                 held = await self._reconcile_or_protect()
                 protection_failed = False
                 for entry, qty in held:
@@ -2471,6 +3459,8 @@ class AlpacaExecutor:
                     raise ReconciliationError(
                         "Held protection failed; other verified holdings were checked"
                     )
+                await self._resume_protection_repairs()
+                await self._check_cycle_protection()
                 await self._publish_fill_notices()
             except Exception as error:
                 self.state.halt_for_error(error)
@@ -2481,39 +3471,117 @@ class AlpacaExecutor:
                 raise ReconciliationError("Broker reconciliation failed closed") from None
 
     async def cancel_unfilled_entries(self) -> None:
-        """SEC-73: after durable HALT, cancel known remainders and preserve stops.
-
-        This never requests exit analysis or flattens holdings. A cancellation
-        racing an uncaptured fill refuses any replacement until reconciliation.
-        """
+        """SEC-73: bounded cancellation of shared orders under durable HALT."""
         if self.state.current() != SystemState.HALTED:
             raise ExecutionDisabledError("Panic cancellation requires a durable HALT first")
         async with account_lock(self.modes.account_id, self.environment):
-            try:
-                held = await self._reconcile()
-            except Exception as error:
-                self.state.halt_for_error(error)
-                await self._recover_verified_protection(protection_only=True)
-                raise ReconciliationError("Panic reconciliation failed closed") from None
-            for entry, qty in held:
-                broker = await self._read_bound(entry)
-                if broker is not None and broker.is_open:
-                    canceled = await self._cancel_confirmed(entry, broker)
-                    self.state.ledger.append(
-                        OrderEvent,
-                        order_id=entry.order_id,
-                        state="REJECTED" if canceled.status == "rejected" else "CANCELED",
-                        reason="local panic canceled verified unfilled remainder",
-                        broker_order_id=str(canceled.order_id),
+            entries = tuple(row for row in self._instructions() if row.role == "ENTRY")
+            with DatabaseSession(self.state.engine) as session:
+                previous = session.scalar(
+                    select(SecurityEvent)
+                    .where(SecurityEvent.kind == "PANIC_CANCEL_RESULT")
+                    .order_by(SecurityEvent.seq.desc())
+                    .limit(1)
+                )
+                if (
+                    previous is not None
+                    and previous.detail.get("entry_ids") == [str(row.id) for row in entries]
+                    and not previous.detail.get("failed_orders")
+                ):
+                    await self.notify(
+                        f"{self.environment} · Panic already complete; HALTED.", False
                     )
-                if qty:
-                    await self._ensure_stop(entry, qty)
-                else:
-                    await self._cancel_sells(entry)
+                    return
+            deadline = (
+                asyncio.get_running_loop().time() + self.settings.panic_cancel_timeout_seconds
+            )
+            filled_orders: list[str] = []
+            canceled_orders: list[str] = []
+            failed_orders: list[str] = []
+            checked: set[UUID] = set()
+            terminal: dict[UUID, str] = {}
+            try:
+                await self._verify_account()
+                for entry in entries:
+                    if entry.order_id not in checked:
+                        checked.add(entry.order_id)
+                        try:
+                            state = await self._finalize_entry_cancellation(
+                                entry,
+                                reason="local panic canceled verified unfilled remainder",
+                                deadline=deadline,
+                            )
+                            terminal[entry.order_id] = state
+                            if state == "CANCELED":
+                                canceled_orders.append(str(entry.order_id))
+                                with DatabaseSession(self.state.engine) as session:
+                                    latest = session.scalar(
+                                        select(OrderEvent)
+                                        .where(OrderEvent.order_id == entry.order_id)
+                                        .order_by(OrderEvent.seq.desc())
+                                        .limit(1)
+                                    )
+                                    both_rejected = latest is not None and latest.reason.endswith(
+                                        "; both legs broker-rejected"
+                                    )
+                                if both_rejected:
+                                    await self.notify(
+                                        f"{self.environment} · {entry.symbol} canceled; both legs broker-rejected.",
+                                        False,
+                                    )
+                        except (ProviderError, ReconciliationError, TimeoutError) as error:
+                            failed_orders.append(str(entry.order_id))
+                            self.state.halt_for_error(error)
+                            await self.notify(f"{self.environment} · Panic failed: {error}", True)
+                    with DatabaseSession(self.state.engine) as session:
+                        qty = held_quantity(session, entry.id)
+                    try:
+                        if qty:
+                            await self._ensure_stop(entry, qty)
+                            filled_orders.append(str(entry.id))
+                        elif entry.order_id in terminal:
+                            await self._cancel_sells(entry)
+                    except (ProviderError, ReconciliationError, TimeoutError) as error:
+                        failed_orders.append(str(entry.id))
+                        self.state.halt_for_error(error)
+                with DatabaseSession(self.state.engine) as session:
+                    local: dict[str, int] = {}
+                    for entry in entries:
+                        local[entry.symbol] = local.get(entry.symbol, 0) + held_quantity(
+                            session, entry.id
+                        )
+                self.state.ledger.reconcile(await self._positions(), local)
+            except (ProviderError, ReconciliationError, TimeoutError) as error:
+                self.state.halt_for_error(error)
+                failed_orders.append("account-reconciliation")
+                await self.notify(
+                    f"{self.environment} · Panic reconciliation failed: {error}", True
+                )
+            await self._publish_fill_notices()
+            self.state.ledger.append(
+                SecurityEvent,
+                kind="PANIC_CANCEL_RESULT",
+                detail={
+                    "entry_ids": [str(row.id) for row in entries],
+                    "filled_orders": filled_orders,
+                    "canceled_orders": canceled_orders,
+                    "failed_orders": failed_orders,
+                },
+            )
+            await self.notify(
+                f"{self.environment} · Panic: canceled {len(canceled_orders)} orders; filled-and-protected {len(filled_orders)} legs; failed {len(failed_orders)}. HALTED.",
+                True,
+            )
+            if failed_orders:
+                raise ReconciliationError(
+                    "Panic cancellation incomplete; unresolved orders: " + ", ".join(failed_orders)
+                )
 
     async def monitor(self) -> None:
         async with account_lock(self.modes.account_id, self.environment):
             try:
+                await self._resume_protection_repairs()
+                await self._check_cycle_protection()
                 held = await self._reconcile_or_protect()
                 blocked = not self.modes.entries_enabled
                 now = ensure_utc(self.state.clock.now())
@@ -2562,6 +3630,8 @@ class AlpacaExecutor:
                     raise ReconciliationError(
                         "Held protection failed; other verified holdings were checked"
                     )
+                await self._resume_protection_repairs()
+                await self._check_cycle_protection()
                 await self._publish_fill_notices()
             except Exception as error:
                 self.state.halt_for_error(error)
@@ -2585,26 +3655,24 @@ class AlpacaExecutor:
                 or (qty > 0 and broker.filled_qty < broker.qty)
             )
         ):
-            canceled = await self._cancel_confirmed(entry, broker)
-            if canceled.status in {"canceled", "expired", "rejected"}:
-                self.state.ledger.append(
-                    OrderEvent,
-                    order_id=entry.order_id,
-                    state="CANCELED" if canceled.status != "rejected" else "REJECTED",
-                    reason="unfilled remainder canceled; held shares retained",
-                    broker_order_id=str(canceled.order_id),
-                )
-                await self._trade_notice(
-                    f"{self.environment} · Canceled unfilled {entry.symbol} entry; {self._quantity(qty)} filled shares retained.",
-                    False,
-                    entry.order_id,
-                )
+            await self._finalize_entry_cancellation(
+                entry, reason="unfilled remainder canceled; held shares retained"
+            )
+            with DatabaseSession(self.state.engine) as session:
+                qty = held_quantity(session, entry.id)
+            await self._trade_notice(
+                f"{self.environment} · Canceled unfilled {entry.symbol} entry; {self._quantity(qty)} filled shares retained.",
+                False,
+                entry.order_id,
+            )
+        with DatabaseSession(self.state.engine) as session:
+            qty = held_quantity(session, entry.id)
         await self._protect_and_exit(entry, qty)
 
     async def _protect_and_exit(self, entry: ExecutionOrderRecord, qty: int) -> None:
         if qty == 0:
-            # A completed or canceled parent cannot leave an orphan SELL that
-            # would open a short position. Confirm cancellation before proceeding.
+            if not await self._exits_are_orphaned(entry):
+                return
             await self._cancel_sells(entry)
         with DatabaseSession(self.state.engine) as session:
             cycles = tuple(row for row in exit_cycles(session) if row.entry_id == entry.id)
@@ -2619,6 +3687,41 @@ class AlpacaExecutor:
             await self._ensure_stop(entry, qty)
         if qty and not exiting:
             await self._raise_step(entry, qty)
+
+    async def _exits_are_orphaned(self, entry: ExecutionOrderRecord) -> bool:
+        """Zero fills on a working BUY do not make its contingent exits orphans."""
+        broker = await self._read_bound(entry)
+        if broker is None or broker.status not in {"filled", "canceled", "expired", "rejected"}:
+            return False
+        positions = await self._positions()
+        with DatabaseSession(self.state.engine) as session:
+            latest = session.scalar(
+                select(OrderEvent)
+                .where(OrderEvent.order_id == entry.order_id)
+                .order_by(OrderEvent.seq.desc())
+                .limit(1)
+            )
+            held = held_quantity(session, entry.id)
+            other = sum(
+                held_quantity(session, row.id)
+                for row in session.scalars(
+                    select(ExecutionOrderRecord).where(
+                        ExecutionOrderRecord.account_id == entry.account_id,
+                        ExecutionOrderRecord.environment == entry.environment,
+                        ExecutionOrderRecord.symbol == entry.symbol,
+                        ExecutionOrderRecord.role == "ENTRY",
+                        ExecutionOrderRecord.id != entry.id,
+                    )
+                )
+            )
+        if positions.get(entry.symbol, 0) != held + other:
+            raise ReconciliationError("Orphan cleanup cannot reconcile broker-held shares")
+        return (
+            latest is not None
+            and latest.state in {"FILLED", "CANCELED", "REJECTED"}
+            and held == 0
+            and positions.get(entry.symbol, 0) - other == 0
+        )
 
     def _stop_moved(
         self,
@@ -2686,15 +3789,6 @@ class AlpacaExecutor:
             and confirmed_stops[0].stop_price in {plan.old_stop, plan.new_stop}
         ):
             return confirmed_stops[0].stop_price
-        await self._cancel_sells(entry, deadline_seconds=10)
-        level = plan.old_stop
-        try:
-            inputs = await self._fresh_exit_inputs(entry)
-            if plan.new_stop < inputs.market.last_price:
-                level = plan.new_stop
-        except ExecutionDisabledError:
-            # Protect at the proved old level when a fresh quote is unavailable.
-            pass
         identity = "vws-m-" + plan.raise_id.hex + "-r"
         with DatabaseSession(self.state.engine) as session:
             previous = session.scalar(
@@ -2702,14 +3796,27 @@ class AlpacaExecutor:
             )
         if previous is not None:
             confirmed = await self._read_bound(previous)
-            if confirmed is None or not confirmed.is_open or confirmed.stop_price != level:
-                raise ReconciliationError("EX-05: durable repair cannot be repeated")
-        else:
-            confirmed = await self._repair_stop(
-                entry, plan.qty, approval=plan, repair=True, repair_level=level
+            try:
+                _require_active_durable_repair(confirmed)
+            except ReconciliationError as error:
+                self.state.halt_for_error(error)
+                await self._trade_notice(
+                    f"{self.environment} · HALTED: {entry.symbol} durable stop repair is not confirmed live; entries blocked.",
+                    True,
+                    entry.order_id,
+                )
+                raise
+        try:
+            level, _ = await self._journaled_stop_repair(
+                entry,
+                plan.qty,
+                plan.old_stop,
+                plan.new_stop,
+                approval=plan,
+                standalone_repair=True,
             )
-        if confirmed.status in {"held", "suspended", "pending_cancel"}:
-            raise ReconciliationError("EX-05: repair is not confirmed active")
+        except ReconciliationError as error:
+            raise ReconciliationError("Protective stop could not be confirmed; HALTED") from error
         return level
 
     async def _resume_stop_moves(self, entry: ExecutionOrderRecord, qty: int) -> None:
@@ -2868,50 +3975,47 @@ class AlpacaExecutor:
         )
         started = monotonic_ns()
         try:
-            async with asyncio.timeout(10):
-                await self._cancel_sells(entry, deadline_seconds=10)
-        except Exception as error:
-            self._stop_moved(plan, "CANCEL_UNCONFIRMED", None, started_ns=started)
+            confirmed_level, journal = await self._journaled_stop_repair(
+                entry,
+                qty,
+                plan.old_stop,
+                plan.new_stop,
+                approval=plan,
+            )
+            status: Literal["APPLIED", "REPAIRED"] = (
+                "APPLIED" if confirmed_level == plan.new_stop else "REPAIRED"
+            )
+            self._stop_moved(plan, status, confirmed_level, started_ns=started)
+            self._finish_protection_repair(
+                journal, result="LIVE" if status == "APPLIED" else "RESTORED"
+            )
+            await self._trade_notice(
+                f"{self.environment} · Raised {entry.symbol} stop to ${confirmed_level:.2f} (at broker)."
+                if status == "APPLIED"
+                else f"{self.environment} · {entry.symbol} stop raise unavailable; original protection restored at ${confirmed_level:.2f} (at broker).",
+                status == "REPAIRED",
+                entry.order_id,
+            )
+        except (
+            ProviderError,
+            ReconciliationError,
+            EntryAdmissionRevoked,
+            OrderRejectedError,
+        ) as error:
+            pending = next(
+                (row for row in self._protection_repairs() if row["entry_id"] == str(entry.id)),
+                None,
+            )
+            self._stop_moved(
+                plan,
+                "CANCEL_UNCONFIRMED"
+                if pending is not None and pending.get("step") == "CANCEL"
+                else "FAILED",
+                None,
+                started_ns=started,
+            )
             self.state.halt_for_error(error)
-            await self._trade_notice(
-                f"{self.environment} · HALTED: {entry.symbol} stop cancellation unconfirmed; inspect broker protection urgently.",
-                True,
-                entry.order_id,
-            )
-            raise ReconciliationError(
-                "EX-05: cancellation unconfirmed; no conflicting sell"
-            ) from None
-        try:
-            await self._repair_stop(entry, qty, approval=plan)
-            self._stop_moved(plan, "APPLIED", plan.new_stop, started_ns=started)
-            await self._trade_notice(
-                f"{self.environment} · Raised {entry.symbol} stop to ${plan.new_stop:.2f} (at broker).",
-                False,
-                entry.order_id,
-            )
-        except Exception as error:
-            try:
-                repaired = await self._raise_repair(entry, plan)
-                self._stop_moved(plan, "REPAIRED", repaired, started_ns=started)
-            except Exception:
-                self._stop_moved(plan, "FAILED", None, started_ns=started)
-                self.state.halt_for_error(error)
-                await self._trade_notice(
-                    f"{self.environment} · HALTED: {entry.symbol} raised stop and repair unconfirmed; inspect broker protection urgently.",
-                    True,
-                    entry.order_id,
-                )
-                raise ReconciliationError(
-                    "EX-05: raise and repair could not be confirmed"
-                ) from None
-            self.state.escalate(
-                SystemState.HALTED, "EX-05 failed stop raise repaired; audited reset required"
-            )
-            await self._trade_notice(
-                f"{self.environment} · HALTED: {entry.symbol} stop raise failed; protection restored at ${repaired:.2f} (at broker).",
-                True,
-                entry.order_id,
-            )
+            raise
 
     async def close(self) -> None:
         await self.worker.aclose()

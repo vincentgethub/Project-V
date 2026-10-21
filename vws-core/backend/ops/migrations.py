@@ -14,9 +14,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from pydantic import Field
-from sqlalchemy import inspect, select, update
+from sqlalchemy import MetaData, insert, inspect, select, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
+from sqlalchemy.schema import CreateTable
 
 from backend.core.clock import Clock, ensure_utc
 from backend.core.database import (
@@ -57,7 +58,7 @@ class MigrationResult(FrozenModel):
 
 
 def _tables(version: int) -> set[str]:
-    if version not in {2, 3, 4, 5, 6, 7} or SCHEMA_VERSION != 7:
+    if version not in {2, 3, 4, 5, 6, 7, 8} or SCHEMA_VERSION != 8:
         raise DataIntegrityError("Unknown schema version; no migration is authorized")
     names = set(Base.metadata.tables)
     if version < 7:
@@ -107,10 +108,52 @@ def prepare_verification_copy(engine: Engine) -> None:
             Base.metadata.create_all(
                 connection, tables=[Base.metadata.tables[name] for name in sorted(missing)]
             )
+            _upgrade_cancel_constraint(connection)
             connection.execute(
                 update(SchemaMeta).where(SchemaMeta.id == 1).values(version=SCHEMA_VERSION)
             )
     create_schema(engine)
+
+
+def _upgrade_cancel_constraint(connection: Connection) -> None:
+    """OPS-05: replace only the CHECK, preserving every original stored value.
+
+    SQLite cannot ALTER a CHECK. The backed-up, serialized migration copies
+    the table without ORM conversions, compares all rows, and restores its
+    indexes and append-only triggers in the same transaction.
+    """
+    if connection.dialect.name != "sqlite":
+        raise DataIntegrityError("Cancel-state constraint migration requires SQLite")
+    existing = connection.exec_driver_sql(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'order_events'"
+    ).scalar_one()
+    if "'CANCEL_REQUESTED'" in existing:
+        return
+    table = Base.metadata.tables["order_events"]
+    ddl = str(CreateTable(table).compile(dialect=connection.dialect))
+    connection.exec_driver_sql(
+        ddl.replace("CREATE TABLE order_events", "CREATE TABLE vws_order_events_v8", 1)
+    )
+    replacement = table.to_metadata(MetaData(), name="vws_order_events_v8")
+    connection.execute(
+        insert(replacement).from_select(list(table.columns.keys()), select(*table.columns))
+    )
+    for left, right in (
+        (table, replacement),
+        (replacement, table),
+    ):
+        if (
+            connection.execute(select(*left.columns).except_(select(*right.columns))).first()
+            is not None
+        ):
+            raise DataIntegrityError("Cancel-state migration changed an immutable row")
+    connection.exec_driver_sql("DROP TABLE order_events")
+    connection.exec_driver_sql("ALTER TABLE vws_order_events_v8 RENAME TO order_events")
+    for index in table.indexes:
+        index.create(connection)
+    install_append_only_triggers(connection)
+    if connection.exec_driver_sql("PRAGMA foreign_key_check").first() is not None:
+        raise DataIntegrityError("Cancel-state migration failed foreign-key verification")
 
 
 def _prefix(session: Session, tables: set[str], limit: int | None = None) -> tuple[int, str]:
@@ -241,6 +284,7 @@ class MigrationRunner:
                     Base.metadata.create_all(
                         connection, tables=[Base.metadata.tables[name] for name in sorted(missing)]
                     )
+                    _upgrade_cancel_constraint(connection)
                     install_append_only_triggers(connection)
                     result = connection.execute(
                         update(SchemaMeta)

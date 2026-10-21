@@ -49,6 +49,17 @@ FLAGS = AccountFlags(
 )
 
 
+def test_CMP_03_missing_calendar_preserves_exact_configuration_and_integrity_faults(
+    engine: ComplianceEngine,
+) -> None:
+    with pytest.raises(ConfigurationError) as refused:
+        ComplianceEngine(engine.config, engine.registry, cast(MarketCalendar, None))
+    assert type(refused.value) is ConfigurationError
+    assert str(refused.value) == "CMP-01..07: cannot verify immutable compliance policy"
+    assert type(refused.value.__cause__) is DataIntegrityError
+    assert str(refused.value.__cause__) == "CMP-03: bounded exchange calendar is required"
+
+
 def test_CMP_seven_rule_audit_for_one_cash_share_is_exact(engine: ComplianceEngine) -> None:
     """A $100 purchase uses $9,900 settled cash; no history or borrowing exists."""
     results = check(engine)
@@ -234,6 +245,146 @@ def test_CMP_settled_cash_refuses_unverifiable_history_with_exact_reason(
 
 def uid(value: int) -> UUID:
     return UUID(int=value)
+
+
+@pytest.mark.parametrize("mutable", ["lots", "history", "accounts"])
+def test_CMP_assess_fault_audit_retains_exact_immutable_evidence_exception(
+    engine: ComplianceEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    mutable: str,
+) -> None:
+    from typing import Any
+
+    from backend.risk import compliance
+
+    errors: list[DataIntegrityError] = []
+
+    def observe_error(message: object) -> DataIntegrityError:
+        error = DataIntegrityError(cast(str, message))
+        errors.append(error)
+        return error
+
+    monkeypatch.setattr(compliance, "DataIntegrityError", observe_error)
+    values: dict[str, Any] = {"lots": (), "history": (), "accounts": ACCOUNTS}
+    values[mutable] = []
+    result = engine.assess(
+        proposal(),
+        snapshot(),
+        values["lots"],
+        values["history"],
+        values["accounts"],
+        NOW,
+        flags=FLAGS,
+    )
+    assert len(errors) == 1 and type(errors[0]) is DataIntegrityError
+    assert str(errors[0]) == "CMP-01..07: evidence must be immutable tuples"
+    assert result.recommended_state == SystemState.HALTED
+    assert result.input_hash == "0" * 64
+    assert [(row.rule_id, row.passed, row.observed) for row in result.results] == [
+        (f"CMP-{number:02d}", False, "DataIntegrityError") for number in range(1, 8)
+    ]
+
+
+@pytest.mark.parametrize("buy_qty", [1, 2, 10])
+@pytest.mark.parametrize("sell_qty", [1, 2, 3, 30])
+@pytest.mark.parametrize("reverse_ids", [False, True])
+def test_CMP_05_same_time_buys_and_repeated_sales_count_each_purchase_once(
+    calendar: MarketCalendar,
+    buy_qty: int,
+    sell_qty: int,
+    reverse_ids: bool,
+) -> None:
+    from backend.risk.compliance import day_trade_activity
+
+    identifiers = [3, 2, 1] if reverse_ids else [1, 2, 3]
+    purchases = tuple(
+        trade(value, qty=buy_qty, ts=NOW - timedelta(minutes=2)) for value in identifiers
+    )
+    first = trade(4, side=Side.SELL, qty=sell_qty, ts=NOW - timedelta(minutes=1))
+    # The conservative count reserves one sold share per previously untouched
+    # purchase before spending further sales on already counted purchases.
+    same_day, count = day_trade_activity(
+        calendar, "paper", "AAPL", Side.BUY, (*purchases, first), NOW
+    )
+    assert same_day is True and count == min(3, sell_qty)
+    second = trade(5, side=Side.SELL, qty=1, ts=NOW)
+    _, count = day_trade_activity(
+        calendar, "paper", "AAPL", Side.BUY, (*purchases, first, second), NOW
+    )
+    assert count == min(3, sell_qty + 1)
+    later = trade(6, side=Side.SELL, qty=30, ts=NOW)
+    _, count = day_trade_activity(
+        calendar, "paper", "AAPL", Side.BUY, (*purchases, first, second, later), NOW
+    )
+    assert count == 3
+
+
+@pytest.mark.parametrize("selling", [False, True])
+def test_CMP_zero_wash_loss_audit_is_exact_and_keeps_all_rule_types(
+    engine: ComplianceEngine,
+    selling: bool,
+) -> None:
+    rows = check(engine, selling=selling, lots=(lot(),) if selling else ())
+    row = rows["CMP-02" if selling else "CMP-01"]
+    assert row.passed is True
+    assert type(row.observed) is str and row.observed == "0"
+    assert row.limit == "0"
+
+
+def test_CMP_rebuilt_exact_policy_and_unicode_evidence_keep_identical_audit_hashes(
+    engine: ComplianceEngine,
+) -> None:
+    settings = Settings(max_risk_per_trade=Decimal("0.010000000000000000000000000001"))
+    rebuilt = ComplianceEngine(settings, engine.registry, engine.calendar)
+    assert rebuilt.config is not settings
+    assert rebuilt.config.max_risk_per_trade == Decimal("0.010000000000000000000000000001")
+    assert rebuilt.config.config_hash == settings.config_hash
+    accounts = (*ACCOUNTS, ExternalAccount(account_id="taxable-Å", tax_status=TaxStatus.TAXABLE))
+    first = rebuilt.assess(proposal(), snapshot(), (), (), accounts, NOW, flags=FLAGS)
+    second = rebuilt.assess(proposal(), snapshot(), (), (), accounts, NOW, flags=FLAGS)
+    assert first == second
+    assert first.config_hash == settings.config_hash
+    assert first.input_hash == rebuilt.input_hash(proposal(), snapshot(), (), (), accounts, FLAGS)
+    assert [row.rule_id for row in first.results] == [f"CMP-{n:02d}" for n in range(1, 8)]
+
+
+def test_CMP_imported_policy_keeps_exact_decimal_before_json_export_formatting(
+    engine: ComplianceEngine,
+) -> None:
+    from pydantic import SerializationInfo, field_serializer
+
+    class ExportablePolicy(Settings):
+        @field_serializer("max_risk_per_trade")
+        def export_budget(self, value: Decimal, info: SerializationInfo) -> Decimal | float:
+            return value if info.mode == "python" else float(value)
+
+    policy = ExportablePolicy(broker_account_type="CASH")
+    rebuilt = ComplianceEngine(policy, engine.registry, engine.calendar)
+    assert type(rebuilt.config.max_risk_per_trade) is Decimal
+    assert rebuilt.config.max_risk_per_trade == Decimal("0.01")
+    assert rebuilt.config.config_hash == Settings(broker_account_type="CASH").config_hash
+    assert check(rebuilt)["CMP-01"].passed is True
+
+
+def test_CMP_canonical_audit_retains_decimal_text_before_json_export_formatting() -> None:
+    from pydantic import SerializationInfo, field_serializer
+
+    from backend.domain.models import FrozenModel
+    from backend.risk.compliance import _compliance_canonical
+
+    class AuditedLoss(FrozenModel):
+        loss: Decimal
+        acquired: date
+
+        @field_serializer("loss")
+        def export_loss(self, value: Decimal, info: SerializationInfo) -> Decimal | float:
+            return value if info.mode == "python" else float(value)
+
+    row = AuditedLoss(loss=Decimal("0.010000000000000000000000000001"), acquired=date(2026, 9, 1))
+    assert _compliance_canonical(row) == {
+        "loss": "0.010000000000000000000000000001",
+        "acquired": "2026-09-01",
+    }
 
 
 def trade(
@@ -1264,3 +1415,722 @@ def test_CMP_02_tax_lot_acquisition_lineage_requires_matching_original_buy(
     assessed = engine.assess(proposal(), snapshot(), lots, history, ACCOUNTS, NOW, flags=FLAGS)
     assert assessed.recommended_state == SystemState.HALTED
     assert all(not row.passed and row.severity == Severity.BLOCK for row in assessed.results)
+
+
+@pytest.mark.parametrize(
+    "fault,message",
+    [
+        ("equity", "R-02/CMP-04: account equity requires HALTED"),
+        ("managed_account", "Managed account tax status is unknown"),
+        ("duplicate_trade", "Trade or lot identifiers must be unique"),
+        ("duplicate_lot", "Trade or lot identifiers must be unique"),
+        ("proposal_executed", "Proposal already exists in executed history"),
+        ("future_trade", "Trade history is future or account ownership is unknown"),
+        ("trade_account", "Trade history is future or account ownership is unknown"),
+        ("future_lot", "Tax lot is future or account ownership is unknown"),
+        ("lot_account", "Tax lot is future or account ownership is unknown"),
+        ("lineage_missing", "CMP-02: tax lot acquisition lineage does not reconcile"),
+        ("lineage_sell", "CMP-02: tax lot acquisition lineage does not reconcile"),
+        ("lineage_account", "CMP-02: tax lot acquisition lineage does not reconcile"),
+        ("lineage_symbol", "CMP-02: tax lot acquisition lineage does not reconcile"),
+        ("lineage_time", "CMP-02: tax lot acquisition lineage does not reconcile"),
+        ("lineage_quantity", "CMP-02: tax lot acquisition lineage does not reconcile"),
+    ],
+)
+def test_CMP_02_ownership_and_acquisition_faults_keep_exact_integrity_messages(
+    engine: ComplianceEngine,
+    fault: str,
+    message: str,
+) -> None:
+    order = proposal()
+    book = snapshot()
+    accounts: tuple[ExternalAccount, ...] = ACCOUNTS
+    history: tuple[TradeRecord, ...] = ()
+    lots: tuple[TaxLot, ...] = ()
+    if fault == "equity":
+        book = snapshot(equity=Decimal(0), cash=Decimal(0), settled_cash=Decimal(0), positions={})
+    elif fault == "managed_account":
+        accounts = ACCOUNTS[1:]
+    elif fault == "duplicate_trade":
+        history = (trade(1), trade(1))
+    elif fault == "duplicate_lot":
+        lots = (lot(1), lot(1))
+    elif fault == "proposal_executed":
+        history = (trade(1).model_copy(update={"trade_id": order.proposal_id}),)
+    elif fault == "future_trade":
+        history = (trade(1, ts=NOW + timedelta(microseconds=1)),)
+    elif fault == "trade_account":
+        history = (trade(1, account="unknown-owner"),)
+    elif fault == "future_lot":
+        lots = (lot().model_copy(update={"acquired_at": NOW + timedelta(microseconds=1)}),)
+    elif fault == "lot_account":
+        lots = (lot().model_copy(update={"account_id": "unknown-owner"}),)
+    else:
+        original = trade(1, qty=1, days=-3)
+        current = lot().model_copy(
+            update={"acquired_at": original.ts, "acquisition_trade_id": original.trade_id}
+        )
+        if fault == "lineage_missing":
+            current = current.model_copy(update={"acquisition_trade_id": uid(99)})
+        elif fault == "lineage_sell":
+            original = original.model_copy(update={"side": Side.SELL})
+        elif fault == "lineage_account":
+            original = original.model_copy(update={"account_id": "other"})
+        elif fault == "lineage_symbol":
+            original = original.model_copy(update={"symbol": "MSFT"})
+        elif fault == "lineage_time":
+            current = current.model_copy(
+                update={"acquired_at": original.ts + timedelta(microseconds=1)}
+            )
+        elif fault == "lineage_quantity":
+            current = current.model_copy(update={"qty": 2})
+        history = (original,)
+        lots = (current,)
+    with pytest.raises(DataIntegrityError) as refused:
+        engine._validate_inputs(order, book, lots, history, accounts, NOW)
+    assert type(refused.value) is DataIntegrityError and str(refused.value) == message
+    result = engine.assess(order, book, lots, history, accounts, NOW, flags=FLAGS)
+    assert result.recommended_state == SystemState.HALTED
+    assert [r.rule_id for r in result.results] == [f"CMP-{i:02d}" for i in range(1, 8)]
+    assert all(not r.passed and r.severity == Severity.BLOCK for r in result.results)
+
+
+def test_R_03_fixed_compliance_evidence_digest_remains_auditable(engine: ComplianceEngine) -> None:
+    # Fixed synthetic records pin the durable evidence protocol, including a
+    # non-ASCII external account and a date-valued funding settlement field.
+    accounts = (
+        *ACCOUNTS,
+        ExternalAccount(account_id="caf\u00e9-paper", tax_status=TaxStatus.TAXABLE),
+    )
+    result = engine.assess(
+        proposal(),
+        snapshot(),
+        (lot(funding=date(2026, 10, 1)),),
+        (trade(1),),
+        accounts,
+        NOW,
+        flags=FLAGS,
+    )
+    assert result.input_hash == "547856d473f980a8bce94822d58d68dd82f3ee0721d4befb7633d5a742b744e1"
+    assert result.recommended_state == SystemState.RUNNING
+    assert result.snapshot_hash == snapshot_hash(snapshot())
+    assert result.config_hash == engine.config.config_hash
+
+
+@pytest.mark.parametrize(
+    "instant,unsafe",
+    [
+        (datetime(2026, 10, 2, 19, 59, 59, 999999, tzinfo=UTC), 1),
+        (datetime(2026, 10, 2, 20, tzinfo=UTC), 0),
+        (datetime(2026, 10, 2, 20, 0, 0, 1, tzinfo=UTC), 0),
+    ],
+)
+def test_CMP_03_cash_sale_settlement_close_is_inclusive_and_auditable(
+    engine: ComplianceEngine,
+    instant: datetime,
+    unsafe: int,
+) -> None:
+    order = proposal(
+        side=Side.SELL,
+        intent=Intent.EXIT,
+        stop_price=None,
+        qty=2,
+        created_at=instant - timedelta(minutes=1),
+        expires_at=instant + timedelta(hours=1),
+    )
+    book = snapshot(
+        as_of=instant,
+        cash=Decimal(9800),
+        settled_cash=Decimal(9800),
+        positions={"AAPL": Position(qty=2, avg_cost=Decimal(100), last_price=Decimal(100))},
+    )
+    lots = (lot(1, funding=date(2026, 10, 2)), lot(2, funding=date(2026, 10, 1)))
+    result = engine.assess(order, book, lots, (), ACCOUNTS, instant, flags=FLAGS)
+    row = result.results[2]
+    assert (row.rule_id, row.passed, row.severity, row.observed, row.limit) == (
+        "CMP-03",
+        unsafe == 0,
+        Severity.WARN,
+        str(unsafe),
+        "0",
+    )
+    assert row.message == (
+        "Sale funding is unknown or may create a good-faith/freeriding violation"
+        if unsafe
+        else "Sale funding is settled"
+    )
+    assert result.recommended_state == SystemState.RUNNING
+
+
+@pytest.mark.parametrize("status", [TaxStatus.TAXABLE, TaxStatus.IRA, TaxStatus.ROTH])
+def test_CMP_02_fifo_sale_ignores_other_inventory_and_keeps_retirement_loss_audit(
+    engine: ComplianceEngine,
+    status: TaxStatus,
+) -> None:
+    own_first = lot(1, qty=1, basis="110")
+    own_second = lot(2, qty=2, basis="120")
+    other = lot(4, qty=9, basis="90").model_copy(update={"account_id": "other"})
+    different_symbol = lot(3, qty=1, basis="90").model_copy(update={"symbol": "MSFT"})
+    lots = (own_second, other, different_symbol, own_first)
+    book = snapshot(
+        cash=Decimal(9600),
+        settled_cash=Decimal(9600),
+        positions={
+            "AAPL": Position(qty=3, avg_cost=Decimal(100), last_price=Decimal(100)),
+            "MSFT": Position(qty=1, avg_cost=Decimal(100), last_price=Decimal(100)),
+        },
+    )
+    order = proposal(side=Side.SELL, intent=Intent.EXIT, stop_price=None, qty=2)
+    accounts = tuple(
+        a.model_copy(update={"tax_status": status}) if a.account_id == "other" else a
+        for a in ACCOUNTS
+    )
+    history = (trade(10, account="other", qty=2, days=-1),)
+    selected = engine._sale_lots(order, book, lots)
+    assert [(row.lot_id, qty) for row, qty in selected] == [(uid(1), 1), (uid(2), 1)]
+    result = engine.assess(order, book, lots, history, accounts, NOW, flags=FLAGS)
+    row = result.results[1]
+    assert row.rule_id == "CMP-02" and not row.passed and row.severity == Severity.WARN
+    assert Decimal(row.observed) == Decimal(30)
+    assert row.message == (
+        "Backward wash-sale estimated disallowed loss"
+        if status == TaxStatus.TAXABLE
+        else "Backward wash-sale estimated disallowed loss; permanent IRA/Roth loss"
+    )
+    assert result.recommended_state == SystemState.RUNNING
+
+
+@pytest.mark.parametrize("day,opening,expected", [(3, 28, 1), (3, 25, 0), (5, 28, 0)])
+def test_CMP_05_non_session_window_contains_exactly_the_last_five_sessions(
+    calendar: MarketCalendar,
+    day: int,
+    opening: int,
+    expected: int,
+) -> None:
+    from backend.risk.compliance import day_trade_activity
+
+    instant = datetime(2026, 10, day, 16, tzinfo=UTC)
+    bought = datetime(2026, 9, opening, 14, tzinfo=UTC)
+    rows = (
+        trade(1, ts=bought, qty=1),
+        trade(2, side=Side.SELL, ts=bought + timedelta(minutes=1), qty=1),
+    )
+    assert day_trade_activity(calendar, "paper", "AAPL", Side.BUY, rows, instant) == (
+        False,
+        expected,
+    )
+
+
+@pytest.mark.parametrize(
+    "scenario,expected",
+    [("other_account_first", 1), ("other_symbol", 0), ("two_opening_orders", 2)],
+)
+def test_CMP_05_conservative_round_trip_count_does_not_mix_ownership_or_symbols(
+    calendar: MarketCalendar,
+    scenario: str,
+    expected: int,
+) -> None:
+    from backend.risk.compliance import day_trade_activity
+
+    start = NOW - timedelta(days=1)
+    rows: tuple[TradeRecord, ...]
+    if scenario == "other_account_first":
+        rows = (
+            trade(1, account="other", ts=start - timedelta(minutes=1), qty=1),
+            trade(2, ts=start, qty=1),
+            trade(3, side=Side.SELL, ts=start + timedelta(minutes=1), qty=1),
+        )
+    elif scenario == "other_symbol":
+        rows = (
+            trade(1, ts=start, qty=1),
+            trade(2, side=Side.SELL, symbol="MSFT", ts=start + timedelta(minutes=1), qty=1),
+        )
+    else:
+        rows = (
+            trade(2, ts=start, qty=1),
+            trade(1, ts=start, qty=1),
+            trade(3, side=Side.SELL, ts=start + timedelta(minutes=1), qty=1),
+            trade(4, side=Side.SELL, ts=start + timedelta(minutes=2), qty=1),
+        )
+    assert day_trade_activity(calendar, "paper", "AAPL", Side.BUY, rows, NOW) == (False, expected)
+
+
+@pytest.mark.parametrize("account", ["paper", "ira", "roth"])
+def test_CMP_01_forward_cross_account_loss_has_exact_tax_and_audit_behavior(
+    engine: ComplianceEngine,
+    account: str,
+) -> None:
+    order = proposal(account_id=account)
+    book = snapshot(account_id=account)
+    result = engine.assess(
+        order,
+        book,
+        (),
+        (trade(1, side=Side.SELL, qty=1, loss="10", account="other"),),
+        ACCOUNTS,
+        NOW,
+        flags=FLAGS,
+    )
+    row = result.results[0]
+    assert (row.rule_id, row.passed, row.severity, row.limit, row.message) == (
+        "CMP-01",
+        False,
+        Severity.BLOCK,
+        "0",
+        "Forward wash-sale matched loss shares"
+        if account == "paper"
+        else "IRA/Roth replacement creates permanent loss",
+    )
+    assert Decimal(row.observed) == Decimal(10)
+    assert result.recommended_state == SystemState.RUNNING
+
+
+def test_CMP_01_and_02_exit_with_no_loss_retains_the_exact_not_applicable_audit(
+    engine: ComplianceEngine,
+) -> None:
+    results = check(engine, selling=True, lots=(lot(basis="90", funding=date(2026, 10, 1)),))
+    forward = results["CMP-01"]
+    backward = results["CMP-02"]
+    assert (forward.passed, forward.severity, forward.observed, forward.limit, forward.message) == (
+        True,
+        Severity.WARN,
+        "exit",
+        "buy only",
+        "Forward wash-sale rule is not applicable",
+    )
+    assert (
+        backward.passed,
+        backward.severity,
+        backward.observed,
+        backward.limit,
+        backward.message,
+    ) == (True, Severity.WARN, "0", "0", "No backward wash-sale loss")
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_CMP_02_sold_acquisition_is_not_its_own_replacement_and_loss_scales_with_shares(
+    engine: ComplianceEngine,
+    replacement: bool,
+) -> None:
+    purchase = trade(1, days=-10, qty=2, price="110")
+    held_lot = lot(qty=2, days=-10, basis="110", funding=date(2026, 10, 1)).model_copy(
+        update={"acquisition_trade_id": uid(1)}
+    )
+    history = (purchase, trade(2, days=-1, qty=2, account="other")) if replacement else (purchase,)
+    order = proposal(side=Side.SELL, intent=Intent.EXIT, stop_price=None, qty=2)
+    book = snapshot(
+        cash=Decimal(9800),
+        settled_cash=Decimal(9800),
+        positions={"AAPL": Position(qty=2, avg_cost=Decimal(100), last_price=Decimal(100))},
+    )
+    assessed = engine.assess(order, book, (held_lot,), history, ACCOUNTS, NOW, flags=FLAGS)
+    row = assessed.results[1]
+    assert (row.passed, row.severity, row.limit, row.message) == (
+        not replacement,
+        Severity.WARN,
+        "0",
+        "Backward wash-sale estimated disallowed loss"
+        if replacement
+        else "No backward wash-sale loss",
+    )
+    assert Decimal(row.observed) == (Decimal(20) if replacement else Decimal(0))
+    assert assessed.recommended_state == SystemState.RUNNING
+
+
+@pytest.mark.parametrize(
+    "fault,message",
+    [
+        ("ownership", "Account binding, expiry or portfolio freshness is invalid"),
+        ("expired", "Account binding, expiry or portfolio freshness is invalid"),
+        ("future", "Account binding, expiry or portfolio freshness is invalid"),
+        ("stale", "Account binding, expiry or portfolio freshness is invalid"),
+        ("reserved", "R-09: sell quantity exceeds unreserved held shares"),
+    ],
+)
+def test_CMP_03_exit_requires_fresh_owned_unreserved_shares_with_exact_refusal(
+    engine: ComplianceEngine,
+    fault: str,
+    message: str,
+) -> None:
+    order = proposal(side=Side.SELL, intent=Intent.EXIT, stop_price=None)
+    book = snapshot()
+    if fault == "ownership":
+        order = order.model_copy(update={"account_id": "other"})
+    elif fault == "expired":
+        order = order.model_copy(update={"expires_at": NOW})
+    elif fault == "future":
+        book = book.model_copy(update={"as_of": NOW + timedelta(microseconds=1)})
+    elif fault == "stale":
+        book = book.model_copy(
+            update={
+                "as_of": NOW - timedelta(seconds=engine.config.stale_quote_seconds, microseconds=1)
+            }
+        )
+    else:
+        book = book.model_copy(
+            update={
+                "open_orders": (
+                    OpenOrder(symbol="AAPL", side=Side.SELL, qty=1, limit_price=Decimal(100)),
+                )
+            }
+        )
+    with pytest.raises(DataIntegrityError) as refused:
+        engine._validate_common(order, book, NOW)
+    assert type(refused.value) is DataIntegrityError and str(refused.value) == message
+    assessed = engine.assess(order, book, (lot(),), (), ACCOUNTS, NOW, flags=FLAGS)
+    assert assessed.recommended_state == SystemState.HALTED
+    assert all(not r.passed and r.severity == Severity.BLOCK for r in assessed.results)
+
+
+def test_CMP_03_unverifiable_settlement_date_has_exact_cause(engine: ComplianceEngine) -> None:
+    with pytest.raises(DataIntegrityError) as refused:
+        engine.settlement_date(NOW.replace(tzinfo=None))
+    assert type(refused.value) is DataIntegrityError
+    assert str(refused.value) == "CMP-03: cannot verify T+1 settlement date"
+    assert isinstance(refused.value.__cause__, DataIntegrityError)
+
+
+def test_CMP_03_cash_history_includes_now_and_skips_foreign_account_without_stopping(
+    engine: ComplianceEngine,
+) -> None:
+    records = (
+        trade(1, account="other", ts=NOW - timedelta(minutes=1), qty=2),
+        trade(2, ts=NOW, qty=1),
+    )
+    amount = engine.settled_cash_as_of(Decimal(500), records, NOW, account_id="paper")
+    assert type(amount) is Decimal and amount == Decimal(400)
+
+
+def test_CMP_02_duplicate_account_identifiers_keep_exact_integrity_error(
+    engine: ComplianceEngine,
+) -> None:
+    accounts = (*ACCOUNTS, ACCOUNTS[0])
+    with pytest.raises(DataIntegrityError) as refused:
+        engine._accounts(accounts)
+    assert type(refused.value) is DataIntegrityError
+    assert str(refused.value) == "Tax account identifiers must be unique"
+    result = engine.assess(proposal(), snapshot(), (), (), accounts, NOW, flags=FLAGS)
+    assert result.recommended_state == SystemState.HALTED and all(
+        not row.passed for row in result.results
+    )
+
+
+def test_CMP_03_margin_account_has_exact_not_applicable_cash_settlement_audit(
+    engine: ComplianceEngine,
+) -> None:
+    row = check(engine, state_changes={"account_type": AccountType.MARGIN})["CMP-03"]
+    assert (row.passed, row.severity, row.observed, row.limit, row.message) == (
+        True,
+        Severity.BLOCK,
+        "margin",
+        "cash accounts",
+        "Cash settlement rule is not applicable",
+    )
+
+
+def test_CMP_03_all_unsettled_lot_slices_are_reported_not_only_the_last(
+    engine: ComplianceEngine,
+) -> None:
+    result = check(
+        engine,
+        selling=True,
+        lots=(lot(1), lot(2)),
+        proposal_changes={"qty": 2},
+        state_changes={
+            "cash": Decimal(9800),
+            "settled_cash": Decimal(9800),
+            "positions": {"AAPL": Position(qty=2, avg_cost=Decimal(100), last_price=Decimal(100))},
+        },
+    )
+    row = result["CMP-03"]
+    assert (row.passed, row.severity, row.observed, row.limit, row.message) == (
+        False,
+        Severity.WARN,
+        "2",
+        "0",
+        "Sale funding is unknown or may create a good-faith/freeriding violation",
+    )
+
+
+def test_CMP_04_exit_cannot_be_reported_as_new_borrowing(engine: ComplianceEngine) -> None:
+    row = check(engine, selling=True, lots=(lot(),))["CMP-04"]
+    assert (row.passed, row.severity, row.observed, row.limit, row.message) == (
+        True,
+        Severity.WARN,
+        "exit",
+        "buys only",
+        "Exit does not borrow",
+    )
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_CMP_05_same_day_buy_keeps_exact_default_warning_or_legacy_veto(
+    engine: ComplianceEngine,
+    calendar: MarketCalendar,
+    legacy: bool,
+) -> None:
+    guarded = ComplianceEngine(
+        Settings(day_trade_regime="LEGACY_PDT" if legacy else "INTRADAY_MARGIN"),
+        engine.registry,
+        calendar,
+    )
+    row = check(
+        guarded,
+        history=legacy_history(),
+        state_changes={"account_type": AccountType.MARGIN, "equity": Decimal("24999.99")},
+    )["CMP-05"]
+    assert not row.passed and row.severity == (Severity.BLOCK if legacy else Severity.WARN)
+    assert row.message == (
+        "Legacy same-day guard would block an addition" if legacy else "Same-day round-trip warning"
+    )
+    assert row.observed == "same_day=True;completed=3;equity=24999.99"
+    assert row.limit == "legacy>=3 and equity<25000; default same-day WARN"
+
+
+def test_CMP_01_07_naive_evaluation_clock_is_an_exact_typed_refusal(
+    engine: ComplianceEngine,
+) -> None:
+    with pytest.raises(DataIntegrityError) as refused:
+        engine.assess(
+            proposal(), snapshot(), (), (), ACCOUNTS, NOW.replace(tzinfo=None), flags=FLAGS
+        )
+    assert type(refused.value) is DataIntegrityError
+    assert str(refused.value) == "R-05/CMP-01..07: evaluation time is unverifiable"
+
+
+@pytest.mark.parametrize("typed_identity", [False, True])
+def test_R_03_invalid_proposal_keeps_only_its_already_typed_audit_identity(
+    engine: ComplianceEngine,
+    typed_identity: bool,
+) -> None:
+    original = proposal()
+    damaged = original.model_copy(
+        update={
+            "qty": 0,
+            "proposal_id": original.proposal_id if typed_identity else str(original.proposal_id),
+        }
+    )
+    result = engine.assess(damaged, snapshot(), (), (), ACCOUNTS, NOW, flags=FLAGS)
+    assert result.proposal_id == (original.proposal_id if typed_identity else None)
+    assert result.recommended_state == SystemState.HALTED
+    assert all(not row.passed and row.severity == Severity.BLOCK for row in result.results)
+
+
+@pytest.mark.parametrize(
+    "operation,rule", [("_borrowing", "CMP-04"), ("_broker", "CMP-06"), ("_settlement", "CMP-03")]
+)
+def test_R_02_one_rule_provider_fault_retains_exact_rule_identity_and_halt_audit(
+    engine: ComplianceEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    rule: str,
+) -> None:
+    def unavailable(*args: object, **kwargs: object) -> RuleResult:
+        raise RuntimeError("offline rule evidence unavailable")
+
+    if operation == "_borrowing":
+        monkeypatch.setattr(engine, "_borrowing", unavailable)
+    elif operation == "_broker":
+        monkeypatch.setattr(engine, "_broker", unavailable)
+    else:
+        assert operation == "_settlement"
+        monkeypatch.setattr(engine, "_settlement", unavailable)
+    result = engine.assess(proposal(), snapshot(), (), (), ACCOUNTS, NOW, flags=FLAGS)
+    assert [row.rule_id for row in result.results] == [f"CMP-{i:02d}" for i in range(1, 8)]
+    row = next(row for row in result.results if row.rule_id == rule)
+    assert (row.passed, row.severity, row.observed, row.limit, row.message) == (
+        False,
+        Severity.BLOCK,
+        "RuntimeError",
+        "verified state",
+        "Unverifiable compliance rule; HALTED required",
+    )
+    assert result.recommended_state == SystemState.HALTED
+
+
+@pytest.mark.parametrize("fault", ["missing_position", "oversell", "lot_total"])
+def test_CMP_02_fifo_cannot_allocate_a_sale_beyond_proved_inventory(
+    engine: ComplianceEngine,
+    fault: str,
+) -> None:
+    order = proposal(
+        side=Side.SELL, intent=Intent.EXIT, stop_price=None, qty=2 if fault == "oversell" else 1
+    )
+    positions = (
+        {}
+        if fault == "missing_position"
+        else {
+            "AAPL": Position(
+                qty=2 if fault == "lot_total" else 1, avg_cost=Decimal(100), last_price=Decimal(100)
+            )
+        }
+    )
+    book = snapshot(positions=positions)
+    with pytest.raises(DataIntegrityError) as refused:
+        engine._sale_lots(order, book, (lot(),))
+    assert type(refused.value) is DataIntegrityError
+    assert str(refused.value) == "Sale lots do not reconcile to held whole shares"
+    assessed = engine.assess(order, book, (lot(),), (), ACCOUNTS, NOW, flags=FLAGS)
+    assert assessed.recommended_state == SystemState.HALTED
+
+
+@pytest.mark.parametrize("sell_only", [False, True])
+def test_CMP_03_no_pending_buy_reserves_an_exact_decimal_zero(
+    engine: ComplianceEngine,
+    sell_only: bool,
+) -> None:
+    orders = (
+        (OpenOrder(symbol="AAPL", side=Side.SELL, qty=1, limit_price=Decimal(100)),)
+        if sell_only
+        else ()
+    )
+    amount = engine._pending(snapshot(open_orders=orders))
+    assert type(amount) is Decimal and amount == Decimal(0)
+
+
+def test_CMP_03_strict_cash_rounding_failure_keeps_exact_refusal(engine: ComplianceEngine) -> None:
+    from decimal import Rounded
+
+    baseline = Decimal("1000." + "0" * 78)
+    with localcontext() as context:
+        context.traps[Rounded] = True
+        with pytest.raises(DataIntegrityError) as refused:
+            engine.settled_cash_as_of(baseline, (trade(1, qty=1),), NOW, account_id="paper")
+    assert type(refused.value) is DataIntegrityError
+    assert str(refused.value) == "CMP-03: cannot reconstruct verified settled cash"
+    assert type(refused.value.__cause__) is Rounded
+
+
+def test_CMP_03_oversized_buy_is_refused_with_the_full_established_notional_audit(
+    engine: ComplianceEngine,
+) -> None:
+    result = engine.assess(proposal(qty=10**76 + 1), snapshot(), (), (), ACCOUNTS, NOW, flags=FLAGS)
+    row = result.results[2]
+    assert row.rule_id == "CMP-03" and not row.passed and row.severity == Severity.BLOCK
+    assert row.observed == str(10**78 + 100) + ".0"
+    assert Decimal(row.observed) == Decimal(10**78 + 100)
+    assert row.message == "BUY plus pending buys requires confirmed settled cash"
+    assert result.recommended_state == SystemState.RUNNING
+
+
+def test_CMP_04_positive_fractional_equity_is_not_an_unverifiable_account(
+    engine: ComplianceEngine,
+) -> None:
+    book = snapshot(
+        cash=Decimal("0.5"), settled_cash=Decimal("0.5"), equity=Decimal("0.5"), positions={}
+    )
+    engine._validate_inputs(proposal(), book, (), (), ACCOUNTS, NOW)
+    result = engine.assess(proposal(), book, (), (), ACCOUNTS, NOW, flags=FLAGS)
+    assert result.recommended_state == SystemState.RUNNING
+    assert not result.results[2].passed and not result.results[3].passed
+
+
+def test_CMP_02_execution_at_the_assessment_instant_is_not_a_future_fill(
+    engine: ComplianceEngine,
+) -> None:
+    history = (trade(1, ts=NOW, qty=1),)
+    engine._validate_inputs(proposal(), snapshot(), (), history, ACCOUNTS, NOW)
+    result = engine.assess(proposal(), snapshot(), (), history, ACCOUNTS, NOW, flags=FLAGS)
+    assert result.recommended_state == SystemState.RUNNING
+    assert result.results[0].passed and result.results[1].passed
+
+
+def test_CMP_01_one_dollar_forward_loss_still_blocks_with_exact_audit(
+    engine: ComplianceEngine,
+) -> None:
+    row = check(engine, history=(trade(1, side=Side.SELL, qty=1, loss="1", account="other"),))[
+        "CMP-01"
+    ]
+    assert not row.passed and row.severity == Severity.BLOCK
+    assert Decimal(row.observed) == Decimal(1) and row.limit == "0"
+    assert row.message == "Forward wash-sale matched loss shares"
+
+
+def test_CMP_01_warn_policy_does_not_reclassify_a_buy_with_no_wash_loss(
+    engine: ComplianceEngine,
+    calendar: MarketCalendar,
+) -> None:
+    warning = ComplianceEngine(Settings(wash_sale_mode="WARN"), engine.registry, calendar)
+    row = check(warning)["CMP-01"]
+    assert (
+        row.passed and row.severity == Severity.BLOCK and row.observed == "0" and row.limit == "0"
+    )
+    assert row.message == "No forward wash-sale replacement"
+
+
+def test_CMP_05_two_buys_are_not_opposite_sides_of_a_round_trip(engine: ComplianceEngine) -> None:
+    row = check(engine, history=(trade(1, ts=NOW - timedelta(minutes=1), qty=1),))["CMP-05"]
+    assert row.passed and row.severity == Severity.WARN
+    assert row.observed == "same_day=False;completed=0;equity=10000"
+    assert row.message == "No same-day round trip"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_CMP_05_timestamp_ties_do_not_make_counts_depend_on_input_tuple_order(
+    calendar: MarketCalendar,
+    reverse: bool,
+) -> None:
+    from backend.risk.compliance import day_trade_activity
+
+    instant = NOW - timedelta(hours=1)
+    records: tuple[TradeRecord, ...] = (
+        trade(1, ts=instant, qty=1),
+        trade(2, ts=instant, side=Side.SELL, qty=1),
+    )
+    if reverse:
+        records = tuple(reversed(records))
+    assert day_trade_activity(calendar, "paper", "AAPL", Side.BUY, records, NOW) == (True, 1)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_CMP_03_equal_time_cash_offsets_keep_the_existing_verified_replay_order(
+    engine: ComplianceEngine,
+    reverse: bool,
+) -> None:
+    instant = NOW - timedelta(days=3)
+    records: tuple[TradeRecord, ...] = (
+        trade(1, ts=instant, qty=99999990),
+        trade(2, ts=instant, side=Side.SELL, qty=99999990),
+    )
+    if reverse:
+        records = tuple(reversed(records))
+    with localcontext() as context:
+        context.Emax = 9
+        amount = engine.settled_cash_as_of(Decimal(9000), records, NOW, account_id="paper")
+    assert type(amount) is Decimal and amount == Decimal(9000)
+
+
+def test_CMP_02_equal_time_acquisitions_keep_explicit_disposal_lineage(
+    engine: ComplianceEngine,
+) -> None:
+    first = trade(1, days=-10, qty=1, price="110")
+    second = trade(2, days=-10, qty=1, price="110")
+    lots = (
+        lot(1, days=-10, qty=1, basis="110", funding=date(2026, 10, 1)).model_copy(
+            update={"acquisition_trade_id": first.trade_id}
+        ),
+        lot(2, days=-10, qty=1, basis="110", funding=date(2026, 10, 1)).model_copy(
+            update={"acquisition_trade_id": second.trade_id}
+        ),
+    )
+    order = proposal(side=Side.SELL, intent=Intent.EXIT, stop_price=None)
+    book = snapshot(
+        cash=Decimal(9800),
+        settled_cash=Decimal(9800),
+        positions={"AAPL": Position(qty=2, avg_cost=Decimal(110), last_price=Decimal(100))},
+    )
+    result = engine.assess(order, book, lots, (first, second), ACCOUNTS, NOW, flags=FLAGS)
+    row = result.results[1]
+    assert not row.passed and row.severity == Severity.WARN and Decimal(row.observed) == Decimal(10)
+    assert row.message == "Backward wash-sale estimated disallowed loss"
+    assert result.recommended_state == SystemState.RUNNING
+
+
+def test_CMP_02_lot_acquired_at_the_assessment_instant_is_not_future_inventory(
+    engine: ComplianceEngine,
+) -> None:
+    lots = (lot(days=0),)
+    engine._validate_inputs(proposal(), snapshot(), lots, (), ACCOUNTS, NOW)
+    result = engine.assess(proposal(), snapshot(), lots, (), ACCOUNTS, NOW, flags=FLAGS)
+    assert result.recommended_state == SystemState.RUNNING
+    assert result.results[0].passed and result.results[1].passed

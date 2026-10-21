@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.core.clock import FrozenClock
 from backend.core.database import ApprovalEvent, AutoJobRun, ExecutionFillRecord, TradeTicket
 from backend.core.errors import (
     ConfigurationError,
@@ -25,10 +26,308 @@ from backend.execution.models import Submission
 from backend.execution.modes import ModeStore
 from backend.net.egress import EgressPolicy, build_allowlist
 from backend.notifications.callbacks import CallbackClick
-from backend.tests.test_auto_execution import AUTO, FakeTradingClient, executor, fill_entry
+from backend.tests.test_auto_execution import (
+    AUTO,
+    FakeTradingClient,
+    executor,
+    fill_entry,
+    journal_existing_partial_repair,
+)
 from backend.tests.test_swarm_and_callbacks import Harness, click, deliver, make_research_harness
 
 harness = make_research_harness
+
+
+@pytest.mark.parametrize(
+    "status", [None, "new", "held", "suspended", "pending_cancel", "canceled", "filled"]
+)
+def test_EX_05_durable_repair_guard_requires_live_broker_confirmation(
+    clock: FrozenClock, status: str | None
+) -> None:
+    from backend.execution.alpaca_executor import _require_active_durable_repair, parse_order
+
+    broker = (
+        None
+        if status is None
+        else parse_order(
+            {
+                "id": str(uuid4()),
+                "client_order_id": "offline-durable-stop",
+                "symbol": "NVDA",
+                "side": "sell",
+                "type": "stop",
+                "order_class": "simple",
+                "time_in_force": "gtc",
+                "qty": "1",
+                "filled_qty": "1" if status == "filled" else "0",
+                "status": status,
+                "stop_price": "99.12",
+                "limit_price": None,
+                "submitted_at": clock.now().isoformat(),
+                "legs": None,
+            }
+        )
+    )
+    if status == "new":
+        _require_active_durable_repair(broker)
+    else:
+        with pytest.raises(ReconciliationError) as refused:
+            _require_active_durable_repair(broker)
+        assert type(refused.value) is ReconciliationError
+        assert str(refused.value) == "EX-05: durable repair cannot be repeated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_28_generated_child_update_is_bound_from_fresh_parent_before_reconciliation(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typing import Any
+
+    from backend.core.database import ExecutionOrderRecord
+
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    original_submit = client._submit_paper
+
+    def incomplete_response(request: Any) -> dict[str, Any]:
+        raw = original_submit(request)
+        return {**raw, "legs": None}
+
+    monkeypatch.setattr(client, "_submit_paper", incomplete_response)
+    built = executor(harness, client)
+    stream = None
+    captured: list[str] = []
+
+    async def capture() -> None:
+        captured.append("canonical activities")
+
+    try:
+        await built.enter(alert.proposal_id)
+        assert len(built._instructions()) == 1
+        parent = next(iter(client.orders.values()))
+        child = next(row for row in parent["legs"] if row["type"] == "stop")
+        stream = ManagedTradingStream(
+            built, EgressPolicy(build_allowlist(mode="AUTO_PAPER"), harness.state.ledger), capture
+        )
+        message = {"stream": "trade_updates", "data": {"event": "new", "order": child}}
+        await stream._update(message)
+        await stream._update(message)
+        assert captured == ["canonical activities", "canonical activities"]
+        with Session(harness.state.engine) as session:
+            assert len(tuple(session.scalars(select(ExecutionOrderRecord)))) == 3
+        assert len(client.posts) == 1
+        assert parent["status"] == "new" and all(row["status"] == "held" for row in parent["legs"])
+        assert harness.state.current() == SystemState.RUNNING
+        harness.state.ledger.verify_chain()
+    finally:
+        if stream is not None:
+            await stream.aclose()
+        await built.close()
+
+
+@pytest.mark.parametrize(
+    "known_order,confirmed_absence", [(False, False), (False, True), (True, False)]
+)
+def test_AX_27_unknown_sell_guard_retains_exact_integrity_failure(
+    clock: FrozenClock, known_order: bool, confirmed_absence: bool
+) -> None:
+    from uuid import uuid4
+
+    from backend.core.errors import ReconciliationError
+    from backend.execution.alpaca_executor import _require_known_sell_outcome, parse_order
+
+    broker = (
+        parse_order(
+            {
+                "id": str(uuid4()),
+                "client_order_id": "offline-known-stop",
+                "symbol": "NVDA",
+                "side": "sell",
+                "type": "stop",
+                "order_class": "simple",
+                "time_in_force": "gtc",
+                "qty": "1",
+                "filled_qty": "0",
+                "status": "new",
+                "stop_price": "99.12",
+                "limit_price": None,
+                "submitted_at": clock.now().isoformat(),
+                "legs": None,
+            }
+        )
+        if known_order
+        else None
+    )
+    if not known_order and not confirmed_absence:
+        with pytest.raises(ReconciliationError) as refused:
+            _require_known_sell_outcome(broker, confirmed_absence)
+        assert type(refused.value) is ReconciliationError
+        assert (
+            str(refused.value)
+            == "An unknown sell outcome prevents a conflicting stop or replacement"
+        )
+    else:
+        _require_known_sell_outcome(broker, confirmed_absence)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_EX_05_unfilled_sibling_cannot_arm_a_trailing_stop(harness: Harness) -> None:
+    from backend.core.database import ExecutionOrderRecord
+    from backend.tests.test_v_execution import variant
+
+    variant(harness, "SPLIT_1R_TRAIL")
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+
+    async def unreachable_observation(*args: object) -> object:
+        raise AssertionError("Unfilled shares have no completed held observation")
+
+    built.held_exit_observation = unreachable_observation  # type: ignore[assignment]
+    await built.enter(alert.proposal_id)
+    with Session(harness.state.engine) as session:
+        entries = tuple(
+            session.scalars(
+                select(ExecutionOrderRecord)
+                .where(ExecutionOrderRecord.role == "ENTRY")
+                .order_by(ExecutionOrderRecord.seq)
+            )
+        )
+    assert len(entries) == 2
+    assert built._split_profit_taken(entries[1]) is False
+    assert len(client.posts) == 2
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_EX_05_manual_trailing_suggestion_is_single_and_never_submits(
+    harness: Harness,
+) -> None:
+    from backend.core.database import SecurityEvent
+    from backend.execution.exit_variants import StopRaiseApproval
+    from backend.tests.test_v_stop_raises import entered, target_filled
+
+    built, client, entry = await entered(harness)
+    assert entry.stop_price is not None
+    await target_filled(harness, built, client)
+    built.modes.downgrade("MANUAL", actor="offline owner")
+    await built.monitor()
+    await built.monitor()
+    with Session(harness.state.engine) as session:
+        rows = tuple(
+            session.scalars(
+                select(SecurityEvent).where(SecurityEvent.kind == "STOP_RAISE_SUGGESTED")
+            )
+        )
+        assert len(rows) == 1
+        suggested = StopRaiseApproval.recorded(rows[0].detail)
+        assert suggested.entry_id == entry.id and suggested.qty == entry.qty
+        assert suggested.old_stop == entry.stop_price
+        assert suggested.new_stop == entry.stop_price + Decimal(4)
+        assert (
+            tuple(
+                session.scalars(
+                    select(SecurityEvent).where(
+                        SecurityEvent.kind.in_(("STOP_RAISE_APPROVAL", "STOP_MOVED"))
+                    )
+                )
+            )
+            == ()
+        )
+    assert len(client.posts) == 2
+    assert built.modes.effective == "MANUAL"
+    harness.state.ledger.verify_chain()
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+@pytest.mark.parametrize("fault", ["host", "ledger", "sdk_endpoint"])
+async def test_AX_28_stream_refuses_cross_account_or_unbound_paper_transport(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from alpaca.trading.stream import TradingStream
+
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+    policy = EgressPolicy(build_allowlist(mode="AUTO_PAPER"), harness.state.ledger)
+    if fault == "host":
+        policy = EgressPolicy(frozenset({"data.alpaca.markets"}), harness.state.ledger)
+    elif fault == "ledger":
+        policy = EgressPolicy(policy.hosts, cast(Any, SimpleNamespace(engine=object())))
+    else:
+        original = TradingStream.__init__
+
+        def changed_endpoint(self: TradingStream, **kwargs: Any) -> None:
+            assert kwargs["paper"] is True and kwargs["raw_data"] is True
+            original(self, **kwargs)
+            self._endpoint = "wss://unbound.invalid/stream"
+
+        monkeypatch.setattr(TradingStream, "__init__", changed_endpoint)
+
+    async def capture() -> None:
+        raise AssertionError("Unbound stream cannot capture account activity")
+
+    with pytest.raises(ConfigurationError) as caught:
+        ManagedTradingStream(built, policy, capture)
+    assert type(caught.value) is ConfigurationError
+    assert str(caught.value) == (
+        "Trade stream endpoint differs from its bound account"
+        if fault == "sdk_endpoint"
+        else "Trade stream account or egress policy differs"
+    )
+    assert client.posts == [] and client.lookups == []
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+@pytest.mark.parametrize("fault", ["start_cancel", "consume_cancel", "clean_stop"])
+async def test_AX_28_stream_cancellation_and_requested_stop_never_reconnect(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+    calls: list[str] = []
+
+    async def capture() -> None:
+        raise AssertionError("No update was received")
+
+    stream = ManagedTradingStream(
+        built, EgressPolicy(build_allowlist(mode="AUTO_PAPER"), harness.state.ledger), capture
+    )
+
+    async def connect() -> None:
+        calls.append("connect")
+        if fault == "start_cancel":
+            raise asyncio.CancelledError("Paper stream task canceled")
+
+    async def consume() -> None:
+        calls.append("consume")
+        if fault == "consume_cancel":
+            raise asyncio.CancelledError("Paper stream task canceled")
+        stream._should_run = False
+
+    monkeypatch.setattr(stream, "_start_ws", connect)
+    monkeypatch.setattr(stream, "_consume", consume)
+    if fault == "clean_stop":
+        await stream._run_forever()
+    else:
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await stream._run_forever()
+        assert type(caught.value) is asyncio.CancelledError
+        assert str(caught.value) == "Paper stream task canceled"
+    assert calls == (["connect"] if fault == "start_cancel" else ["connect", "consume"])
+    assert harness.state.current() == SystemState.RUNNING
+    assert client.posts == [] and client.lookups == []
+    await stream.aclose()
+    await built.close()
 
 
 @pytest.mark.asyncio
@@ -212,6 +511,35 @@ def test_AX_15_paper_transport_binding_is_atomic_and_closes_old_session(
         assert client._retry == 0 and client._use_raw_data is True
         assert client._session.trust_env is False
         client._session.close()
+
+
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+def test_AX_15_factory_closes_paper_session_when_endpoint_binding_fails(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    import backend.execution.alpaca_executor as implementation
+
+    closed: list[bool] = []
+    client = SimpleNamespace(
+        _base_url=None, _session=SimpleNamespace(close=lambda: closed.append(True)), _retry=0
+    )
+
+    def paper_client(**kwargs: object) -> object:
+        assert kwargs["paper"] is True and kwargs["raw_data"] is True
+        return client
+
+    monkeypatch.setattr(implementation, "TradingClient", paper_client)
+    with pytest.raises(ConfigurationError) as caught:
+        implementation.make_execution_client(
+            harness.settings,
+            EgressPolicy(build_allowlist(mode="AUTO_PAPER"), harness.state.ledger),
+            before_request=lambda: None,
+        )
+    assert type(caught.value) is ConfigurationError
+    assert str(caught.value) == "Pinned Alpaca SDK transport contract changed"
+    assert closed == [True]
 
 
 @pytest.mark.parametrize("harness", [AUTO], indirect=True)
@@ -701,6 +1029,7 @@ async def test_AX_30_poll_capture_failure_does_not_suppress_stop_repair(harness:
     built = executor(h, client)
     await built.enter(alert.proposal_id)
     await fill_entry(h, client, built, partial=True)
+    journal_existing_partial_repair(built)
 
     async def sync() -> object:
         h.state.halt_for_error(ProviderError("synthetic poll fault"))

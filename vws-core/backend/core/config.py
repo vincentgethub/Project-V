@@ -229,6 +229,7 @@ class Settings(BaseSettings):
             "auto_no_trade_close_minutes": (10, 60),
             "auto_max_entries_per_day": (1, 10),
             "auto_max_consecutive_order_failures": (1, 3),
+            "panic_cancel_timeout_seconds": (1, 30),
             "auto_live_min_paper_sessions": (20, 10000),
             "auto_live_min_rt_sessions": (5, 10000),
         }
@@ -289,6 +290,7 @@ class Settings(BaseSettings):
     auto_no_trade_close_minutes: int = 15
     auto_max_entries_per_day: int = 5
     auto_max_consecutive_order_failures: int = 3
+    panic_cancel_timeout_seconds: int = 30
     auto_live_min_paper_sessions: int = 20
     auto_live_min_rt_sessions: int = 5
     auto_exits: bool = True

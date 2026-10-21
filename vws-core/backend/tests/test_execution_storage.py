@@ -176,6 +176,17 @@ def append_execution_fixture(
         reason="fixture broker accepted",
         broker_order_id=str(parent_id),
     )
+    # Full activity quantity is finalized only after a matching terminal broker proof.
+    confirmed = BrokerOrder.model_validate(
+        broker.model_copy(update={"status": "filled", "filled_qty": 2})
+    )
+    ledger.append(
+        SecurityEvent,
+        kind="EXECUTION_ORDER_OBSERVED",
+        detail=BindingEvidence(
+            execution_order_id=instruction.id, broker_order=confirmed, observed_at=clock.now()
+        ).model_dump(mode="json"),
+    )
     ledger.record_fill(
         order.id,
         execution_order_id=instruction.id,

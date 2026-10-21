@@ -182,7 +182,7 @@ def test_OPS_06_aggregate_requires_every_id_and_every_job(
     assert summary["passed"] is (fault in {"none", "approved"})
     assert len(summary["jobs"]) == 63
     if summary["passed"]:
-        assert summary["reported"] == 13381
+        assert summary["reported"] == 15457
 
 
 def test_OPS_06_partition_rejects_overlap_missing_and_wrong_source(

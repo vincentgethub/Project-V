@@ -1,14 +1,17 @@
 """AX-11/16/20..26/31: offline physical-attempt and admission regressions."""
 
 import asyncio
+import re
 from collections.abc import Callable
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
 from alpaca.common.exceptions import APIError
+from alpaca.trading.enums import OrderSide
 from pydantic import SecretStr
 from requests import HTTPError, Response
 from sqlalchemy import select
@@ -17,6 +20,7 @@ from sqlalchemy.orm import Session
 from backend.core.config import Settings
 from backend.core.database import ExecutionOrderRecord, OrderEvent
 from backend.core.errors import (
+    DataIntegrityError,
     ExecutionDisabledError,
     OrderRejectedError,
     ProviderError,
@@ -30,6 +34,14 @@ from backend.execution.alpaca_executor import (
     AlpacaExecutor,
     ExactLimit,
     ExactStop,
+    _require_absent_sell_unfilled,
+    _require_acquisition_basis,
+    _require_cancel_lifecycle,
+    _require_entry_projection,
+    _require_fill_parent,
+    _require_fresh_cancel_roots,
+    _require_oco_entry,
+    _require_side,
     parse_order,
 )
 from backend.execution.models import AutoPrerequisites
@@ -40,6 +52,27 @@ from backend.tests.test_security_cli import MemorySecrets
 from backend.tests.test_swarm_and_callbacks import Harness, click, deliver, make_research_harness
 
 harness = make_research_harness
+
+
+def journal_existing_partial_repair(built: AlpacaExecutor) -> None:
+    """Seed an explicit interrupted repair, rather than an unjournaled gap."""
+    from backend.execution.stop_evidence import current_stop
+    from backend.execution.storage import held_quantity
+
+    with Session(built.state.engine) as session:
+        entries = tuple(
+            session.scalars(
+                select(ExecutionOrderRecord).where(ExecutionOrderRecord.role == "ENTRY")
+            )
+        )
+        pending = [
+            (row, held_quantity(session, row.id), current_stop(session, row)) for row in entries
+        ]
+    for entry, qty, stop in pending:
+        if qty > 0:
+            built._begin_protection_repair(entry, qty, stop, stop)
+
+
 AUTO = {
     "execution_mode": "AUTO_PAPER",
     "auto_min_score": Decimal("7.5"),
@@ -47,6 +80,145 @@ AUTO = {
     "broker_secret_key": SecretStr("TEST_ONLY_PAPER_SECRET"),
     "healthcheck_ping_url": SecretStr("https://hc-ping.com/test-only"),
 }
+
+
+def test_SEC_73_cancel_requires_retained_lifecycle_with_exact_integrity_message() -> None:
+    with pytest.raises(ReconciliationError) as caught:
+        _require_cancel_lifecycle(None)
+    assert type(caught.value) is ReconciliationError
+    assert str(caught.value) == "Cancellation has no order lifecycle"
+    pending = cast(OrderEvent, SimpleNamespace(state="CANCEL_REQUESTED"))
+    assert _require_cancel_lifecycle(pending) is pending
+
+
+@pytest.mark.parametrize("role", [None, "STOP", "ENTRY"])
+def test_EX_05_oco_stop_requires_its_managed_entry(role: str | None) -> None:
+    entry = None if role is None else cast(ExecutionOrderRecord, SimpleNamespace(role=role))
+    if role == "ENTRY":
+        assert _require_oco_entry(entry) is entry
+    else:
+        with pytest.raises(ReconciliationError) as caught:
+            _require_oco_entry(entry)
+        assert type(caught.value) is ReconciliationError
+        assert str(caught.value) == "EX-05: OCO stop child lost its held entry"
+
+
+@pytest.mark.parametrize("side", [OrderSide.BUY, OrderSide.SELL])
+def test_AX_23_required_side_preserves_broker_direction(side: OrderSide) -> None:
+    assert _require_side(cast(Any, SimpleNamespace(side=side))) is side
+
+
+def test_AX_23_required_side_refuses_missing_direction() -> None:
+    with pytest.raises(
+        DataIntegrityError, match=re.escape("Validated order has no side")
+    ) as caught:
+        _require_side(cast(Any, SimpleNamespace(side=None)))
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == "Validated order has no side"
+
+
+@pytest.mark.parametrize("role,parent", [("ENTRY", None), ("STOP", UUID(int=702))])
+def test_XK_02_fill_parent_preserves_valid_entry_and_child_bindings(
+    role: str, parent: UUID | None
+) -> None:
+    instruction = cast(Any, SimpleNamespace(role=role, parent_execution_id=parent))
+    assert _require_fill_parent(instruction) == parent
+
+
+def test_XK_02_fill_parent_refuses_orphaned_sell_with_exact_message() -> None:
+    instruction = cast(Any, SimpleNamespace(role="STOP", parent_execution_id=None))
+    with pytest.raises(
+        ReconciliationError, match=re.escape("Fill notification lost its managed entry")
+    ) as caught:
+        _require_fill_parent(instruction)
+    assert type(caught.value) is ReconciliationError
+    assert str(caught.value) == "Fill notification lost its managed entry"
+
+
+def test_XK_02_fill_notice_requires_acquisition_basis() -> None:
+    with pytest.raises(
+        ReconciliationError, match=re.escape("Fill notice has no verified acquisition basis")
+    ) as caught:
+        _require_acquisition_basis(())
+    assert type(caught.value) is ReconciliationError
+    assert str(caught.value) == "Fill notice has no verified acquisition basis"
+
+
+def test_XK_02_fill_notice_accepts_present_acquisition_basis() -> None:
+    _require_acquisition_basis(cast(Any, (object(),)))
+
+
+def test_AX_25_missing_entry_projection_refuses_with_exact_integrity_error() -> None:
+    with pytest.raises(
+        DataIntegrityError, match=re.escape("Entry state projection is missing")
+    ) as caught:
+        _require_entry_projection(None)
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == "Entry state projection is missing"
+    projection = cast(Any, SimpleNamespace(id=1, state="RUNNING", version=0))
+    assert _require_entry_projection(projection) is projection
+
+
+@pytest.mark.parametrize("missing", ["parent", "target", "both"])
+def test_EX_06_cancel_proof_requires_both_fresh_roots(missing: str) -> None:
+    root = cast(Any, object())
+    with pytest.raises(
+        DataIntegrityError, match=re.escape("EX-06: fresh paper roots unavailable")
+    ) as caught:
+        _require_fresh_cancel_roots(
+            None if missing in {"parent", "both"} else root,
+            None if missing in {"target", "both"} else root,
+        )
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == "EX-06: fresh paper roots unavailable"
+
+
+def test_EX_06_cancel_proof_preserves_both_fresh_roots() -> None:
+    parent, target = cast(Any, object()), cast(Any, object())
+    assert _require_fresh_cancel_roots(parent, target) == (parent, target)
+
+
+def test_AX_31_absent_sell_must_have_zero_captured_shares() -> None:
+    _require_absent_sell_unfilled(0)
+    with pytest.raises(
+        ReconciliationError, match=re.escape("Absent sell intent has captured fills")
+    ) as caught:
+        _require_absent_sell_unfilled(1)
+    assert type(caught.value) is ReconciliationError
+    assert str(caught.value) == "Absent sell intent has captured fills"
+
+
+@pytest.mark.parametrize("raw", [None, [], "not a broker response", 1])
+def test_AX_31_nonobject_broker_responses_are_rejected(raw: object) -> None:
+    with pytest.raises(
+        DataIntegrityError, match=re.escape("Broker order must be exact raw JSON")
+    ) as caught:
+        parse_order(raw)
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == "Broker order must be exact raw JSON"
+
+
+def test_AX_31_native_broker_timestamp_preserves_utc_instant(clock: Any) -> None:
+    raw = {
+        "id": str(UUID(int=701)),
+        "client_order_id": "paper-timestamp",
+        "symbol": "NVDA",
+        "side": "buy",
+        "type": "limit",
+        "order_class": "simple",
+        "time_in_force": "day",
+        "qty": "1",
+        "filled_qty": "0",
+        "status": "new",
+        "limit_price": "100.00",
+        "stop_price": None,
+        "submitted_at": clock.now(),
+        "legs": None,
+    }
+    order = parse_order(raw)
+    assert order.submitted_at == clock.now()
+    assert order.qty == 1 and order.filled_qty == 0
+    assert order.limit_price == Decimal("100.00")
 
 
 @pytest.mark.parametrize(
@@ -70,6 +242,10 @@ AUTO = {
         ("id", "not-a-uuid", "Broker order identity or shape cannot be verified"),
         ("side", "short", "Broker order identity or shape cannot be verified"),
         ("status", "unrecognized", "Broker order identity or shape cannot be verified"),
+        ("reject_reason", True, "Broker order identity or shape cannot be verified"),
+        ("reject_reason", "x" * 513, "Broker order identity or shape cannot be verified"),
+        ("failed_at", "not-an-instant", "Broker order identity or shape cannot be verified"),
+        ("failed_at", "2000-01-01T00:00:00Z", "Broker order identity or shape cannot be verified"),
     ],
 )
 def test_AX_31_raw_broker_faults_have_exact_typed_audit_messages(
@@ -306,6 +482,9 @@ class FakeTradingClient:
         return self.orders[client_id]
 
     def submit_order(self, order_data: ExactLimit | ExactStop) -> dict[str, Any]:
+        return self._submit_paper(order_data)
+
+    def _submit_paper(self, order_data: ExactLimit | ExactStop) -> dict[str, Any]:
         fields = order_data.to_request_fields()
         if fields["client_order_id"].startswith("vws-m-"):
             self.failure = None
@@ -360,6 +539,9 @@ class FakeTradingClient:
         return raw
 
     def cancel_order_by_id(self, order_id: UUID | str) -> None:
+        self._cancel_paper(order_id)
+
+    def _cancel_paper(self, order_id: UUID | str) -> None:
         if self.raise_fault == "cancel":
             raise TimeoutError("offline unconfirmed cancellation")
         for raw in self.orders.values():
@@ -397,12 +579,13 @@ def executor(
     settings: Settings | None = None,
     *,
     constructor: type[AlpacaExecutor] = AlpacaExecutor,
+    account_id: str = "offline-paper",
 ) -> AlpacaExecutor:
     settings = settings or h.settings
     store = MemorySecrets()
     store.set("ALPACA_PAPER_KEY_ID", settings.broker_api_key)
     store.set("ALPACA_PAPER_SECRET", settings.broker_secret_key)
-    modes = ModeStore(settings, h.state, "offline-paper")
+    modes = ModeStore(settings, h.state, account_id)
     proof = AutoPrerequisites(
         account_id=modes.account_id,
         environment="PAPER",
@@ -435,6 +618,190 @@ def executor(
         client=client,
         entry_variant_allowed=lambda: True,  # Explicit offline fixture; never production admission.
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_16_cancelled_physical_entry_retains_intent_and_halts_without_retry(
+    harness: Harness,
+) -> None:
+    from backend.core.database import SecurityEvent, SystemEvent
+
+    calls: list[str] = []
+
+    class CanceledPaperBroker(FakeTradingClient):
+        def submit_order(self, order_data: ExactLimit | ExactStop) -> dict[str, Any]:
+            calls.append(order_data.client_order_id)
+            raise asyncio.CancelledError("Paper physical attempt canceled")
+
+    alert = await deliver(harness)
+    client = CanceledPaperBroker(harness)
+    built = executor(harness, client)
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await built.enter(alert.proposal_id)
+    assert type(caught.value) is asyncio.CancelledError
+    assert str(caught.value) == ""
+    with Session(harness.state.engine) as session:
+        intent = session.scalar(select(ExecutionOrderRecord))
+        assert intent is not None and intent.role == "ENTRY"
+        assert calls == [intent.client_order_id]
+        halt = session.scalar(select(SystemEvent).order_by(SystemEvent.seq.desc()))
+        assert halt is not None and halt.state == "HALTED"
+        assert halt.reason == "Order attempt canceled; look up the client ID before any recovery"
+        assert (
+            tuple(
+                session.scalars(
+                    select(SecurityEvent).where(SecurityEvent.kind == "EXECUTION_SUBMIT_OUTCOME")
+                )
+            )
+            == ()
+        )
+    assert built._confirmed_absence(intent) is False
+    assert harness.state.current() == SystemState.HALTED
+    assert client.posts == []
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_31_rejected_broker_response_is_exact_and_never_retried(harness: Harness) -> None:
+    class RejectedPaperBroker(FakeTradingClient):
+        def submit_order(self, order_data: ExactLimit | ExactStop) -> dict[str, Any]:
+            raw = super()._submit_paper(order_data)
+            raw["status"] = "rejected"
+            raw["legs"] = None
+            return raw
+
+    alert = await deliver(harness)
+    client = RejectedPaperBroker(harness)
+    built = executor(harness, client)
+    with pytest.raises(OrderRejectedError) as caught:
+        await built.enter(alert.proposal_id)
+    assert type(caught.value) is OrderRejectedError
+    assert str(caught.value) == "Broker order reports a confirmed rejection"
+    assert len(client.posts) == 1
+    assert harness.state.current() == SystemState.RUNNING
+    with Session(harness.state.engine) as session:
+        latest = session.scalar(select(OrderEvent).order_by(OrderEvent.seq.desc()))
+        assert latest is not None and latest.state == "REJECTED"
+        assert latest.reason == "broker rejection confirmed; no retry"
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_16_failed_lookup_after_ambiguous_submit_preserves_single_intent(
+    harness: Harness,
+) -> None:
+    from backend.core.database import SecurityEvent
+
+    class UnavailablePaperBroker(FakeTradingClient):
+        def get_order_by_client_id(self, client_id: str) -> dict[str, Any]:
+            if self.posts:
+                self.lookups.append(client_id)
+                raise TimeoutError("Paper lookup unavailable")
+            return super().get_order_by_client_id(client_id)
+
+    alert = await deliver(harness)
+    client = UnavailablePaperBroker(harness)
+    client.failure = "ambiguous-missing"
+    built = executor(harness, client)
+    with pytest.raises(ProviderError) as caught:
+        await built.enter(alert.proposal_id)
+    assert type(caught.value) is ProviderError
+    assert str(caught.value) == "Automatic entry failed closed; inspect persisted intent"
+    assert len(client.posts) == 1
+    assert client.lookups == [client.posts[0]["client_order_id"]] * 2
+    assert harness.state.current() == SystemState.HALTED
+    with Session(harness.state.engine) as session:
+        outcomes = tuple(
+            session.scalars(
+                select(SecurityEvent).where(SecurityEvent.kind == "EXECUTION_SUBMIT_OUTCOME")
+            )
+        )
+        assert len(outcomes) == 1
+        assert outcomes[0].detail["outcome"] == "ERROR"
+        assert outcomes[0].detail["error_type"] == "TimeoutError"
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_16_accepted_canceled_attempt_is_bound_before_any_recovery_retry(
+    harness: Harness,
+) -> None:
+    class InterruptedPaperBroker(FakeTradingClient):
+        def submit_order(self, order_data: ExactLimit | ExactStop) -> dict[str, Any]:
+            super()._submit_paper(order_data)
+            raise asyncio.CancelledError("Paper response delivery canceled")
+
+    alert = await deliver(harness)
+    client = InterruptedPaperBroker(harness)
+    built = executor(harness, client)
+    with pytest.raises(asyncio.CancelledError):
+        await built.enter(alert.proposal_id)
+    with Session(harness.state.engine) as session:
+        entry = session.scalar(
+            select(ExecutionOrderRecord).where(ExecutionOrderRecord.role == "ENTRY")
+        )
+        assert entry is not None
+    recovered = await built._read_bound(entry)
+    assert recovered is not None
+    assert str(recovered.order_id) == client.orders[entry.client_order_id]["id"]
+    assert recovered.client_order_id == entry.client_order_id
+    assert len(recovered.legs) == 2
+    assert len(client.posts) == 1
+    assert client.lookups == [entry.client_order_id, entry.client_order_id]
+    await built.cancel_unfilled_entries()
+    assert len(client.posts) == 1
+    assert client.orders[entry.client_order_id]["status"] == "canceled"
+    assert harness.state.current() == SystemState.HALTED
+    harness.state.ledger.verify_chain()
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+@pytest.mark.parametrize("fault", ["lookup_identity", "read_disappeared", "prepare_unavailable"])
+async def test_AX_31_identity_and_availability_faults_do_not_resubmit(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+    await built.enter(alert.proposal_id)
+    with Session(harness.state.engine) as session:
+        entry = session.scalar(
+            select(ExecutionOrderRecord).where(ExecutionOrderRecord.role == "ENTRY")
+        )
+        assert entry is not None
+    if fault == "lookup_identity":
+        monkeypatch.setattr(
+            client, "get_order_by_client_id", lambda _: client.orders[entry.client_order_id]
+        )
+        with pytest.raises(ReconciliationError) as caught:
+            await built._lookup("another-paper-client-id")
+        expected = "Client-ID lookup returned another order"
+    else:
+
+        def unavailable(*args: Any, **kwargs: Any) -> Any:
+            raise TimeoutError("Paper evidence unavailable")
+
+        if fault == "read_disappeared":
+            monkeypatch.setattr(client, "get_order_by_id", unavailable)
+            with pytest.raises(ReconciliationError) as caught:
+                await built._read_bound(entry)
+            expected = "Previously bound broker order disappeared"
+        else:
+            monkeypatch.setattr(client, "get_order_by_client_id", unavailable)
+            with pytest.raises(ReconciliationError) as caught:
+                await built.prepare_fills(("NVDA",))
+            expected = "Fill identities cannot be bound; entries halted"
+            assert harness.state.current() == SystemState.HALTED
+    assert type(caught.value) is ReconciliationError
+    assert str(caught.value) == expected
+    assert len(client.posts) == 1
+    await built.close()
 
 
 @pytest.mark.asyncio
@@ -472,6 +839,33 @@ async def test_AX_16_ambiguous_missing_order_halts_without_retry(harness: Harnes
     assert len(client.posts) == 1 and len(client.lookups) == 2
     assert harness.state.current() == SystemState.HALTED
     harness.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_31_reconciliation_does_not_invent_an_ambiguous_entry_outcome(
+    harness: Harness,
+) -> None:
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    client.failure = "ambiguous-missing"
+    built = executor(harness, client)
+    with pytest.raises(ProviderError) as submitted:
+        await built.enter(alert.proposal_id)
+    assert type(submitted.value) is ProviderError
+    assert str(submitted.value) == "Automatic entry failed closed; inspect persisted intent"
+    with pytest.raises(ReconciliationError) as unresolved:
+        await built._reconcile()
+    assert type(unresolved.value) is ReconciliationError
+    assert str(unresolved.value) == "Durable order outcome remains unverifiable; no retry"
+    with pytest.raises(ReconciliationError) as public_error:
+        await built.reconcile()
+    assert type(public_error.value) is ReconciliationError
+    assert str(public_error.value) == "Broker reconciliation failed closed"
+    assert harness.state.current() == SystemState.HALTED
+    assert len(client.posts) == 1 and client.orders == {}
+    harness.state.ledger.verify_chain()
+    await built.close()
 
 
 @pytest.mark.asyncio
@@ -556,6 +950,109 @@ async def fill_entry(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("harness", [AUTO], indirect=True)
+@pytest.mark.parametrize("fault", ["child_of_child", "lost_nested_parent", "reused_child"])
+async def test_AX_31_generated_child_identity_never_changes_its_managed_entry(
+    harness: Harness, fault: str
+) -> None:
+    from backend.tests.test_v_execution import variant
+
+    if fault == "reused_child":
+        variant(harness, "SPLIT_1R")
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+    await built.enter(alert.proposal_id)
+    instructions = built._instructions()
+    entries = [row for row in instructions if row.role == "ENTRY"]
+    child = next(row for row in instructions if row.parent_execution_id == entries[0].id)
+    root = client.orders[entries[0].client_order_id]
+    child_raw = next(row for row in root["legs"] if row["client_order_id"] == child.client_order_id)
+    if fault == "child_of_child":
+        built._register_children(child, parse_order(child_raw, parent_id=UUID(root["id"])))
+    else:
+        with pytest.raises(ReconciliationError) as caught:
+            if fault == "lost_nested_parent":
+                built._observe(entries[0], parse_order({**root, "legs": None}))
+                await built._read_bound(child)
+            else:
+                other_root = client.orders[entries[1].client_order_id]
+                built._register_children(
+                    entries[1], parse_order({**other_root, "legs": [child_raw]})
+                )
+        assert type(caught.value) is ReconciliationError
+        assert str(caught.value) == (
+            "Generated broker child has no proved parent"
+            if fault == "lost_nested_parent"
+            else "Generated child already belongs to another entry"
+        )
+    assert [row.id for row in built._instructions()] == [row.id for row in instructions]
+    assert len(client.posts) == len(entries)
+    harness.state.ledger.verify_chain()
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_16_lost_prior_order_is_not_resubmitted(harness: Harness) -> None:
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+    await built.enter(alert.proposal_id)
+    client.orders.clear()
+    with pytest.raises(ExecutionDisabledError) as caught:
+        await built.enter(alert.proposal_id)
+    assert type(caught.value) is ExecutionDisabledError
+    assert str(caught.value) == "Prior durable intent is retained; never resubmit"
+    assert len(client.posts) == 1
+    harness.state.ledger.verify_chain()
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+@pytest.mark.parametrize("seconds", [True, 0, 31, 1.5])
+async def test_AX_24_invalid_cancel_budget_never_sends_a_cancel(
+    harness: Harness, seconds: Any
+) -> None:
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+    await built.enter(alert.proposal_id)
+    entry = next(row for row in built._instructions() if row.role == "ENTRY")
+    parent = client.orders[entry.client_order_id]
+    with pytest.raises(ProviderError) as caught:
+        await built._cancel_confirmed(entry, parse_order(parent), deadline_seconds=seconds)
+    assert type(caught.value) is ProviderError
+    assert str(caught.value) == "Cancel confirmation requires a bounded deadline"
+    assert parent["status"] == "new"
+    assert len(client.posts) == 1
+    harness.state.ledger.verify_chain()
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_24_cancel_cannot_claim_an_uncaptured_fill_is_reconciled(harness: Harness) -> None:
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+    await built.enter(alert.proposal_id)
+    entry = next(row for row in built._instructions() if row.role == "ENTRY")
+    parent = client.orders[entry.client_order_id]
+    parent["filled_qty"] = "1"
+    client.positions = [{"symbol": "NVDA", "qty": "1", "side": "long", "asset_class": "us_equity"}]
+    with pytest.raises(ReconciliationError) as caught:
+        await built._cancel_confirmed(entry, parse_order(parent))
+    assert type(caught.value) is ReconciliationError
+    assert str(caught.value) == "Cancellation raced a fill; capture activities before recovery"
+    assert parent["status"] == "canceled"
+    assert len(client.posts) == 1
+    harness.state.ledger.verify_chain()
+    await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
 async def test_AX_26_27_known_fill_is_idempotent_and_active_bracket_stop_is_retained(
     harness: Harness,
 ) -> None:
@@ -585,6 +1082,7 @@ async def test_AX_24_27_30_partial_parent_canceled_then_stop_repairs_even_when_e
     built = executor(h, client)
     await built.enter(alert.proposal_id)
     parent, _ = await fill_entry(h, client, built, partial=True)
+    journal_existing_partial_repair(built)
     if state in {"HALTED", "REDUCE_ONLY"}:
         h.state.escalate(SystemState(state), "fixture state")
     elif state in {"PAUSE", "MANUAL"}:
@@ -608,6 +1106,7 @@ async def test_AX_27_failed_stop_repair_latches_halt(harness: Harness) -> None:
     built = executor(h, client)
     await built.enter(alert.proposal_id)
     await fill_entry(h, client, built, partial=True)
+    journal_existing_partial_repair(built)
     client.failure = "reject"
     with pytest.raises(ReconciliationError):
         await built.monitor()

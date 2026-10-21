@@ -80,7 +80,16 @@ class BrokerOrder(FrozenModel):
     stop_price: Price | None = None
     submitted_at: UTCDateTime
     parent_id: UUID | None = None
+    rejection_reason: str | None = Field(
+        default=None, strict=True, max_length=512, exclude_if=lambda v: v is None
+    )
+    rejected_at: UTCDateTime | None = Field(default=None, exclude_if=lambda v: v is None)
     legs: tuple["BrokerOrder", ...] = Field(default=(), max_length=2)
+
+    @field_validator("rejected_at", mode="before")
+    @classmethod
+    def decode_rejection_time(cls, value: object) -> datetime | None:
+        return None if value is None else payload_instant(value)
 
     @field_validator("submitted_at", mode="before")
     @classmethod
@@ -98,6 +107,8 @@ class BrokerOrder(FrozenModel):
 
     @model_validator(mode="after")
     def consistent(self) -> Self:
+        if self.rejected_at is not None and self.rejected_at < self.submitted_at:
+            raise ValueError("Broker rejection precedes order submission")
         if self.filled_qty > self.qty:
             raise ValueError("Broker fills exceed requested shares")
         if self.order_type == "limit" and self.limit_price is None:

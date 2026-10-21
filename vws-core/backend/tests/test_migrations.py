@@ -24,6 +24,79 @@ from backend.tests.test_ledger import _signal
 from backend.tests.test_security_cli import MemorySecrets
 
 
+def test_OPS_05_version_seven_constraint_migration_preserves_replay_and_backup(
+    engine: Engine, clock: FrozenClock, tmp_path: Path
+) -> None:
+    from sqlalchemy.schema import CreateTable
+
+    from backend.core.database import LEDGER_MODELS, install_append_only_triggers
+    from backend.core.ledger import canonical_json
+    from backend.tests.test_ledger import _order
+
+    # Recreate the actual v7 constraint before adding historical evidence.
+    with engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE order_events")
+        table = Base.metadata.tables["order_events"]
+        ddl = str(CreateTable(table).compile(dialect=engine.dialect))
+        connection.exec_driver_sql(ddl.replace(", 'CANCEL_REQUESTED'", ""))
+        for index in table.indexes:
+            index.create(connection)
+        install_append_only_triggers(connection)
+    ledger = Ledger(engine, clock)
+    _order(ledger, clock)
+    ledger.verify_chain()
+    with Session(engine) as session:
+        original = {
+            row.seq: (canonical_json(row), row.prev_hash, row.row_hash)
+            for model in LEDGER_MODELS
+            for row in session.scalars(select(model))
+        }
+    with engine.begin() as connection:
+        connection.execute(update(SchemaMeta).values(version=7))
+    store = MemorySecrets()
+    runner = MigrationRunner(engine, clock, store, tmp_path / "backups")
+    result = runner.run("Test Owner")
+    assert result.applied and result.source_version == 7 and result.target_version == 8
+    assert result.original_records == len(original)
+    assert result.backup_path is not None
+    ledger.verify_chain()
+    with Session(engine) as session:
+        assert {
+            row.seq: (canonical_json(row), row.prev_hash, row.row_hash)
+            for model in LEDGER_MODELS
+            for row in session.scalars(select(model))
+            if row.seq in original
+        } == original
+    assert "CANCEL_REQUESTED" in next(
+        row["sqltext"]
+        for row in inspect(engine).get_check_constraints("order_events")
+        if row["name"] == "ck_order_event_state"
+    )
+    assert BackupService(ledger, clock, store, tmp_path / "backups").restore_test(
+        result.backup_path
+    ).seq == max(original)
+    with Session(engine) as session:
+        after_first = {
+            row.seq: (canonical_json(row), row.row_hash)
+            for model in LEDGER_MODELS
+            for row in session.scalars(select(model))
+        }
+    second = runner.run("Test Owner")
+    assert not second.applied and second.backup_path is None
+    with Session(engine) as session:
+        assert {
+            row.seq: (canonical_json(row), row.row_hash)
+            for model in LEDGER_MODELS
+            for row in session.scalars(select(model))
+        } == after_first
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError, match="append-only ledger"):
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM order_events")
+    ledger.verify_chain()
+
+
 def legacy(
     engine: Engine, clock: FrozenClock, version: int
 ) -> tuple[dict[int, str], MemorySecrets]:

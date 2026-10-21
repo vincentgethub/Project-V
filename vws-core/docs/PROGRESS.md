@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 16, 2026 - safety mutation tests
+Last updated: October 20, 2026 - Pass 6 offline checks pass; native CI pending
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -13,12 +13,15 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-MUTATION_PASS5.md records 180 new paper-fake and risk behavior cases.
-All 63 jobs have a baseline function inventory. Six looping mutants fail replay.
-Executor coverage now counts; its 100% gate is still unmet and remains strict.
-Split, selectors, timeouts and the six approved equivalents stay unchanged.
+MUTATION_PASS6.md records pending cancellation, shared finalization and guard helpers.
+Race/resume, backed-up migration and journaled protection checks pass locally.
+Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
+Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.
+Final full CRO recheck refuses all six timed blockers before any broker send.
+The 15,457-ID partition passes across 63 fixed jobs; no retained owner moves.
 
 ## Waiting on you
+No new owner decision is needed for the authorized verification and single push.
 Setup later needs paper broker keys and your CASH or MARGIN account type;
 your Telegram bot/private chat; read-only Plaid checking credentials;
 your FRED key and filing name/email; federal ST/LT rates and marked outside lots.
@@ -28,7 +31,11 @@ Setup stores keys in the computer's secret store; do not paste them here.
 
 ## Not checked yet
 Real broker, bank, Telegram, FRED and SEC checks need setup.
-Normal/random: 5,718 passes, 61 skips each; expanded coverage gate FAIL (97.34%).
+Current collection: 889 cases added, none removed; four original perf deselections.
+Normal/random each pass 6,607, skip 61 and deselect four perf cases; coverage 100%.
+Required: 9,503 statements / 3,386 branches; executor: 1,864 / 776; zero missing.
+Pre-commit full-history gitleaks: 48 commits, zero findings; repeat after commit.
+All 27 individual risk proposals remain unapproved and count as failures if surviving.
 Earlier replay, warm scan and realtime fake results remain in FINAL_REPORT.md.
 Amendment 02 "MANUAL_CSV path works": DEFERRED (user decision, Oct 8 2026).
 Walk-forward speed is UNVERIFIED: 19 windows took 949.845 seconds without finishing.

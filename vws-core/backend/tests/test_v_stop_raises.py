@@ -303,13 +303,18 @@ async def test_EX_05_raise_recovery_never_lowers_or_blindly_retries(
             )
             assert moved.status == expected
             assert current_stop(session, b) == (
-                b.stop_price + D(4) if expected in {"APPLIED", "REPAIRED"} else b.stop_price
+                b.stop_price + D(4) if expected == "APPLIED" else b.stop_price
             )
             assert len(client.posts) == (
                 4 if fault in {"reject-once", "reject-both"} else 2 if fault == "cancel" else 3
             )
-    if fault in {"reject-once", "reject-both", "ambiguous-missing", "cancel"}:
+    if fault in {"reject-both", "ambiguous-missing", "cancel"}:
         assert h.state.current() == SystemState.HALTED
+    elif fault == "reject-once":
+        # Approved journaled fallback restores the old stop, closes the repair,
+        # and releases only its own entry pause after broker confirmation.
+        assert h.state.current() == SystemState.RUNNING
+        assert ex._protection_repairs() == () and ex.modes.entries_enabled
     if fault in {None, "accepted-timeout", "reject-once"}:
         await ex.monitor()
         assert len(client.posts) == (4 if fault == "reject-once" else 3)

@@ -1,5 +1,38 @@
 # Technical status
 
+## Mutation Pass 6 — October 20, 2026
+
+The owner approved the sizing-context correction and final physical-send CRO
+check. The earlier [STOP diagnosis](MUTATION_PASS6_SIZING_STOP.md) is historical.
+
+| Requirement | Code boundary | Evidence |
+| --- | --- | --- |
+| CRO-03..08 exact sizing | `risk_cro._risk_decimal_context`, `ChiefRiskOfficer.evaluate/max_allowed_qty` | Old eight-share expectation fails at 2d0f9c6 and passes now; 7,296 exhaustive comparisons show zero disagreement/oversizing and monotonic eligibility. Caller context is preserved, including traps and flags. |
+| CRO unverifiable arithmetic | `max_allowed_qty` | Injected fault at quantity four returns zero, records the exact fault reason and performs no later probe. Incomplete sizing evidence also fails closed. |
+| CRO-01 / 09..13 execution admission | `AlpacaExecutor.enter:1290-1409` | Early evaluation retained; six last-operation timing vetoes send zero orders, log the rule and persist the exact refusal. A clear check sends one order. AST and runtime SQL tests prove no await or database I/O after final approval. |
+| OPS-06 partition integrity | `mutation-shards.json`, inventory constants/messages only | 15,457 generated unique IDs assigned exactly once across 63 jobs; no retained owner moved. Workflow copies, selectors, timeout, gate and six allowances unchanged. |
+| Test integrity | Existing selected test files | 889 added cases, no removed behaviors. Normal and random each pass 6,607, skip 61 and deselect only four original perf cases; identical case multisets and frozen source hashes. |
+| Required coverage | Unchanged CLI targets, branch gate and exclusion rules | Both runs cover 9,503/9,503 statements and 3,386/3,386 branches; executor 1,864/1,864 statements and 776/776 branches. Zero missing; no new pragma/exclusion/omit. |
+| Mutation evidence | Individual proposal report and native CI | 20 of the last 47 risk diagnostic cases fail; 27 individual proposals remain unapproved. Local CST is diagnostic only; native Linux results pending. |
+
+Whole strict typing passes for 425 authored sources. Full-history pre-commit
+gitleaks scans 48 commits with zero findings. All pre-commit hooks pass, including
+the repository-wide GD-07 scan. The one-push delivery handoff records the
+post-commit history scan and completed native CI; these are pending at commit.
+
+## Mutation Pass 6 — October 17, 2026 (scoped repair verification)
+
+| Requirement | Code boundary | Evidence |
+| --- | --- | --- |
+| AX-24 / AX-27 working-entry protection | `_protect_and_exit`, `_exits_are_orphaned`, monitor/reconcile | Original zero-held orphan decision corrected; two original regressions and four late-fill/cleanup variants pass. |
+| AX-27 journaled protection repair | `_begin_protection_repair`, `_journaled_stop_repair`, `_finish_protection_repair`; three stop replacement paths | Fake-broker success/restoration/double-refusal and restart tests; temporary PAUSE plus append-only journal; no PATCH. |
+| AX-25 repair entry veto | Approved `enter` veto, unchanged `ModeStore.resume:196` | Approved independent journal/held/protection veto in enter now blocks the reproduced RESUME bypass. Latest focused run: 12 passed; one refusal audit row, zero new POSTs. RESUME unchanged. |
+| EX-01 / SEC-73 shared terminal state | `execution/storage.finalize_shared_order`, executor coordinator, canonical fill append | Earlier approved timing/rejection/aggregate tests pass; exactly four approved transitions, terminal states cannot reopen. |
+| OPS-05 immutable history | Schema 8 constraint and backed-up migration | Earlier populated version-7 replay/hash preservation, authenticated restore and idempotence checks pass. |
+| EX-05 repair price boundary | `_raise_repair:3519`, `_repair_stop_attempt:2196` | Original strict fresh-price rule and standalone repair contract restored. Focused price/refusal/contract matrix 15 passed; original standalone assertion unchanged. Full suite/coverage running. |
+| OPS-06 / coverage and mutation | Existing 100% gate, 63 jobs and aggregate | 290 collected additions / 0 removed; current full-suite coverage and native after-counts UNVERIFIED. Inventory regeneration deferred; no commit/push/CI. |
+| GD-07 authored source | Existing unchanged AST positive controls | 337 tests PASS. Stop helper renamed `_repair_stop_attempt`, still using the approved guarded `_submit` path; no source-guard or allowlist change. |
+
 ## Approved mutation Pass 4 - October 16, 2026
 
 [MUTATION_PASS4.md](MUTATION_PASS4.md) supersedes the seed-cache and six-job

@@ -37,7 +37,7 @@ from backend.core.clock import ensure_utc
 from backend.core.errors import DatabaseError, LedgerIntegrityError, SafetyError
 from backend.core.money import money_to_scaled, scaled_to_money, validate_cent_price
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class MoneyType(TypeDecorator[Decimal]):
@@ -231,7 +231,7 @@ class OrderEvent(LedgerRecord):
     __table_args__ = (
         CheckConstraint(
             "state IN ('PROPOSED', 'APPROVED', 'SUBMITTED', 'PARTIALLY_FILLED', "
-            "'FILLED', 'CANCELED', 'REJECTED')",
+            "'FILLED', 'CANCELED', 'REJECTED', 'CANCEL_REQUESTED')",
             name="ck_order_event_state",
         ),
     )
@@ -952,15 +952,21 @@ def prepare_panic_schema(engine: Engine) -> None:
         if "schema_meta" in existing:
             with engine.connect() as connection:
                 version = connection.scalar(select(SchemaMeta.version).where(SchemaMeta.id == 1))
-            if version in {2, 3, 4, 5, 6}:
+            if version in {2, 3, 4, 5, 6, 7}:
                 expected = {
                     name
                     for name in Base.metadata.tables
                     if name
                     not in {
-                        ExecutionOrderRecord.__tablename__,
-                        ExecutionFillRecord.__tablename__,
-                        AutoJobRun.__tablename__,
+                        *(
+                            {
+                                ExecutionOrderRecord.__tablename__,
+                                ExecutionFillRecord.__tablename__,
+                                AutoJobRun.__tablename__,
+                            }
+                            if version < 7
+                            else set()
+                        ),
                     }
                     and (
                         version >= 6

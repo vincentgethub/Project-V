@@ -68,8 +68,13 @@ _ORDER_TRANSITIONS: dict[str | None, frozenset[str]] = {
     None: frozenset({"PROPOSED"}),
     "PROPOSED": frozenset({"APPROVED"}),
     "APPROVED": frozenset({"SUBMITTED"}),
-    "SUBMITTED": frozenset({"PARTIALLY_FILLED", "FILLED", "CANCELED", "REJECTED"}),
-    "PARTIALLY_FILLED": frozenset({"PARTIALLY_FILLED", "FILLED", "CANCELED", "REJECTED"}),
+    "SUBMITTED": frozenset(
+        {"PARTIALLY_FILLED", "FILLED", "CANCELED", "REJECTED", "CANCEL_REQUESTED"}
+    ),
+    "PARTIALLY_FILLED": frozenset(
+        {"PARTIALLY_FILLED", "FILLED", "CANCELED", "REJECTED", "CANCEL_REQUESTED"}
+    ),
+    "CANCEL_REQUESTED": frozenset({"FILLED", "CANCELED"}),
     "FILLED": frozenset(),
     "CANCELED": frozenset(),
     "REJECTED": frozenset(),
@@ -279,16 +284,27 @@ class Ledger:
                     )
                 )
                 state = "FILLED" if total == order.qty else "PARTIALLY_FILLED"
-                self.append_in_session(
-                    session,
-                    OrderEvent,
-                    order_id=record.order_id,
-                    state=state,
-                    reason="observed fill recorded",
-                    broker_order_id=None,
+                latest = session.scalar(
+                    select(OrderEvent)
+                    .where(OrderEvent.order_id == record.order_id)
+                    .order_by(OrderEvent.seq.desc())
+                    .limit(1)
                 )
+                if latest is None or latest.state != "CANCEL_REQUESTED":
+                    self.append_in_session(
+                        session,
+                        OrderEvent,
+                        order_id=record.order_id,
+                        state=state,
+                        reason="observed fill recorded",
+                        broker_order_id=None,
+                    )
             elif isinstance(record, ExecutionFillRecord):
-                from backend.execution.storage import entry_filled_quantity, entry_quantity
+                from backend.execution.storage import (
+                    entry_filled_quantity,
+                    entry_quantity,
+                    finalize_shared_order,
+                )
 
                 instruction = session.get(ExecutionOrderRecord, record.execution_order_id)
                 if instruction is None:
@@ -296,14 +312,28 @@ class Ledger:
                 if instruction.role == "ENTRY":
                     total = entry_filled_quantity(session, instruction.order_id)
                     expected = entry_quantity(session, instruction.order_id)
-                    self.append_in_session(
-                        session,
-                        OrderEvent,
-                        order_id=instruction.order_id,
-                        state="FILLED" if total == expected else "PARTIALLY_FILLED",
-                        reason="observed auto entry fill recorded",
-                        broker_order_id=None,
+                    latest = session.scalar(
+                        select(OrderEvent)
+                        .where(OrderEvent.order_id == instruction.order_id)
+                        .order_by(OrderEvent.seq.desc())
+                        .limit(1)
                     )
+                    if latest is None or latest.state != "CANCEL_REQUESTED":
+                        if total != expected:
+                            self.append_in_session(
+                                session,
+                                OrderEvent,
+                                order_id=instruction.order_id,
+                                state="PARTIALLY_FILLED",
+                                reason="observed auto entry fill recorded",
+                                broker_order_id=None,
+                            )
+                        finalize_shared_order(
+                            self,
+                            session,
+                            instruction.order_id,
+                            reason="observed auto entry fill recorded",
+                        )
             elif isinstance(record, Alert):
                 self.append_in_session(
                     session,
@@ -915,7 +945,11 @@ class Ledger:
             .order_by(OrderEvent.seq.desc())
             .limit(1)
         )
-        if latest is None or latest.state not in {"SUBMITTED", "PARTIALLY_FILLED"}:
+        if latest is None or latest.state not in {
+            "SUBMITTED",
+            "PARTIALLY_FILLED",
+            "CANCEL_REQUESTED",
+        }:
             raise LedgerIntegrityError("Observed fill requires an active submitted order")
         if isinstance(fill.qty, bool) or not isinstance(fill.qty, int) or fill.qty <= 0:
             raise DataIntegrityError("Observed fill requires a positive whole-share quantity")
@@ -1102,7 +1136,11 @@ class Ledger:
                 if instruction is None:
                     raise LedgerIntegrityError("Auto fill instruction cannot be resolved")
                 if instruction.role == "ENTRY":
-                    if states.get(instruction.order_id) not in {"SUBMITTED", "PARTIALLY_FILLED"}:
+                    if states.get(instruction.order_id) not in {
+                        "SUBMITTED",
+                        "PARTIALLY_FILLED",
+                        "CANCEL_REQUESTED",
+                    }:
                         raise LedgerIntegrityError("Auto fill was recorded outside an active entry")
                     totals[instruction.order_id] = totals.get(instruction.order_id, 0) + record.qty
             if isinstance(record, Fill):
@@ -1114,6 +1152,7 @@ class Ledger:
                 if order is None or states.get(record.order_id) not in {
                     "SUBMITTED",
                     "PARTIALLY_FILLED",
+                    "CANCEL_REQUESTED",
                 }:
                     raise LedgerIntegrityError("Fill was recorded outside an active order")
                 totals[record.order_id] = totals.get(record.order_id, 0) + record.qty

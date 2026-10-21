@@ -56,6 +56,8 @@ async def test_AX_30_private_downgrade_cancels_remainder_and_preserves_protectio
     h.gate.bind_auto(built, built.modes)
     await built.enter(alert.proposal_id)
     parent, _ = await fill_entry(h, client, built, partial=True)
+    entry = next(row for row in built._instructions() if row.role == "ENTRY")
+    await built._ensure_stop(entry, 1)
     api = API()
     bot = make(h, api)
     await bot.application.initialize()

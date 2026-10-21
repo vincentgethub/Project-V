@@ -20,6 +20,7 @@ from backend.domain.instruments import InstrumentRegistry
 from backend.domain.models import (
     AccountType,
     AssetClass,
+    BlackoutWindow,
     CapitalStatus,
     Decision,
     DeployableCapital,
@@ -34,6 +35,7 @@ from backend.domain.models import (
     Side,
     TradeProposal,
     Verdict,
+    snapshot_hash,
 )
 from backend.risk.boundary import LoggingVetoSink, RiskBoundary, VetoSink
 from backend.risk.portfolio_marks import PersistedPortfolioMarks
@@ -243,6 +245,54 @@ def boundary(engine: Engine, cro: ChiefRiskOfficer, sink: VetoSink | None = None
     return RiskBoundary(
         cro, SystemStateStore(engine, clock, NoticeRecorder()), clock, veto_sink=sink
     )
+
+
+@pytest.mark.parametrize("manual_exit", [False, True])
+@pytest.mark.parametrize("funding", ["OK", "missing", "BUFFER_BREACH"])
+def test_concurrent_halt_keeps_entry_veto_and_valid_manual_exit_for_all_funding_states(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    monkeypatch: pytest.MonkeyPatch,
+    manual_exit: bool,
+    funding: str,
+) -> None:
+    gate = boundary(engine, boundary_cro)
+    original = gate.state.escalate
+    raced = False
+
+    def host_halt(target: SystemState, reason: str) -> SystemState:
+        nonlocal raced
+        if not raced:
+            raced = True
+            original(SystemState.HALTED, "Offline host HALT at final tier commit")
+        return original(target, reason)
+
+    monkeypatch.setattr(gate.state, "escalate", host_halt)
+    supplied = None if funding == "missing" else capital()
+    if funding == "BUFFER_BREACH":
+        assert supplied is not None
+        supplied = supplied.model_copy(
+            update={"status": CapitalStatus.BUFFER_BREACH, "deployable": Decimal(0)}
+        )
+    verdict = gate.evaluate(
+        trade(exit_=manual_exit, manual=manual_exit),
+        book(held=manual_exit),
+        quote(),
+        deployable=supplied,
+    )
+    assert raced and gate.state.current() == SystemState.HALTED
+    if manual_exit:
+        assert verdict.decision == Decision.APPROVED
+        assert [(row.rule_id, row.passed) for row in verdict.results] == [
+            ("CRO-01", True),
+            ("CRO-02", True),
+        ]
+    else:
+        assert verdict.decision == Decision.VETOED
+        assert [(row.rule_id, row.passed, row.observed) for row in verdict.results] == [
+            ("CRO-01", False, "HALTED")
+        ]
+    gate.state.ledger.verify_chain()
 
 
 def test_R_03_CRO_13_warn_approval_does_not_log_veto(
@@ -608,3 +658,388 @@ def test_R_02_CRO_10_forged_approval_cannot_hide_persisted_session_breach(
     with pytest.raises(DataIntegrityError, match="latched HALTED"):
         gate.evaluate(trade(), book(), quote(), deployable=capital())
     assert gate.state.current() == SystemState.HALTED
+
+
+@pytest.mark.parametrize(
+    "size,mutable", [(0, False), (1, False), (500, False), (501, False), (0, True)]
+)
+def test_CRO_11_operator_window_supplier_obeys_exact_bounds_and_audit(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    caplog: pytest.LogCaptureFixture,
+    size: int,
+    mutable: bool,
+) -> None:
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from backend.core.database import SystemEvent
+
+    gate = boundary(engine, boundary_cro)
+    future = BlackoutWindow(
+        start=NOW + timedelta(days=1),
+        end=NOW + timedelta(days=1, hours=1),
+        reason="offline future operator window",
+    )
+    windows: object = [future] * size if mutable else (future,) * size
+    gate.additional_blackouts = lambda: cast(tuple[BlackoutWindow, ...], windows)
+    if size > 500 or mutable:
+        with pytest.raises(DataIntegrityError) as refused:
+            gate.evaluate(trade(), book(), quote(), deployable=capital())
+        assert type(refused.value) is DataIntegrityError
+        assert str(refused.value) == "R-02: risk boundary failed and latched HALTED"
+        assert type(refused.value.__cause__) is DataIntegrityError
+        assert str(refused.value.__cause__) == "CRO-11: bounded immutable extra windows required"
+        records = [
+            r
+            for r in caplog.records
+            if r.name == "backend.risk.boundary" and r.levelno == logging.ERROR
+        ]
+        assert (
+            len(records) == 1
+            and records[0].getMessage() == "risk_boundary_fault error_type=DataIntegrityError"
+        )
+        with Session(engine) as session:
+            event = session.scalar(select(SystemEvent).order_by(SystemEvent.seq.desc()))
+            assert event is not None and event.reason == "fault: DataIntegrityError"
+        assert gate.state.current() == SystemState.HALTED
+    else:
+        result = gate.evaluate(trade(), book(), quote(), deployable=capital())
+        assert result.decision == Decision.APPROVED
+        row = next(r for r in result.results if r.rule_id == "CRO-11")
+        assert row.passed and row.observed == "clear"
+        assert row.message == "scheduled blackout includes both endpoint instants"
+        assert gate.state.current() == SystemState.RUNNING
+    gate.state.ledger.verify_chain()
+
+
+@pytest.mark.parametrize("origin", ["constructor", "supplier"])
+def test_CRO_11_extra_windows_preserve_original_operator_blackout(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    origin: str,
+) -> None:
+    active = BlackoutWindow(
+        start=NOW,
+        end=NOW + timedelta(hours=1),
+        symbol="AAPL",
+        reason="offline active operator window",
+    )
+    cro = ChiefRiskOfficer(
+        boundary_cro.config,
+        boundary_cro.registry,
+        boundary_cro.calendar,
+        blackout_windows=(active,) if origin == "constructor" else (),
+    )
+    original = boundary(engine, cro)
+    gate = RiskBoundary(
+        cro,
+        original.state,
+        original.clock,
+        additional_blackouts=lambda: (active,) if origin == "supplier" else (),
+    )
+    result = gate.evaluate(trade(), book(), quote(), deployable=capital())
+    row = next(r for r in result.results if r.rule_id == "CRO-11")
+    assert result.decision == Decision.VETOED and not row.passed
+    assert (row.observed, row.limit, row.message) == (
+        "in blackout",
+        "outside all applicable UTC blackouts",
+        "scheduled blackout includes both endpoint instants",
+    )
+    assert gate.state.current() == SystemState.RUNNING
+    gate.state.ledger.verify_chain()
+
+
+def test_CRO_01_attributed_reset_during_evaluation_requires_a_fresh_full_approval(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cro = ChiefRiskOfficer(boundary_cro.config, boundary_cro.registry, boundary_cro.calendar)
+    gate = boundary(engine, cro)
+    gate.state.escalate(SystemState.HALTED, "offline prior fault")
+    evaluate = cro.evaluate
+    reset = False
+
+    def host_reset(*args: object, **kwargs: object) -> Verdict:
+        nonlocal reset
+        result = evaluate(*args, **kwargs)  # type: ignore[arg-type]
+        if not reset:
+            reset = True
+            gate.state.operator_reset("offline owner", "offline attributed concurrent reset")
+        return result
+
+    monkeypatch.setattr(cro, "evaluate", host_reset)
+    result = gate.evaluate(trade(), book(), quote(), deployable=capital())
+    assert reset and result.decision == Decision.APPROVED
+    assert [r.rule_id for r in result.results] == [f"CRO-{i:02d}" for i in range(1, 15)]
+    assert result.snapshot_hash == snapshot_hash(book()) and result.evaluated_at == NOW
+    assert gate.state.current() == SystemState.RUNNING
+    gate.state.ledger.verify_chain()
+
+
+@pytest.mark.parametrize(
+    "equity,expected", [("9000", SystemState.REDUCE_ONLY), ("8000", SystemState.HALTED)]
+)
+def test_CRO_09_drawdown_escalation_retains_exact_durable_audit_reason(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    equity: str,
+    expected: SystemState,
+) -> None:
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from backend.core.database import SystemEvent
+
+    gate = boundary(engine, boundary_cro)
+    result = gate.evaluate(trade(), book(equity=equity), quote(), deployable=capital())
+    assert result.decision == Decision.VETOED and result.recommended_state == expected
+    assert gate.state.current() == expected
+    with Session(engine) as session:
+        event = session.scalar(select(SystemEvent).order_by(SystemEvent.seq.desc()))
+        assert event is not None and event.reason == "CRO-09 drawdown risk evaluation"
+    gate.state.ledger.verify_chain()
+
+
+def test_CRO_09_reset_between_latch_and_recheck_does_not_erase_current_drawdown(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from backend.core.database import SystemEvent
+
+    cro = ChiefRiskOfficer(boundary_cro.config, boundary_cro.registry, boundary_cro.calendar)
+    gate = boundary(engine, cro)
+    escalate = gate.state.escalate
+    evaluate = cro.evaluate
+    fault = False
+    reset = False
+
+    def concurrent(target: SystemState, reason: str) -> SystemState:
+        nonlocal fault
+        if not fault:
+            fault = True
+            escalate(SystemState.HALTED, "offline concurrent host fault")
+        return escalate(target, reason)
+
+    def host_reset(*args: object, **kwargs: object) -> Verdict:
+        nonlocal reset
+        result = evaluate(*args, **kwargs)  # type: ignore[arg-type]
+        if args[3] == SystemState.HALTED:
+            gate.state.operator_reset(
+                "offline owner", "offline reset before final financial recheck"
+            )
+            reset = True
+        return result
+
+    monkeypatch.setattr(gate.state, "escalate", concurrent)
+    monkeypatch.setattr(cro, "evaluate", host_reset)
+    result = gate.evaluate(trade(), book(equity="9000"), quote(), deployable=capital())
+    assert reset and result.decision == Decision.VETOED
+    assert gate.state.current() == SystemState.REDUCE_ONLY
+    with Session(engine) as session:
+        event = session.scalar(select(SystemEvent).order_by(SystemEvent.seq.desc()))
+        assert event is not None and event.reason == "CRO-09 concurrent state recheck"
+    gate.state.ledger.verify_chain()
+
+
+@pytest.mark.parametrize("failure", ["logger", "halt_storage"])
+def test_R_02_fault_audit_or_halt_storage_failure_keeps_exact_error_provenance(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    gate = boundary(engine, boundary_cro)
+    gate.additional_blackouts = lambda: cast(tuple[BlackoutWindow, ...], [])
+
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("offline fault dependency unavailable")
+
+    if failure == "logger":
+        monkeypatch.setattr(logging.getLogger("backend.risk.boundary"), "error", unavailable)
+    else:
+        monkeypatch.setattr(gate.state, "halt_for_error", unavailable)
+    with pytest.raises(DataIntegrityError) as refused:
+        gate.evaluate(trade(), book(), quote(), deployable=capital())
+    assert type(refused.value) is DataIntegrityError
+    if failure == "logger":
+        assert str(refused.value) == "R-02: risk boundary failed and latched HALTED"
+        assert type(refused.value.__cause__) is DataIntegrityError
+        assert str(refused.value.__cause__) == "R-02: risk fault audit unavailable (RuntimeError)"
+        assert gate.state.current() == SystemState.HALTED
+    else:
+        assert str(refused.value) == "R-02: risk boundary failed; HALT persistence unavailable"
+        assert type(refused.value.__cause__) is RuntimeError
+        assert str(refused.value.__cause__) == "offline fault dependency unavailable"
+
+
+def test_R_02_CRO_10_changed_persisted_mark_policy_has_exact_integrity_refusal(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+) -> None:
+    original = boundary(engine, boundary_cro)
+    changed = boundary_cro.config.model_copy(update={"daily_loss_limit": Decimal("0.03")})
+    marks = PersistedPortfolioMarks(
+        original.state.ledger, "boundary-paper", boundary_cro.calendar, changed
+    )
+    with pytest.raises(DataIntegrityError) as refused:
+        RiskBoundary(boundary_cro, original.state, original.clock, marks=marks)
+    assert type(refused.value) is DataIntegrityError
+    assert str(refused.value) == "CRO-09/CRO-10: persisted marks differ from risk policy"
+
+
+def test_R_02_approval_without_a_session_loss_witness_is_not_given_one_by_default(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+) -> None:
+    gate = boundary(engine, boundary_cro)
+    original = boundary_cro.evaluate(
+        trade(), book(), quote(), SystemState.RUNNING, NOW, deployable=capital()
+    )
+    assert original.decision == Decision.APPROVED
+    assert gate._checked(original, trade(), book(), quote()) == original
+    assert gate.state.current() == SystemState.RUNNING
+
+
+@pytest.mark.parametrize("equity", ["9000", "8000"])
+def test_CRO_09_concealed_financial_tier_keeps_exact_integrity_cause(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    monkeypatch: pytest.MonkeyPatch,
+    equity: str,
+) -> None:
+    cro = ChiefRiskOfficer(boundary_cro.config, boundary_cro.registry, boundary_cro.calendar)
+    gate = boundary(engine, cro)
+    source = cro.evaluate(
+        trade(), book(equity=equity), quote(), SystemState.RUNNING, NOW, deployable=capital()
+    )
+    forged = source.model_copy(update={"recommended_state": SystemState.RUNNING})
+    monkeypatch.setattr(cro, "evaluate", lambda *args, **kwargs: forged)
+    with pytest.raises(DataIntegrityError) as refused:
+        gate.evaluate(trade(), book(equity=equity), quote(), deployable=capital())
+    assert type(refused.value) is DataIntegrityError
+    assert str(refused.value) == "R-02: risk boundary failed and latched HALTED"
+    assert type(refused.value.__cause__) is DataIntegrityError
+    assert (
+        str(refused.value.__cause__)
+        == "CRO-09: verdict concealed required drawdown state escalation"
+    )
+    assert gate.state.current() == SystemState.HALTED
+    gate.state.ledger.verify_chain()
+
+
+def test_R_05_concurrent_tier_recheck_with_stale_verdict_keeps_exact_time_error(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cro = ChiefRiskOfficer(boundary_cro.config, boundary_cro.registry, boundary_cro.calendar)
+    gate = boundary(engine, cro)
+    escalate = gate.state.escalate
+    evaluate = cro.evaluate
+    fired = False
+
+    def concurrent(target: SystemState, reason: str) -> SystemState:
+        nonlocal fired
+        if not fired:
+            fired = True
+            escalate(SystemState.HALTED, "offline concurrent host fault")
+        return escalate(target, reason)
+
+    def stale_on_halt(*args: object, **kwargs: object) -> Verdict:
+        result = evaluate(*args, **kwargs)  # type: ignore[arg-type]
+        return (
+            result.model_copy(update={"evaluated_at": NOW - timedelta(microseconds=1)})
+            if args[3] == SystemState.HALTED
+            else result
+        )
+
+    monkeypatch.setattr(gate.state, "escalate", concurrent)
+    monkeypatch.setattr(cro, "evaluate", stale_on_halt)
+    with pytest.raises(DataIntegrityError) as refused:
+        gate.evaluate(trade(), book(), quote(), deployable=capital())
+    assert type(refused.value) is DataIntegrityError
+    assert str(refused.value) == "R-02: risk boundary failed and latched HALTED"
+    assert type(refused.value.__cause__) is DataIntegrityError
+    assert str(refused.value.__cause__) == "R-05: rechecked verdict time differs from clock"
+    assert gate.state.current() == SystemState.HALTED
+    gate.state.ledger.verify_chain()
+
+
+def test_R_05_initial_stale_verdict_keeps_exact_injected_clock_refusal(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cro = ChiefRiskOfficer(boundary_cro.config, boundary_cro.registry, boundary_cro.calendar)
+    gate = boundary(engine, cro)
+    fresh = cro.evaluate(trade(), book(), quote(), SystemState.RUNNING, NOW, deployable=capital())
+    stale = fresh.model_copy(update={"evaluated_at": NOW - timedelta(microseconds=1)})
+    monkeypatch.setattr(cro, "evaluate", lambda *args, **kwargs: stale)
+    with pytest.raises(DataIntegrityError) as refused:
+        gate.evaluate(trade(), book(), quote(), deployable=capital())
+    assert type(refused.value) is DataIntegrityError
+    assert str(refused.value) == "R-02: risk boundary failed and latched HALTED"
+    assert type(refused.value.__cause__) is DataIntegrityError
+    assert str(refused.value.__cause__) == "R-05: verdict time does not match injected clock"
+    assert gate.state.current() == SystemState.HALTED
+
+
+@pytest.mark.parametrize("faulty_approval", [False, True])
+def test_CRO_10_concurrent_host_reset_preserves_the_persisted_session_entry_block(
+    engine: Engine,
+    boundary_cro: ChiefRiskOfficer,
+    monkeypatch: pytest.MonkeyPatch,
+    faulty_approval: bool,
+) -> None:
+    cro = ChiefRiskOfficer(boundary_cro.config, boundary_cro.registry, boundary_cro.calendar)
+    gate = boundary(engine, cro)
+    marks = PersistedPortfolioMarks(gate.state.ledger, "boundary-paper", cro.calendar, cro.config)
+    marks.observe(book())
+    marks.observe(book(equity="9800"))
+    assert marks.daily_loss_blocked(NOW)
+    gate.marks = marks
+    honest = cro.evaluate
+    unwitnessed = honest(trade(), book(), quote(), SystemState.RUNNING, NOW, deployable=capital())
+    assert unwitnessed.decision == Decision.APPROVED
+    gate.state.escalate(SystemState.HALTED, "offline independent host fault")
+    reset = False
+
+    def concurrent(*args: object, **kwargs: object) -> Verdict:
+        nonlocal reset
+        result = honest(*args, **kwargs)  # type: ignore[arg-type]
+        if not reset:
+            reset = True
+            gate.state.operator_reset(
+                "offline owner", "offline attributed reset during session loss block"
+            )
+        elif faulty_approval:
+            return unwitnessed
+        return result
+
+    monkeypatch.setattr(cro, "evaluate", concurrent)
+    if faulty_approval:
+        with pytest.raises(DataIntegrityError) as refused:
+            gate.evaluate(trade(), book(), quote(), deployable=capital())
+        assert type(refused.value) is DataIntegrityError
+        assert str(refused.value) == "R-02: risk boundary failed and latched HALTED"
+        assert type(refused.value.__cause__) is DataIntegrityError
+        assert (
+            str(refused.value.__cause__)
+            == "CRO-10: approval concealed a witnessed session loss block"
+        )
+        assert gate.state.current() == SystemState.HALTED
+    else:
+        result = gate.evaluate(trade(), book(), quote(), deployable=capital())
+        assert (
+            result.decision == Decision.VETOED
+            and not next(row for row in result.results if row.rule_id == "CRO-10").passed
+        )
+        assert gate.state.current() == SystemState.RUNNING
+    assert reset and marks.daily_loss_blocked(NOW)
+    gate.state.ledger.verify_chain()
