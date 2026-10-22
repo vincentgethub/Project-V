@@ -1,9 +1,12 @@
 """AX-03/21/22/28/30: real protocol wiring with fake broker and Telegram I/O."""
 
 import asyncio
+import copy
+import re
 import ssl
 from datetime import timedelta
 from decimal import Decimal
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -14,13 +17,14 @@ from backend.core.clock import FrozenClock
 from backend.core.database import ApprovalEvent, AutoJobRun, ExecutionFillRecord, TradeTicket
 from backend.core.errors import (
     ConfigurationError,
+    DataIntegrityError,
     ExecutionDisabledError,
     ProviderError,
     ReconciliationError,
 )
 from backend.core.system_state import SystemState
 from backend.domain.models import MarketStatus
-from backend.execution.alpaca_executor import ManagedTradingStream
+from backend.execution.alpaca_executor import ExactTakeProfit, ManagedTradingStream
 from backend.execution.jobs import AutoJobs
 from backend.execution.models import Submission
 from backend.execution.modes import ModeStore
@@ -1122,3 +1126,262 @@ async def test_AX_28_stream_unknown_evidence_halts_without_order(
     assert h.state.current() == SystemState.HALTED and len(client.posts) == 1
     await stream.aclose()
     h.state.ledger.verify_chain()
+
+
+def test_AX_take_profit_serializes_whole_dollars_with_exact_cents() -> None:
+    assert ExactTakeProfit(limit_price=Decimal("105")).to_request_fields() == {
+        "limit_price": "105.00"
+    }
+
+
+@pytest.mark.parametrize(
+    "harness",
+    [{**AUTO, "telegram_mask_amounts": True}, {**AUTO, "telegram_mask_amounts": False}],
+    indirect=True,
+)
+def test_AX_trade_notice_quantity_obeys_the_amount_mask(harness: Harness) -> None:
+    built = executor(harness, FakeTradingClient(harness))
+    assert built._quantity(9) == ("•" * 3 if harness.settings.telegram_mask_amounts else "9")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_stale_exit_snapshot_has_exact_refusal_and_keeps_existing_orders(
+    harness: Harness,
+) -> None:
+    h = harness
+    alert = await deliver(h)
+    client = FakeTradingClient(h)
+    built = executor(h, client)
+    try:
+        await built.enter(alert.proposal_id)
+        entry = built._instructions()[0]
+        before = copy.deepcopy(client.orders)
+        h.source.inputs = h.source.inputs.model_copy(
+            update={
+                "portfolio": h.source.inputs.portfolio.model_copy(
+                    update={
+                        "as_of": h.clock.now()
+                        - timedelta(seconds=h.settings.stale_quote_seconds + 1)
+                    }
+                )
+            }
+        )
+        message = "A fresh bound IEX quote and broker snapshot are required for an exit limit"
+        with pytest.raises(ExecutionDisabledError, match=re.escape(message)) as caught:
+            await built._fresh_exit_inputs(entry)
+        assert type(caught.value) is ExecutionDisabledError and str(caught.value) == message
+        assert client.orders == before and len(client.posts) == 1
+        h.state.ledger.verify_chain()
+    finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_foreign_manual_broker_order_has_exact_reconciliation_refusal(
+    harness: Harness,
+) -> None:
+    h = harness
+    alert = await deliver(h)
+    client = FakeTradingClient(h)
+    built = executor(h, client)
+    try:
+        await built.enter(alert.proposal_id)
+        parent = next(iter(client.orders.values()))
+        foreign = {
+            **parent,
+            "id": str(uuid4()),
+            "client_order_id": "unbound-manual-order",
+            "legs": None,
+        }
+        client.orders[foreign["id"]] = foreign
+        message = "Unknown broker order; manual trading belongs in a different account"
+        with pytest.raises(ReconciliationError, match=re.escape(message)) as caught:
+            await built._reconcile()
+        with pytest.raises(
+            ReconciliationError, match=re.escape("Broker reconciliation failed closed")
+        ):
+            await built.reconcile()
+        assert type(caught.value) is ReconciliationError and str(caught.value) == message
+        assert h.state.current() == SystemState.HALTED and len(client.posts) == 1
+        h.state.ledger.verify_chain()
+    finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+@pytest.mark.parametrize("event", ["partial_fill", "canceled", "rejected"])
+async def test_AX_trade_stream_accepts_each_real_entry_event_without_false_halt(
+    harness: Harness, event: str
+) -> None:
+    h = harness
+    alert = await deliver(h)
+    client = FakeTradingClient(h)
+    built = executor(h, client)
+    stream = None
+    captures: list[Any] = []
+    try:
+        await built.enter(alert.proposal_id)
+        if event == "partial_fill":
+            parent, _ = await fill_entry(h, client, built, partial=True)
+            parent = copy.deepcopy(parent)
+            journal_existing_partial_repair(built)
+            await built.monitor()
+        else:
+            parent = next(iter(client.orders.values()))
+            parent["status"] = event
+
+        async def capture() -> None:
+            captures.append(event)
+
+        stream = ManagedTradingStream(
+            built, EgressPolicy(build_allowlist(mode="AUTO_PAPER"), h.state.ledger), capture
+        )
+        await stream._update({"stream": "trade_updates", "data": {"event": event, "order": parent}})
+        assert captures == [event] and h.state.current() == SystemState.RUNNING
+        assert len(client.posts) == (2 if event == "partial_fill" else 1)
+        assert sum(row["side"] == "buy" for row in client.posts) == 1
+        h.state.ledger.verify_chain()
+    finally:
+        if stream is not None:
+            await stream.aclose()
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_unknown_stream_event_keeps_the_exact_integrity_fault(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = harness
+    client = FakeTradingClient(h)
+    built = executor(h, client)
+    stream = None
+    errors: list[Any] = []
+    halt = h.state.halt_for_error
+
+    def record(error: Exception) -> None:
+        errors.append(error)
+        halt(error)
+
+    monkeypatch.setattr(h.state, "halt_for_error", record)
+
+    async def capture() -> None:
+        raise AssertionError("Unknown events must not capture fills")
+
+    try:
+        stream = ManagedTradingStream(
+            built, EgressPolicy(build_allowlist(mode="AUTO_PAPER"), h.state.ledger), capture
+        )
+        with pytest.raises(ReconciliationError, match=re.escape("Trade update failed closed")):
+            await stream._update({"stream": "trade_updates", "data": {"event": "unknown"}})
+        assert len(errors) == 1 and type(errors[0]) is DataIntegrityError
+        assert str(errors[0]) == "Trade update event is unknown"
+        assert h.state.current() == SystemState.HALTED and client.posts == []
+        h.state.ledger.verify_chain()
+    finally:
+        if stream is not None:
+            await stream.aclose()
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_monitor_cross_account_snapshot_records_the_exact_fault(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = harness
+    client = FakeTradingClient(h)
+    built = executor(h, client)
+    errors: list[Any] = []
+    halt = h.state.halt_for_error
+
+    async def wrong_account() -> Any:
+        return h.source.inputs.portfolio.model_copy(update={"account_id": "another-paper-account"})
+
+    def record(error: Exception) -> None:
+        errors.append(error)
+        halt(error)
+
+    built.portfolio = wrong_account
+    monkeypatch.setattr(h.state, "halt_for_error", record)
+    try:
+        await built.monitor()
+        assert len(errors) == 1 and type(errors[0]) is ReconciliationError
+        assert str(errors[0]) == "Monitor snapshot account differs"
+        assert h.state.current() == SystemState.HALTED and (not built.modes.entries_enabled)
+        assert client.posts == []
+        h.state.ledger.verify_chain()
+    finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_stream_constructor_binds_both_paper_credentials_and_keepalive(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from alpaca.trading.stream import TradingStream
+
+    h = harness
+    built = executor(h, FakeTradingClient(h))
+    recorded: list[Any] = []
+    original = TradingStream.__init__
+    stream = None
+
+    def record(self: Any, **kwargs: Any) -> None:
+        recorded.append(kwargs)
+        original(self, **kwargs)
+
+    monkeypatch.setattr(TradingStream, "__init__", record)
+
+    async def capture() -> None:
+        return None
+
+    try:
+        assert h.settings.broker_api_key is not None and h.settings.broker_secret_key is not None
+        stream = ManagedTradingStream(
+            built, EgressPolicy(build_allowlist(mode="AUTO_PAPER"), h.state.ledger), capture
+        )
+        assert len(recorded) == 1
+        assert recorded[0]["api_key"] == h.settings.broker_api_key.get_secret_value()
+        assert recorded[0]["secret_key"] == h.settings.broker_secret_key.get_secret_value()
+        assert recorded[0]["paper"] is True and recorded[0]["raw_data"] is True
+        assert recorded[0]["websocket_params"]["ping_interval"] == 10
+        assert recorded[0]["websocket_params"]["ping_timeout"] == 20
+    finally:
+        if stream is not None:
+            await stream.aclose()
+        await built.close()
+
+
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+@pytest.mark.parametrize("fault", ["user", "chat_type", "chat", "message", "wire"])
+@pytest.mark.asyncio
+async def test_AX_hybrid_approval_refuses_each_bad_binding_with_exact_message(
+    harness: Harness, fault: str
+) -> None:
+    from backend.tests.test_swarm_and_callbacks import click
+
+    h = harness
+    alert = await deliver(h)
+    client = FakeTradingClient(h)
+    built = executor(h, client)
+    changes: dict[str, dict[str, Any]] = {
+        "user": {"user_id": 999},
+        "chat_type": {"chat_type": "group"},
+        "chat": {"chat_id": 999},
+        "message": {"message_id": 999},
+        "wire": {"data": "invalid-wire"},
+    }
+    try:
+        message = "Hybrid approval is not privately authenticated and message-bound"
+        with pytest.raises(ExecutionDisabledError, match=re.escape(message)) as caught:
+            built._loaded(alert.proposal_id, click(h, "A", **changes[fault]))
+        assert type(caught.value) is ExecutionDisabledError and str(caught.value) == message
+        assert client.posts == []
+        h.state.ledger.verify_chain()
+    finally:
+        await built.close()

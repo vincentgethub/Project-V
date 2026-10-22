@@ -1,4 +1,4 @@
-"""OPS-06: fail closed unless all 13,381 assigned IDs have acceptable evidence."""
+"""OPS-06: fail closed unless all current assigned fingerprints have acceptable evidence."""
 
 import hashlib
 import json
@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.check_mutations import approved_equivalents
+from scripts.mutation_fingerprints import MAP_PATH, read_map
 from scripts.mutation_inventory import (
     EXPECTED_TOTAL,
     generate_inventory,
@@ -23,12 +24,15 @@ def aggregate(root: Path, directory: Path, head: str, matrix_result: str) -> dic
     inventory_hash = prove_partition(shards, generate_inventory(root))
     assignment_hash = hashlib.sha256(config.read_bytes()).hexdigest()
     approvals = approved_equivalents(root / "config/tax-equivalent-mutants.json")
+    fingerprint_map_hash = hashlib.sha256((root / MAP_PATH).read_bytes()).hexdigest()
+    fingerprints = {row["new_id"]: row["fingerprint"] for row in read_map(root) if row["new_id"]}
     expected_files = {s.name + ".json" for s in shards}
     files = {p.name for p in directory.glob("*.json")}
     failures: list[str] = []
     if files != expected_files:
         failures.append("missing or unexpected result files")
     all_records: dict[str, str] = {}
+    all_audits: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     for shard in shards:
         path = directory / (shard.name + ".json")
@@ -38,7 +42,9 @@ def aggregate(root: Path, directory: Path, head: str, matrix_result: str) -> dic
             report = json.loads(path.read_text(encoding="utf-8"))
             manifest = report["manifest"]
             require(
-                manifest["shard"] == shard.name and manifest["parent"] == shard.parent,
+                manifest["shard"] == shard.name
+                and manifest["parent"] == shard.parent
+                and manifest["source_job"] == shard.source_job,
                 "job identity",
             )
             require(
@@ -52,6 +58,11 @@ def aggregate(root: Path, directory: Path, head: str, matrix_result: str) -> dic
                 and manifest["expected_count"] == len(shard.ids),
                 "job ownership",
             )
+            require(
+                manifest["fingerprint_map_sha256"] == fingerprint_map_hash
+                and manifest["fingerprints"] == {key: fingerprints[key] for key in shard.ids},
+                "fingerprint identity",
+            )
             records = report["records"]
             require(
                 isinstance(records, dict) and set(records) == set(shard.ids),
@@ -63,6 +74,34 @@ def aggregate(root: Path, directory: Path, head: str, matrix_result: str) -> dic
             require(not set(records).intersection(all_records), "duplicate processed ID")
             all_records.update(records)
             counts.update(records.values())
+            audits = report["fingerprint_records"]
+            require(
+                isinstance(audits, list)
+                and len(audits) == len(records)
+                and {row["id"] for row in audits} == set(records),
+                "complete kill-reason evidence",
+            )
+            require(
+                all(
+                    row["fingerprint"] == fingerprints[row["id"]]
+                    and row["native_status"] == records[row["id"]]
+                    for row in audits
+                ),
+                "kill audit fingerprint identity",
+            )
+            all_audits.extend(audits)
+            require(
+                all(
+                    row["reason"] == "assertion"
+                    and any(
+                        failure["kind"] == "assertion" and failure["phase"] == "call"
+                        for failure in row["failures"]
+                    )
+                    for row in audits
+                    if row["native_status"] == "killed"
+                ),
+                "timeout/crash kills do not count",
+            )
             accepted = all(
                 status in {"killed", "caught by type check"}
                 or (status == "survived" and key in approvals)
@@ -97,7 +136,7 @@ def aggregate(root: Path, directory: Path, head: str, matrix_result: str) -> dic
         )
     require(len(all_records) <= EXPECTED_TOTAL, "unexpected processed IDs")
     if len(all_records) != EXPECTED_TOTAL:
-        failures.append("not all 13381 IDs processed")
+        failures.append("not all current IDs processed")
     if matrix_result != "success":
         failures.append("one or more matrix jobs did not succeed")
     unlisted = sum(
@@ -106,6 +145,16 @@ def aggregate(root: Path, directory: Path, head: str, matrix_result: str) -> dic
     processed = sum(status != "not checked" for status in all_records.values())
     summary = {
         "expected": EXPECTED_TOTAL,
+        "fingerprint_map_sha256": fingerprint_map_hash,
+        "kill_reasons": dict(Counter(row["reason"] for row in all_audits)),
+        "qualified_killed": sum(
+            row["native_status"] == "killed" and row["reason"] == "assertion" for row in all_audits
+        ),
+        "unqualified_killed": [
+            row
+            for row in all_audits
+            if row["native_status"] == "killed" and row["reason"] != "assertion"
+        ],
         "reported": len(all_records),
         "processed": processed,
         "unprocessed": EXPECTED_TOTAL - processed,
@@ -136,6 +185,8 @@ def main() -> int:
         print("Aggregate inventory SHA256:", summary["inventory_sha256"])
         print("Aggregate commit:", summary["head_sha"])
         print("Aggregate counts:", json.dumps(summary["counts"], sort_keys=True))
+        print("Qualified assertion kills:", summary["qualified_killed"])
+        print("Unqualified killed tags:", len(summary["unqualified_killed"]))
         print(
             "Processed:",
             summary["processed"],
@@ -145,7 +196,7 @@ def main() -> int:
             summary["unlisted_survivors"],
         )
         require(summary["passed"] is True, "aggregate incomplete or unverified")
-        print("Aggregate mutation gate PASS: all 13381 IDs processed exactly once")
+        print(f"Aggregate mutation gate PASS: all {EXPECTED_TOTAL} IDs processed exactly once")
         return 0
     except Exception:
         print(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 from decimal import (
     Decimal,
@@ -49,7 +50,7 @@ from backend.domain.models import (
     Side,
     TradeProposal,
 )
-from backend.risk.risk_cro import ChiefRiskOfficer
+from backend.risk.risk_cro import SIZING_RULES, ChiefRiskOfficer
 
 
 @pytest.fixture(autouse=True)
@@ -3150,3 +3151,120 @@ def test_owned_context_7296_case_matrix_matches_exhaustive_maximum(
             assert type(actual) is int and actual == expected
             assert 0 <= actual <= qty
             assert actual == 0 or actual in eligible
+
+
+@pytest.mark.parametrize("engine", ["risk", "compliance"])
+def test_R_02_valid_strict_policy_export_is_accepted_without_nonstring_modes(
+    risk_calendar: MarketCalendar, engine: str
+) -> None:
+    from backend.risk.compliance import ComplianceEngine
+
+    class StrictExportPolicy(Settings):
+        def model_dump(self, *, mode: str = "python", **kwargs: Any) -> dict[str, Any]:
+            if not isinstance(mode, str):
+                raise ValueError("Financial policy export requires a supported mode")
+            return super().model_dump(mode=mode, **kwargs)
+
+    arguments: dict[str, Any] = {"broker_account_type": "CASH", "_env_file": None}
+    config = StrictExportPolicy(**arguments)
+    constructor = ChiefRiskOfficer if engine == "risk" else ComplianceEngine
+    try:
+        current = constructor(config, _registry(), risk_calendar)
+    except ConfigurationError:
+        pytest.fail(
+            "A valid strict financial policy must be accepted through its supported export API"
+        )
+    assert current.config.max_risk_per_trade == Decimal("0.01")
+    assert current.config.config_hash == config.config_hash
+
+
+def test_R_02_frozen_loss_audit_uses_its_supported_export_mode() -> None:
+    from backend.domain.models import FrozenModel
+    from backend.risk.compliance import _compliance_canonical
+
+    class ExactLossExport(FrozenModel):
+        disallowed_loss: Decimal
+
+        def model_dump(self, *, mode: str = "python", **kwargs: Any) -> dict[str, Any]:
+            if not isinstance(mode, str):
+                raise ValueError("Loss audit export requires a supported mode")
+            return super().model_dump(mode=mode, **kwargs)
+
+    loss = ExactLossExport(disallowed_loss=Decimal("4.25"))
+    try:
+        audit = _compliance_canonical(loss)
+    except ValueError:
+        pytest.fail("A valid frozen loss audit must serialize through its supported export API")
+    assert audit == {"disallowed_loss": "4.25"}
+
+
+def test_CRO_sizing_fault_audit_uses_the_primary_fault_reason(
+    clock: FrozenClock,
+    risk_calendar: MarketCalendar,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from backend.domain.models import Verdict
+
+    cro = ChiefRiskOfficer(
+        Settings(broker_account_type="CASH", _env_file=None), _registry(), risk_calendar
+    )
+    proposal, book, market = _proposal(clock, qty=8), _snapshot(clock), _market(clock)
+    unavailable = cro.evaluate(proposal, book, None, SystemState.RUNNING, clock.now())
+    assert unavailable.snapshot_hash == "0" * 64
+    rows = list(unavailable.results)
+    rows[0] = rows[0].model_copy(update={"observed": "Subnormal"})
+    rows[1] = rows[1].model_copy(update={"observed": "secondary rule evidence unavailable"})
+    fault = Verdict.model_validate(unavailable.model_copy(update={"results": tuple(rows)}))
+    monkeypatch.setattr(cro, "evaluate", lambda *args, **kwargs: fault)
+    with caplog.at_level(logging.ERROR):
+        assert cro.max_allowed_qty(proposal, book, market, clock.now()) == 0
+    assert caplog.messages == ["risk_sizing_fault reason=Subnormal"]
+
+
+@pytest.mark.parametrize(
+    "fault,expected",
+    [
+        ("primary", "Subnormal"),
+        ("incomplete", "incomplete sizing evidence"),
+        ("arithmetic", "Overflow"),
+    ],
+)
+def test_CRO_sizing_fault_is_audited_under_the_risk_namespace(
+    clock: FrozenClock,
+    risk_calendar: MarketCalendar,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fault: str,
+    expected: str,
+) -> None:
+    cro = ChiefRiskOfficer(
+        Settings(broker_account_type="CASH", _env_file=None), _registry(), risk_calendar
+    )
+    proposal, book, market = (_proposal(clock, qty=8), _snapshot(clock), _market(clock))
+    if fault == "primary":
+        verdict = cro.evaluate(proposal, book, None, SystemState.RUNNING, clock.now())
+        rows = list(verdict.results)
+        rows[0] = rows[0].model_copy(update={"observed": "Subnormal"})
+        verdict = verdict.model_copy(update={"results": tuple(rows)})
+    else:
+        verdict = cro.evaluate(proposal, book, market, SystemState.RUNNING, clock.now())
+        assert verdict.snapshot_hash != "0" * 64
+        dropped = next(x.rule_id for x in verdict.results if x.rule_id in SIZING_RULES)
+        verdict = verdict.model_copy(
+            update={"results": tuple(x for x in verdict.results if x.rule_id != dropped)}
+        )
+
+    def evaluate(*args: Any, **kwargs: Any) -> Any:
+        if fault == "arithmetic":
+            raise Overflow("injected sizing fault")
+        return verdict
+
+    monkeypatch.setattr(cro, "evaluate", evaluate)
+    with caplog.at_level(logging.ERROR):
+        assert cro.max_allowed_qty(proposal, book, market, clock.now()) == 0
+    assert caplog.record_tuples == [
+        ("backend.risk.risk_cro", logging.ERROR, "risk_sizing_fault reason=" + expected)
+    ]

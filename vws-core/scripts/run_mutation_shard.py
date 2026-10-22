@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.check_mutations import require_complete_results
+from scripts.mutation_audit import audit_results
 from scripts.mutation_inventory import build_manifest, require
 
 
@@ -59,11 +60,20 @@ def main() -> int:
         report = {"manifest": manifest, "records": {}, "run_exit": None, "export_exit": None}
         project = root / "pyproject.toml"
         original = project.read_text(encoding="utf-8")
+        audit_directory = destination.with_name(name + "-audit")
+        require(
+            not audit_directory.exists() and not (root / "mutants").exists(),
+            "fresh mutation run required",
+        )
+        audit_directory.mkdir()
+        audit_environment = {**os.environ, "VWS_MUTATION_AUDIT_DIR": str(audit_directory.resolve())}
         try:
             project.write_text(select_configuration(original, manifest), encoding="utf-8")
             # Native command; no diagnostic profiler, worker or timeout overrides.
             result = subprocess.run(
-                [sys.executable, "-m", "mutmut", "run", *manifest["patterns"]], check=False
+                [sys.executable, "-m", "mutmut", "run", *manifest["patterns"]],
+                check=False,
+                env=audit_environment,
             )  # nosec B603
             report["run_exit"] = result.returncode
             exported = subprocess.run(
@@ -79,6 +89,26 @@ def main() -> int:
         records = parse_results(exported.stdout, manifest["generated"])
         selected = {key: records[key] for key in manifest["selected"]}
         report["records"] = selected
+        audit, clean_runs = audit_results(audit_directory, selected, manifest["fingerprints"])
+        report["fingerprint_records"] = audit
+        report["kill_reasons"] = dict(Counter(row["reason"] for row in audit))
+        report["clean_runs"] = clean_runs
+        print("Native kill reasons:", name, json.dumps(report["kill_reasons"], sort_keys=True))
+        print(
+            "Native panic clean runs:",
+            name,
+            json.dumps(
+                [
+                    {
+                        "mutant": row["mutant"],
+                        "exit_status": row["exit_status"],
+                        "panic_cases": row["panic_cases"],
+                    }
+                    for row in clean_runs
+                ],
+                ensure_ascii=True,
+            ),
+        )
         print(
             "Native job results:",
             name,
@@ -100,6 +130,10 @@ def main() -> int:
         Path(os.environ["RUNNER_TEMP"], "vws-mutants.txt").write_text(evidence, encoding="utf-8")
         count = require_complete_results(evidence)
         require(count == manifest["expected_count"], "incomplete assigned results")
+        require(
+            all(row["reason"] == "assertion" for row in audit if row["native_status"] == "killed"),
+            "crash or unaudited kills do not count",
+        )
         report["passed"] = True
         print("Shard complete 100% gate:", name, count)
         return 0

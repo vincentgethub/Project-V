@@ -1,41 +1,47 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "entries": [
     {
       "id": "backend.tax.lots.x\u01c1WashSaleMatcher\u01c1_available_slices__mutmut_4",
       "approved_by": "owner",
       "approved_on": "2026-10-16",
-      "reason": "Individual approval in Pass 4; no other entry is approved."
+      "reason": "Individual approval in Pass 4; no other entry is approved.",
+      "fingerprint": "sha256:03e878af83b1107da991aca8e46b60d1830e5450e51a9907658fcadd51115d2a"
     },
     {
       "id": "backend.tax.reports.x__csv__mutmut_18",
       "approved_by": "owner",
       "approved_on": "2026-10-16",
-      "reason": "Individual approval in Pass 4; no other entry is approved."
+      "reason": "Individual approval in Pass 4; no other entry is approved.",
+      "fingerprint": "sha256:e664601cf42744f626fdc8b979b3d519be756d417acf3529a6d9546f920c8716"
     },
     {
       "id": "backend.tax.reports.x__cell__mutmut_6",
       "approved_by": "owner",
       "approved_on": "2026-10-16",
-      "reason": "Individual approval in Pass 4; no other entry is approved."
+      "reason": "Individual approval in Pass 4; no other entry is approved.",
+      "fingerprint": "sha256:ccfcf6730c6edb7a496ea5a2e836d1e48cf456276237409523b0cd992aeb9540"
     },
     {
       "id": "backend.tax.accounting.x_build_tax_book__mutmut_104",
       "approved_by": "owner",
       "approved_on": "2026-10-16",
-      "reason": "Individual approval in Pass 4; no other entry is approved."
+      "reason": "Individual approval in Pass 4; no other entry is approved.",
+      "fingerprint": "sha256:fad23f41101190ab63612c04b4a6767a1679e10567aa31cbfb9a3a70802ddb19"
     },
     {
       "id": "backend.tax.reports.x_save_report__mutmut_74",
       "approved_by": "owner",
       "approved_on": "2026-10-16",
-      "reason": "Individual approval in Pass 4; no other entry is approved."
+      "reason": "Individual approval in Pass 4; no other entry is approved.",
+      "fingerprint": "sha256:27e17fe1411517ea3620bd0e048fde90f48ff8d4c4ecdf797056268cf518fe85"
     },
     {
       "id": "backend.tax.accounting.x_build_tax_book__mutmut_78",
       "approved_by": "owner",
       "approved_on": "2026-10-16",
-      "reason": "Individual approval in Pass 4; no other entry is approved."
+      "reason": "Individual approval in Pass 4; no other entry is approved.",
+      "fingerprint": "sha256:024ffda5a541aa5ac88d875d0655268261646e7bd418115eb6e954ef3c5a4fdd"
     }
   ]
 }

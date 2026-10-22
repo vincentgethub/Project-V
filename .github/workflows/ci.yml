@@ -20,6 +20,15 @@ jobs:
           python -m pip install --require-hashes --no-deps -r requirements-dev.lock
           python -m pip install --no-deps --no-build-isolation -e .
           python -m pip check
+      - name: Regenerate fingerprint map and prove child ownership
+        run: |
+          baseline="$RUNNER_TEMP/vws-fingerprint-baseline"
+          mkdir -p "$baseline"
+          git -C .. archive 5dc9af896d3fec6bc8e1b38eb2159641a740b27a vws-core > "$RUNNER_TEMP/vws-fingerprint-baseline.tar"
+          tar -xf "$RUNNER_TEMP/vws-fingerprint-baseline.tar" -C "$baseline"
+          python -m scripts.mutation_fingerprints --baseline "$baseline/vws-core" --check
+          cmp config/mutation-parent-jobs.json "$baseline/vws-core/config/mutation-shards.json"
+          python -m scripts.mutation_children --check
       - name: Scan complete Git history for secrets
         env:
           GITLEAKS_ARCHIVE_SHA256: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' # pragma: allowlist secret - published release checksum
@@ -82,69 +91,141 @@ jobs:
       fail-fast: false
       matrix:
         shard:
-          - executor-a-1
-          - executor-a-2
-          - executor-a-3
-          - executor-a-4
-          - executor-a-5
-          - executor-a-6
-          - executor-a-7
-          - executor-a-8
-          - executor-b-1
-          - executor-b-2
-          - executor-b-3
-          - executor-b-4
-          - executor-b-5
-          - executor-b-6
-          - executor-b-7
-          - executor-b-8
-          - executor-b-9
-          - risk-controls-1
-          - risk-controls-2
-          - risk-controls-3
-          - risk-controls-4
-          - risk-controls-5
-          - risk-controls-6
-          - risk-controls-7
-          - risk-controls-8
-          - risk-controls-9
-          - risk-controls-10
-          - risk-controls-11
-          - risk-controls-12
-          - risk-controls-13
-          - risk-controls-14
-          - risk-controls-15
-          - risk-controls-16
-          - risk-controls-17
-          - risk-controls-18
-          - risk-controls-19
-          - risk-controls-20
-          - risk-controls-21
-          - risk-controls-22
-          - risk-controls-23
-          - risk-controls-24
-          - risk-controls-25
-          - risk-controls-26
-          - risk-controls-27
-          - risk-sizing-1
-          - risk-sizing-2
-          - risk-sizing-3
-          - risk-sizing-4
-          - risk-sizing-5
-          - risk-sizing-6
-          - risk-sizing-7
-          - fundamentals-callbacks-1
-          - fundamentals-callbacks-2
-          - fundamentals-callbacks-3
-          - fundamentals-callbacks-4
-          - fundamentals-callbacks-5
-          - fundamentals-callbacks-6
-          - fundamentals-callbacks-7
-          - fundamentals-callbacks-8
-          - fundamentals-callbacks-9
-          - fundamentals-callbacks-10
-          - fundamentals-callbacks-11
-          - tax
+          - executor-a-1-1
+          - executor-a-1-2
+          - executor-a-2-1
+          - executor-a-2-2
+          - executor-a-2-3
+          - executor-a-3-1
+          - executor-a-3-2
+          - executor-a-4-1
+          - executor-a-4-2
+          - executor-a-4-3
+          - executor-a-5-1
+          - executor-a-5-2
+          - executor-a-5-3
+          - executor-a-5-4
+          - executor-a-5-5
+          - executor-a-5-6
+          - executor-a-6-1
+          - executor-a-6-2
+          - executor-a-7-1
+          - executor-a-7-2
+          - executor-a-7-3
+          - executor-a-7-4
+          - executor-a-8-1
+          - executor-b-1-1
+          - executor-b-1-2
+          - executor-b-1-3
+          - executor-b-1-4
+          - executor-b-2-1
+          - executor-b-2-2
+          - executor-b-2-3
+          - executor-b-2-4
+          - executor-b-2-5
+          - executor-b-2-6
+          - executor-b-2-7
+          - executor-b-2-8
+          - executor-b-2-9
+          - executor-b-2-10
+          - executor-b-2-11
+          - executor-b-2-12
+          - executor-b-2-13
+          - executor-b-2-14
+          - executor-b-2-15
+          - executor-b-2-16
+          - executor-b-2-17
+          - executor-b-2-18
+          - executor-b-2-19
+          - executor-b-2-20
+          - executor-b-2-21
+          - executor-b-3-1
+          - executor-b-3-2
+          - executor-b-3-3
+          - executor-b-3-4
+          - executor-b-4-1
+          - executor-b-5-1
+          - executor-b-5-2
+          - executor-b-6-1
+          - executor-b-6-2
+          - executor-b-6-3
+          - executor-b-6-4
+          - executor-b-7-1
+          - executor-b-7-2
+          - executor-b-7-3
+          - executor-b-8-1
+          - executor-b-9-1
+          - executor-b-9-2
+          - executor-b-9-3
+          - executor-b-9-4
+          - risk-controls-1-1
+          - risk-controls-2-1
+          - risk-controls-3-1
+          - risk-controls-4-1
+          - risk-controls-5-1
+          - risk-controls-6-1
+          - risk-controls-7-1
+          - risk-controls-8-1
+          - risk-controls-9-1
+          - risk-controls-10-1
+          - risk-controls-11-1
+          - risk-controls-12-1
+          - risk-controls-13-1
+          - risk-controls-13-2
+          - risk-controls-14-1
+          - risk-controls-15-1
+          - risk-controls-16-1
+          - risk-controls-17-1
+          - risk-controls-18-1
+          - risk-controls-19-1
+          - risk-controls-20-1
+          - risk-controls-21-1
+          - risk-controls-22-1
+          - risk-controls-23-1
+          - risk-controls-24-1
+          - risk-controls-25-1
+          - risk-controls-26-1
+          - risk-controls-27-1
+          - risk-sizing-1-1
+          - risk-sizing-2-1
+          - risk-sizing-2-2
+          - risk-sizing-2-3
+          - risk-sizing-3-1
+          - risk-sizing-3-2
+          - risk-sizing-4-1
+          - risk-sizing-4-2
+          - risk-sizing-4-3
+          - risk-sizing-4-4
+          - risk-sizing-5-1
+          - risk-sizing-5-2
+          - risk-sizing-6-1
+          - risk-sizing-6-2
+          - risk-sizing-6-3
+          - risk-sizing-7-1
+          - risk-sizing-7-2
+          - risk-sizing-7-3
+          - fundamentals-callbacks-1-1
+          - fundamentals-callbacks-1-2
+          - fundamentals-callbacks-2-1
+          - fundamentals-callbacks-2-2
+          - fundamentals-callbacks-3-1
+          - fundamentals-callbacks-4-1
+          - fundamentals-callbacks-4-2
+          - fundamentals-callbacks-5-1
+          - fundamentals-callbacks-5-2
+          - fundamentals-callbacks-6-1
+          - fundamentals-callbacks-7-1
+          - fundamentals-callbacks-7-2
+          - fundamentals-callbacks-7-3
+          - fundamentals-callbacks-8-1
+          - fundamentals-callbacks-9-1
+          - fundamentals-callbacks-9-2
+          - fundamentals-callbacks-9-3
+          - fundamentals-callbacks-10-1
+          - fundamentals-callbacks-10-2
+          - fundamentals-callbacks-11-1
+          - fundamentals-callbacks-11-2
+          - tax-1
     defaults:
       run:
         working-directory: vws-core
@@ -157,7 +238,7 @@ jobs:
         run: |
           python -m pip install --require-hashes --no-deps -r requirements-dev.lock
           python -m pip install --no-deps --no-build-isolation -e .
-      - name: Prove every generated ID belongs to exactly one of 63 jobs
+      - name: Prove every generated ID belongs to exactly one of 135 children
         env:
           VWS_MUTATION_SHARD: ${{ matrix.shard }}
         run: python -m scripts.mutation_inventory
@@ -172,7 +253,9 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: mutation-result-${{ matrix.shard }}
-          path: vws-core/build/mutation-results/${{ matrix.shard }}.json
+          path: |
+            vws-core/build/mutation-results/${{ matrix.shard }}.json
+            vws-core/build/mutation-results/${{ matrix.shard }}-audit/
           if-no-files-found: error
           retention-days: 30
   mutations-gate:
@@ -199,7 +282,7 @@ jobs:
           pattern: mutation-result-*
           merge-multiple: true
           path: vws-core/build/mutation-results
-      - name: Require all 13381 IDs processed exactly once with no unlisted failures
+      - name: Require all 15467 IDs processed exactly once with no unlisted failures
         env:
           MUTATIONS_RESULT: ${{ needs.mutations.result }}
         run: python -m scripts.aggregate_mutations

@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 20, 2026 - Pass 6 offline checks pass; native CI pending
+Last updated: October 22, 2026 - Pass 7 offline checks pass; native CI pending
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -18,7 +18,7 @@ Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.
 Final full CRO recheck refuses all six timed blockers before any broker send.
-The 15,457-ID partition passes across 63 fixed jobs; no retained owner moves.
+The 15,467-ID fingerprint partition passes across 135 children; original owners stay.
 
 ## Waiting on you
 No new owner decision is needed for the authorized verification and single push.
@@ -31,11 +31,11 @@ Setup stores keys in the computer's secret store; do not paste them here.
 
 ## Not checked yet
 Real broker, bank, Telegram, FRED and SEC checks need setup.
-Current collection: 889 cases added, none removed; four original perf deselections.
-Normal/random each pass 6,607, skip 61 and deselect four perf cases; coverage 100%.
-Required: 9,503 statements / 3,386 branches; executor: 1,864 / 776; zero missing.
-Pre-commit full-history gitleaks: 48 commits, zero findings; repeat after commit.
-All 27 individual risk proposals remain unapproved and count as failures if surviving.
+Current pass: 80 more cases, none removed; four original perf deselections.
+Normal/random each pass 6,687, skip 61 and deselect four perf cases; coverage 100%.
+Required: 9,510 statements / 3,394 branches; executor: 1,871 / 784; zero missing.
+Two approved dependency bumps: clean hashed installs and zero audit findings.
+All 24 individual risk proposals remain unapproved and count as failures if surviving.
 Earlier replay, warm scan and realtime fake results remain in FINAL_REPORT.md.
 Amendment 02 "MANUAL_CSV path works": DEFERRED (user decision, Oct 8 2026).
 Walk-forward speed is UNVERIFIED: 19 windows took 949.845 seconds without finishing.

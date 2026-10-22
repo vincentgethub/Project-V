@@ -1,3 +1,6 @@
 vws-core/docs/spec/*.md -text whitespace=cr-at-eol
 vws-core/deliveries/*.md -text whitespace=cr-at-eol
 vws-core/deliveries/*_manifest.json -text whitespace=cr-at-eol
+
+vws-core/build/pass7/inventory-fingerprint-map.csv text eol=lf
+vws-core/config/mutation-shards.json text eol=lf

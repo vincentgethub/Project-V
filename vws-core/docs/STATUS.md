@@ -1,5 +1,15 @@
 # Technical status
 
+## Mutation Pass 7 — October 22, 2026
+
+| Requirement | Code / evidence | Result |
+| --- | --- | --- |
+| Panic deadline / explicit guard | `alpaca_executor._finalize_entry_cancellation`, `_journaled_stop_repair`; `MUTATION_PANIC_DEADLINE.md` | Deterministic fail-before proof, 50 fresh randomized processes / 200 cases pass; explicit integrity guard passes under python -O. |
+| Fingerprint identity / ownership | `mutation_fingerprints`, `mutation_children`, committed map | 15,456 matched + 11 new = 15,467; one gone; changed-line proof; 135 nonempty children under original 63 parents. |
+| Required branch coverage | Same targets / 100% threshold | Normal/random 6,687 passed each; 9,510 statements / 3,394 branches, executor 1,871 / 784, zero missing. 80 added cases, zero removed. |
+| Dependency integrity | Unchanged compiler, both locks, `DEPENDENCY_SECURITY_BUMPS.md` | Only two approved bumps plus comments; 62/141 records, 2,470 PyPI hashes verified; clean hashed installs and audits pass. |
+| Native certification | Fresh audit evidence per mutant; 135-child aggregate | Pending single-push CI; crash/timeout kills do not count; only six existing tax approvals accepted. |
+
 ## Mutation Pass 6 — October 20, 2026
 
 The owner approved the sizing-context correction and final physical-send CRO

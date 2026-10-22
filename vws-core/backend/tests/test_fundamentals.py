@@ -7,6 +7,7 @@ outputs of the framework. The default pytest socket prohibition remains on.
 import copy
 import hashlib
 import json
+import re
 from datetime import UTC, date, datetime
 from decimal import Decimal, localcontext
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from backend.agents import fundamentals as fa
 from backend.agents.fundamentals import (
     NAMES,
     THRESHOLDS,
@@ -648,3 +650,201 @@ def test_FA_input_provenance_and_period_availability(change: str) -> None:
     else:
         with pytest.raises(DataIntegrityError):
             compute_fundamentals(stock(), payload, instant)
+
+
+@pytest.mark.parametrize("value", [True, 1.25])
+def test_FA_exact_rejection_of_inexact_financial_number(value: object) -> None:
+    with pytest.raises(
+        ValueError, match=re.escape("fundamental numbers require exact Decimal/text/integer")
+    ) as caught:
+        fa._number(value)
+    assert type(caught.value) is ValueError
+    assert str(caught.value) == "fundamental numbers require exact Decimal/text/integer"
+
+
+def test_FA_129_significant_digits_exceeds_fact_precision_bound() -> None:
+    with pytest.raises(
+        ValueError, match=re.escape("fundamental number is nonfinite or unbounded")
+    ) as caught:
+        fa._number("0." + "1" * 129)
+    assert type(caught.value) is ValueError
+    assert str(caught.value) == "fundamental number is nonfinite or unbounded"
+
+
+def test_FA_recorded_report_rejection_keeps_exact_audit_message() -> None:
+    with pytest.raises(
+        DataIntegrityError, match=re.escape("FA-01: recorded fundamental facts are invalid")
+    ) as caught:
+        fa.FundamentalReport.from_recorded({})
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == "FA-01: recorded fundamental facts are invalid"
+
+
+@pytest.mark.parametrize(
+    "fault,message",
+    [
+        ("taxonomy", "FA-02: SEC financial taxonomy is malformed"),
+        ("usd", "FA-02: SEC USD facts are malformed or unbounded"),
+        ("row", "FA-02: SEC fact is malformed"),
+        ("date", "FA-02: SEC fact date/value is unverifiable"),
+    ],
+)
+def test_FA_sec_fact_rejections_are_exact(fault: str, message: str) -> None:
+    data = synthetic()
+    if fault == "taxonomy":
+        data["facts"]["us-gaap"] = []
+    elif fault == "usd":
+        data["facts"]["us-gaap"]["Revenues"]["units"]["USD"] = ()
+    elif fault == "row":
+        data["facts"]["us-gaap"]["Revenues"]["units"]["USD"] = [[]]
+    else:
+        data["facts"]["us-gaap"]["Revenues"]["units"]["USD"][0]["end"] = "2026-99-99"
+    with pytest.raises(DataIntegrityError, match=re.escape(message)) as caught:
+        fa._facts(data, AS_OF.date())
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == message
+
+
+def test_FA_thirty_thousand_equal_sec_facts_are_within_the_ingress_bound() -> None:
+    data = synthetic()
+    rows = data["facts"]["us-gaap"]["Revenues"]["units"]["USD"]
+    data["facts"]["us-gaap"]["Revenues"]["units"]["USD"] = rows * 30000
+    report = fa.compute_fundamentals(stock(), evidence(data), AS_OF)
+    assert report.framework_status == fa.FrameworkStatus.PASS
+    assert tuple(x.value for x in report.metrics) == (
+        Decimal("0.5"),
+        Decimal("0.2"),
+        Decimal("0.16"),
+        Decimal("200"),
+        Decimal("20"),
+    )
+    assert report.passed_count == 5
+
+
+def test_FA_failed_financial_metrics_have_exact_human_audit_reasons() -> None:
+    values = [Decimal("0.20"), Decimal("0.10"), Decimal("0.05"), Decimal("0"), Decimal("2")]
+    metrics = tuple(
+        (
+            fa.MetricResult(
+                name=name,
+                value=value,
+                threshold=threshold,
+                status=fa.MetricStatus.FAIL,
+                source_tags=("Revenues",),
+                period_end=END,
+                note="recorded annual USD facts",
+            )
+            for name, value, threshold in zip(fa.NAMES, values, fa.THRESHOLDS, strict=True)
+        )
+    )
+    assert fa.failure_reasons(metrics) == (
+        "Gross margin 20.0% (needs >40%)",
+        "Operating margin 10.0% (needs >15%)",
+        "ROIC 5.0% (needs >10%)",
+        "Free cash flow $0.00 (needs >$0)",
+        "Interest coverage 2.0x (needs >3x)",
+    )
+
+
+@pytest.mark.parametrize(
+    "enabled,expected", [(True, "filing evidence unavailable"), (False, "fundamentals disabled")]
+)
+def test_FA_unavailable_filing_explains_each_missing_metric(enabled: bool, expected: str) -> None:
+    report = fa.compute_fundamentals(stock(), None, AS_OF, FundamentalsConfig(enabled=enabled))
+    assert tuple(x.note for x in report.metrics) == (expected,) * 5
+    assert all(x.value is None for x in report.metrics)
+    assert report.passed_count == 0
+
+
+@pytest.mark.parametrize(
+    "tag,index,note",
+    [
+        ("GrossProfit", 0, "missing period-matched revenue or gross profit"),
+        ("OperatingIncomeLoss", 1, "missing period-matched revenue or operating income"),
+        ("PaymentsToAcquirePropertyPlantAndEquipment", 3, "missing period-matched CFO or CapEx"),
+        ("NetCashProvidedByUsedInOperatingActivities", 3, "missing period-matched CFO or CapEx"),
+    ],
+)
+def test_FA_missing_inputs_keep_the_exact_metric_reason(tag: str, index: int, note: str) -> None:
+    data = synthetic()
+    del data["facts"]["us-gaap"][tag]
+    report = fa.compute_fundamentals(stock(), evidence(data), AS_OF)
+    assert report.metrics[index].value is None
+    assert report.metrics[index].note == note
+    assert report.metrics[index].status == fa.MetricStatus.INSUFFICIENT_DATA
+
+
+def test_FA_zero_revenue_is_not_meaningful_with_the_exact_reason() -> None:
+    data = synthetic()
+    set_value(data, "Revenues", 0)
+    report = fa.compute_fundamentals(stock(), evidence(data), AS_OF)
+    assert tuple(x.note for x in report.metrics[:2]) == ("nonpositive revenue",) * 2
+    assert all(
+        x.value is None and x.status == fa.MetricStatus.NOT_MEANINGFUL for x in report.metrics[:2]
+    )
+
+
+def test_FA_zero_invested_capital_is_not_meaningful_with_the_exact_reason() -> None:
+    data = synthetic()
+    set_value(data, "CashAndCashEquivalentsAtCarryingValue", 1100)
+    report = fa.compute_fundamentals(stock(), evidence(data), AS_OF)
+    assert report.metrics[2].value is None
+    assert report.metrics[2].status == fa.MetricStatus.NOT_MEANINGFUL
+    assert report.metrics[2].note == "nonpositive invested capital"
+    assert report.failure_reasons == ("ROIC: not meaningful (nonpositive invested capital)",)
+
+
+def test_FA_complete_financial_evidence_has_exact_notes_without_false_missing_flags() -> None:
+    report = fa.compute_fundamentals(stock(), evidence(synthetic()), AS_OF)
+    assert tuple(x.note for x in report.metrics) == ("period-matched USD filing evidence",) * 5
+    assert report.framework_status == fa.FrameworkStatus.PASS
+
+
+def test_FA_current_balances_without_an_annual_duration_are_unavailable_not_stale() -> None:
+    data = synthetic()
+    for concept in data["facts"]["us-gaap"].values():
+        for row in concept["units"]["USD"]:
+            if "start" in row:
+                row["start"] = "2026-04-01"
+    report = fa.compute_fundamentals(stock(), evidence(data), AS_OF)
+    assert all(x.value is None for x in report.metrics)
+    assert tuple(x.note for x in report.metrics) == ("non-USD or unavailable annual USD facts",) * 5
+    assert report.framework_status == fa.FrameworkStatus.INCOMPLETE
+
+
+@pytest.mark.parametrize(
+    "interest,note,status",
+    [
+        (
+            None,
+            "missing period-matched operating income or interest",
+            fa.MetricStatus.INSUFFICIENT_DATA,
+        ),
+        (
+            0,
+            "nonpositive interest with reported or unavailable debt",
+            fa.MetricStatus.NOT_MEANINGFUL,
+        ),
+    ],
+)
+def test_FA_unknown_or_zero_interest_does_not_pass_with_reported_debt(
+    interest: int | None, note: str, status: fa.MetricStatus
+) -> None:
+    data = synthetic()
+    if interest is None:
+        del data["facts"]["us-gaap"]["InterestExpense"]
+    else:
+        set_value(data, "InterestExpense", interest)
+    report = fa.compute_fundamentals(stock(), evidence(data), AS_OF)
+    assert report.metrics[4].value is None
+    assert report.metrics[4].note == note
+    assert report.metrics[4].status == status
+
+
+def test_FA_unvalidated_issuer_is_rejected_with_the_exact_public_audit_message() -> None:
+    invalid = stock().model_copy(update={"symbol": "bad ticker!"})
+    message = "FA-01..09: public fundamentals cannot be computed from verified evidence"
+    with pytest.raises(DataIntegrityError, match=re.escape(message)) as caught:
+        fa.compute_fundamentals(invalid, evidence(synthetic()), AS_OF)
+    assert type(caught.value) is DataIntegrityError
+    assert str(caught.value) == message

@@ -29,6 +29,8 @@ from backend.core.database import (
     DataSnapshot,
     ResearchReport,
     SecurityEvent,
+    SystemControl,
+    SystemEvent,
     TicketEvent,
     TradeTicket,
 )
@@ -54,6 +56,7 @@ from backend.domain.models import (
     MarketStatus,
     PortfolioSnapshot,
     ProviderStatus,
+    TradeProposal,
 )
 from backend.notifications.callbacks import ApprovalGate, CallbackClick, FreshInputs, callback_data
 from backend.notifications.card_formatter import details_cards, ticket_card
@@ -970,3 +973,286 @@ async def test_GD_04_daily_cap_counts_other_inflight_reservations(harness: Harne
         )
     assert (await Desk(h.swarm).research(h.request)).status == "DAILY_CAP"
     assert h.news.calls == count(h, Alert) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,text,status", [("R", "Rejected. No ticket.", "REJECTED")])
+async def test_GD_06_rejection_has_exact_public_acknowledgement(
+    harness: Harness, action: str, text: str, status: str
+) -> None:
+    await deliver(harness)
+    result = await harness.gate.handle(click(harness, action), acknowledge=ack)
+    assert (result.status, result.text) == (status, text)
+    assert count(harness, TradeTicket) == 0
+    harness.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+async def test_GD_06_expired_card_has_exact_public_acknowledgement(harness: Harness) -> None:
+    alert = await deliver(harness)
+    harness.clock.current = alert.expires_at
+    result = await harness.gate.handle(click(harness, "A"), acknowledge=ack)
+    assert (result.status, result.text) == ("EXPIRED", "Expired. No ticket.")
+    assert count(harness, TradeTicket) == 0
+    harness.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+async def test_GD_06_final_expiry_has_exact_public_acknowledgement(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = harness
+    alert = await deliver(h)
+    h.clock.current = alert.expires_at - timedelta(seconds=1)
+    h.source.inputs = h.source.inputs.model_copy(
+        update={
+            "portfolio": h.source.inputs.portfolio.model_copy(update={"as_of": h.clock.now()}),
+            "market": h.source.inputs.market.model_copy(update={"last_price_ts": h.clock.now()}),
+        }
+    )
+    evaluate = h.gate.compliance.evaluate
+
+    def expire(*args: Any, **kwargs: Any) -> Any:
+        result = evaluate(*args, **kwargs)
+        h.clock.current += timedelta(seconds=1)
+        return result
+
+    monkeypatch.setattr(h.gate.compliance, "evaluate", expire)
+    result = await h.gate.handle(click(h, "A"), acknowledge=ack)
+    assert (result.status, result.text) == ("EXPIRED", "Expired during fresh checks. No ticket.")
+    assert count(h, TradeTicket) == 0
+    h.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reduced_first", [False, True])
+async def test_GD_06_late_quote_records_exact_halt_audit_and_monotonic_version(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, reduced_first: bool
+) -> None:
+    h = harness
+    alert = await deliver(h)
+    evaluate = h.gate.compliance.evaluate
+
+    class Notices:
+        def __init__(self) -> None:
+            self.calls: list[Any] = []
+
+        def notify(self, state: str, reason: str) -> None:
+            self.calls.append((state, reason))
+
+    notices = Notices()
+    h.state.notifier.delegate = notices
+
+    def stale(*args: Any, **kwargs: Any) -> Any:
+        result = evaluate(*args, **kwargs)
+        if reduced_first:
+            h.state.escalate(SystemState.REDUCE_ONLY, "operator reduces during approval")
+        h.clock.current += timedelta(seconds=h.settings.stale_quote_seconds + 1)
+        return result
+
+    monkeypatch.setattr(h.gate.compliance, "evaluate", stale)
+    result = await h.gate.handle(click(h, "A"), acknowledge=ack)
+    assert (result.status, result.text) == ("FAILED", "Fresh checks vetoed this setup. No ticket.")
+    assert count(h, TradeTicket) == 0 and h.state.current() == SystemState.HALTED
+    assert notices.calls[-1] == ("HALTED", "GD-06: quote expired during fresh checks")
+    with Session(h.state.engine) as session:
+        decisions = list(
+            session.scalars(select(ApprovalEvent).where(ApprovalEvent.alert_id == alert.id))
+        )
+        assert decisions[-1].action == "REVALIDATION_FAILED"
+        assert {"rule_id": "CRO-07", "message": "quote expired during fresh checks"} in decisions[
+            -1
+        ].reasons
+        if reduced_first:
+            assert {"rule_id": "CRO-01", "message": "entries halted or reduced"} in decisions[
+                -1
+            ].reasons
+        control = session.get(SystemControl, 1)
+        assert control is not None and control.state == "HALTED"
+        assert control.version == (2 if reduced_first else 1)
+        events = list(
+            session.scalars(
+                select(SystemEvent).where(
+                    SystemEvent.reason == "GD-06: quote expired during fresh checks"
+                )
+            )
+        )
+        assert len(events) == 1 and events[0].state == "HALTED" and (events[0].operator_id is None)
+    h.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+async def test_GD_06_equal_fresh_size_preserves_complete_order_and_inputs(harness: Harness) -> None:
+    h = harness
+    await deliver(h)
+    observed: list[Any] = []
+
+    async def size(proposal: TradeProposal, inputs: FreshInputs) -> int:
+        observed.append((proposal, inputs))
+        return proposal.qty
+
+    h.gate.size_entry = size
+    result = await h.gate.handle(click(h, "A"), acknowledge=ack)
+    assert result.status == "TICKET" and result.ticket_id is not None
+    assert len(observed) == 1
+    from backend.core.database import Order
+
+    with Session(h.state.engine) as session:
+        original = session.scalar(select(Order))
+        assert original is not None and original.target_price is not None
+    assert observed[0][0].target_price == original.target_price
+    assert observed[0][0].qty == original.qty
+    assert observed[0][1] == h.source.inputs
+    with Session(h.state.engine) as session:
+        ticket = session.get(TradeTicket, result.ticket_id)
+        assert (
+            ticket is not None
+            and ticket.qty == original.qty
+            and (ticket.target_price == original.target_price)
+        )
+    h.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+async def test_GD_06_fresh_fundamental_policy_uses_the_configured_sector_exemption(
+    harness: Harness,
+) -> None:
+    from backend.core.config import YamlConfig
+
+    h = harness
+    policy = {
+        **h.config.fundamentals.model_dump(),
+        "mode": "require",
+        "exempt_sectors": (*h.config.fundamentals.exempt_sectors, "Information Technology"),
+    }
+    h.config = YamlConfig.model_validate({**h.config.model_dump(), "fundamentals": policy})
+    h.swarm.config = h.config
+    h.gate.config = h.config
+    await deliver(h)
+    result = await h.gate.handle(click(h, "A"), acknowledge=ack)
+    assert result.status == "TICKET" and count(h, TradeTicket) == 1
+    h.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+async def test_GD_06_smaller_fresh_size_has_exact_persisted_refusal_reason(
+    harness: Harness,
+) -> None:
+    h = harness
+    alert = await deliver(h)
+
+    async def smaller(proposal: TradeProposal, inputs: FreshInputs) -> int:
+        return proposal.qty - 1
+
+    h.gate.size_entry = smaller
+    result = await h.gate.handle(click(h, "A"), acknowledge=ack)
+    assert (result.status, result.text) == ("FAILED", "Fresh checks vetoed this setup. No ticket.")
+    with Session(h.state.engine) as session:
+        events = list(
+            session.scalars(select(ApprovalEvent).where(ApprovalEvent.alert_id == alert.id))
+        )
+        assert events[-1].action == "REVALIDATION_FAILED"
+        assert events[-1].reasons == [
+            {
+                "rule_id": "PR-04",
+                "message": "Fresh size is smaller; refresh the card before approval",
+            }
+        ]
+    assert count(h, TradeTicket) == 0
+    h.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["issuer", "future"])
+async def test_GD_06_wrong_filing_binding_has_exact_integrity_error(
+    harness: Harness, fault: str
+) -> None:
+    import re
+
+    from backend.core.errors import DataIntegrityError
+    from backend.tests.test_fundamentals import evidence, synthetic
+    from backend.tests.test_swarm_and_callbacks import proposal
+
+    h = harness
+    await deliver(h)
+    filing = evidence(synthetic()).model_copy(
+        update={"fetched_at": h.clock.now() + timedelta(seconds=1 if fault == "future" else 0)}
+    )
+    h.source.inputs = h.source.inputs.model_copy(
+        update={
+            "filings": filing,
+            "expected_cik": filing.cik if fault == "future" else "0000000001",
+        }
+    )
+    message = "GD-06: fresh filing issuer/time differs"
+    with pytest.raises(DataIntegrityError, match=re.escape(message)) as caught:
+        await h.gate._handle(click(h, "A"), "A", proposal(h), ack)
+    assert type(caught.value) is DataIntegrityError and str(caught.value) == message
+    assert count(h, TradeTicket) == 0
+    h.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault,kind,user",
+    [("unauthorized", "CALLBACK_UNAUTHORIZED", 999), ("wire", "CALLBACK_BAD_WIRE", 123)],
+)
+async def test_GD_06_rejected_click_audit_retains_known_actor_and_empty_detail(
+    harness: Harness, fault: str, kind: str, user: int
+) -> None:
+    from backend.core.database import SecurityEvent
+
+    h = harness
+    await deliver(h)
+    change = (
+        {"user_id": 999, "chat_id": 999} if fault == "unauthorized" else {"data": "invalid-wire"}
+    )
+    result = await h.gate.handle(click(h, "A", **change), acknowledge=ack)
+    assert result.status == "IGNORED" and count(h, TradeTicket) == 0
+    with Session(h.state.engine) as session:
+        events = list(session.scalars(select(SecurityEvent).where(SecurityEvent.kind == kind)))
+        assert len(events) == 1
+        assert events[0].telegram_user_id == user and events[0].detail == {}
+    h.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+async def test_GD_06_click_context_is_fresh_scoped_and_restores_the_callers_context(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from uuid import UUID
+
+    from structlog.contextvars import bound_contextvars, get_contextvars
+
+    from backend.tests.test_swarm_and_callbacks import proposal
+
+    h = harness
+    alert = await deliver(h)
+    captured: list[Any] = []
+    audit = h.gate._audit
+
+    def record(kind: str, user_id: int | None = None) -> None:
+        captured.append((kind, get_contextvars().copy()))
+        audit(kind, user_id)
+
+    monkeypatch.setattr(h.gate, "_audit", record)
+    with bound_contextvars(
+        cycle_id="outer-cycle", proposal_id="outer-proposal", alert_id="outer-alert"
+    ):
+        first = await h.gate.handle(click(h, "A", data="invalid-wire"), acknowledge=ack)
+        second = await h.gate.handle(click(h, "R"), acknowledge=ack)
+        assert first.status == "IGNORED" and second.status == "REJECTED"
+        assert {k: get_contextvars()[k] for k in ["cycle_id", "proposal_id", "alert_id"]} == {
+            "cycle_id": "outer-cycle",
+            "proposal_id": "outer-proposal",
+            "alert_id": "outer-alert",
+        }
+    assert len(captured) == 2
+    assert captured[0][0] == "CALLBACK_BAD_WIRE" and captured[1][0] == "CALLBACK_R"
+    assert captured[0][1]["proposal_id"] is None and captured[0][1]["alert_id"] is None
+    assert captured[1][1]["proposal_id"] == str(proposal(h)) and captured[1][1]["alert_id"] == str(
+        alert.id
+    )
+    assert captured[0][1]["cycle_id"] != captured[1][1]["cycle_id"]
+    assert all(UUID(c[1]["cycle_id"]).version == 4 for c in captured)
+    h.state.ledger.verify_chain()

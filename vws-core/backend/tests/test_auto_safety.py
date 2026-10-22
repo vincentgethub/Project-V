@@ -955,6 +955,35 @@ async def test_AX_27_exit_fill_closes_its_repair_flat_without_selling_the_siblin
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_AX_27_standalone_repair_requires_recorded_approval(harness: Harness) -> None:
+    import re
+
+    from backend.core.errors import DataIntegrityError
+
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+    try:
+        await built.enter(alert.proposal_id)
+        await fill_entry(harness, client, built)
+        entry = next(row for row in built._instructions() if row.role == "ENTRY")
+        assert entry.stop_price is not None
+        message = "Standalone stop repair requires a recorded approval"
+        with pytest.raises(DataIntegrityError, match="^" + re.escape(message) + "$") as caught:
+            await built._journaled_stop_repair(
+                entry, entry.qty, entry.stop_price, entry.stop_price, standalone_repair=True
+            )
+        assert type(caught.value) is DataIntegrityError
+        assert str(caught.value) == message
+        assert len(client.posts) == 1
+        assert len(built._protection_repairs()) == 1 and not built.modes.entries_enabled
+        harness.state.ledger.verify_chain()
+    finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
 async def test_AX_27_unresolved_physical_work_blocks_repair_before_any_cancellation(
     harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3558,6 +3587,152 @@ async def test_SEC_73_pending_cancel_timeout_processes_other_leg_and_resumes_aft
         harness.state.ledger.verify_chain()
     finally:
         await resumed.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [{**AUTO, "panic_cancel_timeout_seconds": 1}], indirect=True)
+@pytest.mark.parametrize("fault", ["pending", "read"])
+async def test_SEC_73_expired_leg_scan_preserves_panic_account_reconciliation(
+    harness: Harness, fault: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Expire during A's read; B must not consume a second unresolved worker slot."""
+    import asyncio
+
+    original_executor = executor
+    expired_reads: list[str] = []
+
+    def scheduled_executor(*args: Any, **kwargs: Any) -> Any:
+        built = original_executor(*args, **kwargs)
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        original_thread = asyncio.to_thread
+        release = asyncio.Event()
+        expired = False
+        expiry = 0.0
+        original_cancel = built._cancel_confirmed
+        original_read = built._read_bound
+        original_panic = built.cancel_unfilled_entries
+        original_finalize = built._finalize_entry_cancellation
+
+        async def delayed_thread(function: Any, *args: Any, **kwargs: Any) -> Any:
+            closure = dict(
+                zip(
+                    function.__code__.co_freevars,
+                    (cell.cell_contents for cell in function.__closure__ or ()),
+                    strict=True,
+                )
+            )
+            operation = closure.get("operation")
+            if expired and "_read_bound" in getattr(operation, "__qualname__", ""):
+                # Model a physical read that has not completed when its caller expires.
+                await release.wait()
+            return await original_thread(function, *args, **kwargs)
+
+        async def cancel(instruction: Any, broker: Any, **kwargs: Any) -> Any:
+            nonlocal expired
+            result = await original_cancel(instruction, broker, **kwargs)
+            roots = list(args[1].orders.values())
+            if len(roots) == 2 and roots[1]["status"] == "canceled":
+                expired = True
+            return result
+
+        async def read(instruction: Any) -> Any:
+            if expired:
+                expired_reads.append(instruction.client_order_id)
+                monkeypatch.setattr(loop, "time", lambda: expiry)
+            return await original_read(instruction)
+
+        async def finalize(instruction: Any, **kwargs: Any) -> Any:
+            nonlocal expiry
+            expiry = kwargs["deadline"]
+            return await original_finalize(instruction, **kwargs)
+
+        async def panic() -> None:
+            try:
+                with pytest.MonkeyPatch.context() as scheduling:
+                    scheduling.setattr(asyncio, "to_thread", delayed_thread)
+                    await original_panic()
+            finally:
+                monkeypatch.setattr(loop, "time", real_time)
+                release.set()
+
+        monkeypatch.setattr(built, "_finalize_entry_cancellation", finalize)
+        monkeypatch.setattr(built, "_cancel_confirmed", cancel)
+        monkeypatch.setattr(built, "_read_bound", read)
+        monkeypatch.setattr(built, "cancel_unfilled_entries", panic)
+        return built
+
+    from backend.tests import test_auto_safety as safety_tests
+
+    monkeypatch.setattr(safety_tests, "executor", scheduled_executor)
+    # Retain every exact-message, held/protected, durable-HALT, restart and no-op assertion.
+    await test_SEC_73_pending_cancel_timeout_processes_other_leg_and_resumes_after_restart(
+        harness, fault
+    )
+    assert len(expired_reads) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_SEC_73_expired_cancel_deadline_does_not_start_broker_work(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import re
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from backend.core.database import OrderEvent
+    from backend.execution.storage import held_quantity
+    from backend.tests.test_v_execution import variant
+
+    variant(harness, "SPLIT_1R")
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    try:
+        await built.enter(alert.proposal_id)
+        harness.state.escalate(SystemState.HALTED, "offline expired panic deadline")
+        entries = tuple(row for row in built._instructions() if row.role == "ENTRY")
+
+        def forbidden_read(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("An expired cancellation must not start another broker read")
+
+        monkeypatch.setattr(client, "get_order_by_id", forbidden_read)
+        expected = "Cancellation confirmation unresolved for legs: " + ", ".join(
+            row.client_order_id for row in entries
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time()
+        real_time = loop.time
+        monkeypatch.setattr(loop, "time", lambda: deadline)
+        with pytest.raises(ReconciliationError, match="^" + re.escape(expected) + "$") as caught:
+            await built._finalize_entry_cancellation(
+                entries[0],
+                reason="offline expired panic",
+                deadline=deadline,
+            )
+        monkeypatch.setattr(loop, "time", real_time)
+        assert type(caught.value) is ReconciliationError
+        assert str(caught.value) == expected
+        assert not built.worker.has_pending_attempts
+        with Session(harness.state.engine) as session:
+            latest = session.scalar(select(OrderEvent).order_by(OrderEvent.seq.desc()).limit(1))
+            assert latest is not None and latest.state == "CANCEL_REQUESTED"
+            assert sum(held_quantity(session, row.id) for row in entries) == 0
+        assert client.positions == [] and len(client.posts) == 2
+        assert all(root["status"] == "new" for root in client.orders.values())
+        assert all(
+            child["status"] == "held" for root in client.orders.values() for child in root["legs"]
+        )
+        assert harness.state.current() == SystemState.HALTED
+        harness.state.ledger.verify_chain()
+    finally:
+        monkeypatch.setattr(loop, "time", real_time)
+        await built.close()
 
 
 @pytest.mark.asyncio

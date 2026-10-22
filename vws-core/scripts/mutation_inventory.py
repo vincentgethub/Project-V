@@ -1,4 +1,4 @@
-"""OPS-06: prove the approved 63-way partition against freshly generated IDs."""
+"""OPS-06: prove the approved 135-child partition against freshly generated IDs."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any
 
 from backend.core.errors import DataIntegrityError
 
-EXPECTED_TOTAL = 15457
+EXPECTED_TOTAL = 15467
 PARENT_JOBS = {
     "executor-a": 8,
     "executor-b": 9,
@@ -66,6 +66,7 @@ class Shard:
     paths: tuple[str, ...]
     additional_tests: tuple[str, ...]
     ids: tuple[str, ...]
+    source_job: str = ""
 
 
 def digest_ids(ids: set[str] | tuple[str, ...]) -> str:
@@ -73,41 +74,38 @@ def digest_ids(ids: set[str] | tuple[str, ...]) -> str:
 
 
 def load_shards(path: Path) -> tuple[Shard, ...]:
+    from scripts.mutation_children import prove_child_ownership
+
+    root = path.resolve().parents[1]
     data = json.loads(path.read_text(encoding="utf-8"))
     require(
-        data["schema_version"] == 1 and data["generator_version"] == "3.8.0", "partition format"
+        data["schema_version"] == 2 and data["generator_version"] == "3.8.0", "partition format"
     )
     require(
         type(data["expected_total"]) is int and data["expected_total"] == EXPECTED_TOTAL,
         "inventory total",
     )
-    expected_names = {
-        "tax" if parent == "tax" else f"{parent}-{n}"
-        for parent, count in PARENT_JOBS.items()
-        for n in range(1, count + 1)
-    }
+    prove_child_ownership(root, data)
     shards: list[Shard] = []
     seen: set[str] = set()
     for row in data["shards"]:
-        require(row["parent"] in PARENT_JOBS, "unknown parent")
+        require(row["parent"] in PARENT_JOBS, "unknown cohort")
         require(
             isinstance(row["shard"], str)
             and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", row["shard"]) is not None,
-            "invalid shard name",
+            "invalid child name",
         )
         require(
-            row["shard"] == "tax"
-            if row["parent"] == "tax"
-            else row["shard"].startswith(row["parent"] + "-"),
-            "job name differs from its parent",
+            row["shard"].startswith(row["source_job"] + "-"), "child differs from original parent"
         )
         for field in ("paths", "additional_tests", "ids"):
             require(
-                isinstance(row[field], list) and all(isinstance(v, str) and v for v in row[field]),
+                isinstance(row[field], list)
+                and all(isinstance(value, str) and value for value in row[field]),
                 "invalid partition field",
             )
             require(len(row[field]) == len(set(row[field])), "duplicate partition field")
-        require(bool(row["paths"]) and bool(row["ids"]), "empty shard")
+        require(bool(row["paths"]) and bool(row["ids"]), "empty child")
         require(type(row["count"]) is int and row["count"] == len(row["ids"]), "assigned count")
         require(
             tuple(row["additional_tests"]) == ADDITIONS.get(row["parent"], ()),
@@ -122,13 +120,11 @@ def load_shards(path: Path) -> tuple[Shard, ...]:
                 tuple(row["paths"]),
                 tuple(row["additional_tests"]),
                 tuple(row["ids"]),
+                row["source_job"],
             )
         )
-    names = [s.name for s in shards]
-    require(
-        len(names) == len(set(names)) == 63 and set(names) == expected_names,
-        "expected 63 named jobs",
-    )
+    names = [shard.name for shard in shards]
+    require(len(names) == len(set(names)) == 135, "expected 135 child jobs")
     require(len(seen) == EXPECTED_TOTAL, "missing or extra assigned IDs")
     return tuple(shards)
 
@@ -161,12 +157,28 @@ def generate_inventory(root: Path) -> dict[str, set[str]]:
     union = set().union(*result.values())
     require(
         len(union) == sum(map(len, result.values())) == EXPECTED_TOTAL,
-        "fresh inventory differs from 15457",
+        "fresh inventory differs from 15467",
     )
     return result
 
 
 def prove_partition(shards: tuple[Shard, ...], generated: dict[str, set[str]]) -> str:
+    from scripts.mutation_children import build_split
+
+    expected = {
+        row["shard"]: row for row in build_split(Path(__file__).resolve().parents[1])["shards"]
+    }
+    require(
+        len(shards) == 135 and {shard.name for shard in shards} == set(expected), "child job names"
+    )
+    for shard in shards:
+        row = expected[shard.name]
+        require(
+            shard.source_job == row["source_job"]
+            and shard.parent == row["parent"]
+            and shard.ids == tuple(row["ids"]),
+            "child source ownership",
+        )
     assigned_files = {path for shard in shards for path in shard.paths}
     require(assigned_files == set(generated), "unassigned or unexpected source file")
     seen: set[str] = set()
@@ -197,13 +209,21 @@ def build_manifest(root: Path, name: str) -> dict[str, Any]:
     )
     matched = generated_for_job.intersection(patterns) if patterns else generated_for_job
     require(matched == set(row.ids), "native CLI selection differs from assigned IDs")
+    from scripts.mutation_fingerprints import MAP_PATH, read_map
+
+    fingerprints = {
+        record["new_id"]: record["fingerprint"] for record in read_map(root) if record["new_id"]
+    }
     return {
         "shard": row.name,
         "parent": row.parent,
+        "source_job": row.source_job,
         "paths": list(row.paths),
         "patterns": patterns,
         "expected_count": len(row.ids),
         "selected": list(row.ids),
+        "fingerprints": {key: fingerprints[key] for key in row.ids},
+        "fingerprint_map_sha256": hashlib.sha256((root / MAP_PATH).read_bytes()).hexdigest(),
         "generated": sorted(generated_for_job),
         "base_selection": list(BASE_SELECTION),
         "additional_tests": list(row.additional_tests),
@@ -220,7 +240,7 @@ def main() -> int:
         destination = Path(os.environ["RUNNER_TEMP"], "vws-mutation-shard.json")
         destination.write_text(json.dumps(manifest, ensure_ascii=True), encoding="utf-8")
         print(
-            "Partition proof PASS: 18 files; 63 jobs; 15457 freshly generated unique IDs; every ID owned exactly once"
+            "Partition proof PASS: 18 files; 135 jobs; 15467 freshly generated unique IDs; every ID owned exactly once"
         )
         print("Inventory SHA256:", manifest["inventory_sha256"])
         print("Shard:", manifest["shard"], "assigned:", manifest["expected_count"])

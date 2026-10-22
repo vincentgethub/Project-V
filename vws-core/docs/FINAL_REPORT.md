@@ -1,5 +1,14 @@
 # Final build report - October 12, 2026
 
+October 22 continuation: [Pass 7](MUTATION_PASS7.md) supersedes the older counts below.
+Both final suites pass 6,687 cases, with 61 existing skips and only four original
+perf deselections. Required coverage is 100%: 9,510 statements / 3,394 branches;
+executor 1,871 / 784. Collection proves 80 additional cases and zero removals
+against 5dc9af8. The 135-child partition assigns 15,467 fingerprints exactly once
+without crossing original ownership. Both approved dependency bumps install
+with hashes in clean venvs and audit with zero findings. Native mutation results,
+weekly dispatch and CI are pending the authorized two commits and one push.
+
 October 20 continuation: the owner approved the narrow correction to
 [the Pass 6 sizing regression](MUTATION_PASS6_SIZING_STOP.md), plus a final full
 CRO check immediately before each physical entry submission. The old snapshot

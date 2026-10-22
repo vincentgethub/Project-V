@@ -17,6 +17,7 @@ from scripts.check_mutations import (
     approved_equivalents,
     require_complete_results,
 )
+from scripts.mutation_fingerprints import MAP_PATH, read_map
 from scripts.mutation_inventory import (
     ADDITIONS,
     BASE_SELECTION,
@@ -74,7 +75,7 @@ def test_OPS_06_only_individually_approved_survivors_are_accepted(status: str) -
         require_complete_results("m_" + b"unlisted".hex() + ": " + status)
 
 
-@pytest.mark.parametrize("change", ["extra", "duplicate", "missing", "owner"])
+@pytest.mark.parametrize("change", ["extra", "duplicate", "missing", "owner", "fingerprint"])
 def test_OPS_06_approval_file_cannot_expand_authorization(tmp_path: Path, change: str) -> None:
     data = json.loads((ROOT / "config/tax-equivalent-mutants.json").read_text())
     if change == "extra":
@@ -83,6 +84,8 @@ def test_OPS_06_approval_file_cannot_expand_authorization(tmp_path: Path, change
         data["entries"][1] = data["entries"][0]
     elif change == "missing":
         data["entries"].pop()
+    elif change == "fingerprint":
+        data["entries"][0]["fingerprint"] = "sha256:" + "0" * 64
     else:
         data["entries"][0]["approved_by"] = "agent"
     path = tmp_path / "approvals.json"
@@ -116,10 +119,14 @@ def complete_evidence(
     assert inventory_hash == digest_ids(set().union(*generated.values()))
     monkeypatch.setattr(gate, "generate_inventory", lambda root: generated)
     assignment = hashlib.sha256((ROOT / "config/mutation-shards.json").read_bytes()).hexdigest()
+    fingerprints = {row["new_id"]: row["fingerprint"] for row in read_map(ROOT) if row["new_id"]}
     for shard in shards:
         manifest = {
             "shard": shard.name,
             "parent": shard.parent,
+            "source_job": shard.source_job,
+            "fingerprint_map_sha256": hashlib.sha256((ROOT / MAP_PATH).read_bytes()).hexdigest(),
+            "fingerprints": {key: fingerprints[key] for key in shard.ids},
             "head_sha": "test-commit",
             "inventory_sha256": inventory_hash,
             "assignment_sha256": assignment,
@@ -129,6 +136,23 @@ def complete_evidence(
         report = {
             "manifest": manifest,
             "records": dict.fromkeys(shard.ids, "killed"),
+            "fingerprint_records": [
+                {
+                    "id": key,
+                    "fingerprint": fingerprints[key],
+                    "native_status": "killed",
+                    "reason": "assertion",
+                    "failures": [
+                        {
+                            "kind": "assertion",
+                            "phase": "call",
+                            "type": "AssertionError",
+                            "test": "offline behavior evidence",
+                        }
+                    ],
+                }
+                for key in shard.ids
+            ],
             "run_exit": 0,
             "export_exit": 0,
             "passed": True,
@@ -151,13 +175,17 @@ def complete_evidence(
         "stale",
         "native_failure",
         "matrix_timeout",
+        "crash_kill",
+        "unaudited_kill",
+        "fingerprint",
+        "wrong_parent",
     ],
 )
 def test_OPS_06_aggregate_requires_every_id_and_every_job(
     complete_evidence: tuple[Path, dict[str, set[str]]], fault: str
 ) -> None:
     directory, _ = complete_evidence
-    path = directory / "tax.json"
+    path = directory / "tax-1.json"
     report: dict[str, Any] = json.loads(path.read_text())
     key = next(k for k in report["records"] if k not in OWNER_APPROVED_IDS)
     if fault == "missing_file":
@@ -175,14 +203,35 @@ def test_OPS_06_aggregate_requires_every_id_and_every_job(
             report["manifest"]["head_sha"] = "old-commit"
         elif fault == "native_failure":
             report["run_exit"] = 1
+        elif fault == "crash_kill":
+            report["fingerprint_records"][0]["reason"] = "crash"
+            report["fingerprint_records"][0]["failures"] = [
+                {
+                    "kind": "crash",
+                    "phase": "setup",
+                    "type": "RuntimeError",
+                    "test": "offline failure",
+                }
+            ]
+        elif fault == "unaudited_kill":
+            report["fingerprint_records"].pop()
+        elif fault == "fingerprint":
+            report["manifest"]["fingerprints"][key] = "sha256:" + "0" * 64
+        elif fault == "wrong_parent":
+            report["manifest"]["source_job"] = "executor-a-1"
+        for audit in report["fingerprint_records"]:
+            if audit["id"] in report["records"]:
+                audit["native_status"] = report["records"][audit["id"]]
+                if audit["native_status"] != "killed":
+                    audit["reason"] = audit["native_status"]
         path.write_text(json.dumps(report), encoding="utf-8")
     summary = gate.aggregate(
         ROOT, directory, "test-commit", "timed_out" if fault == "matrix_timeout" else "success"
     )
     assert summary["passed"] is (fault in {"none", "approved"})
-    assert len(summary["jobs"]) == 63
+    assert len(summary["jobs"]) == 135
     if summary["passed"]:
-        assert summary["reported"] == 15457
+        assert summary["reported"] == 15467
 
 
 def test_OPS_06_partition_rejects_overlap_missing_and_wrong_source(
@@ -211,3 +260,144 @@ def test_OPS_06_partition_rejects_overlap_missing_and_wrong_source(
     changed[path].add("backend.tax.reports.x_unassigned__mutmut_1")
     with pytest.raises(DataIntegrityError):
         prove_partition(shards, changed)
+
+
+@pytest.mark.parametrize(
+    ("body", "native_status", "expected", "exit_code"),
+    [
+        ("def test_behavior():\n    assert False\n", "killed", "assertion", 1),
+        (
+            "import pytest\ndef test_behavior():\n    with pytest.raises(ValueError):\n        pass\n",
+            "killed",
+            "assertion",
+            1,
+        ),
+        (
+            "def test_behavior():\n    raise TypeError('offline injected runtime failure')\n",
+            "killed",
+            "crash",
+            1,
+        ),
+        (
+            "import pytest\n@pytest.fixture\ndef broken():\n    raise RuntimeError('offline setup failure')\ndef test_behavior(broken):\n    pass\n",
+            "killed",
+            "crash",
+            1,
+        ),
+        ("raise ImportError('offline collection failure')\n", "killed", "crash", 2),
+        ("def test_behavior():\n    assert True\n", "survived", "survived", 0),
+    ],
+)
+def test_OPS_06_native_pytest_audit_distinguishes_behavior_from_crashes(
+    tmp_path: Path, body: str, native_status: str, expected: str, exit_code: int
+) -> None:
+    import os
+    import subprocess
+    import sys
+
+    from scripts.mutation_audit import audit_results
+
+    module = tmp_path / "test_offline_audit.py"
+    module.write_text(body, encoding="utf-8")
+    audit_directory = tmp_path / "audit"
+    mutant = "offline.behavior.x_contract__mutmut_1"
+    environment = {
+        **os.environ,
+        "VWS_MUTATION_AUDIT_DIR": str(audit_directory),
+        "MUTANT_UNDER_TEST": mutant,
+        "PYTHONPATH": str(ROOT),
+    }
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--disable-socket",
+            "-p",
+            "scripts.mutation_audit",
+            str(module),
+        ],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == exit_code
+    rows, clean = audit_results(
+        audit_directory, {mutant: native_status}, {mutant: "sha256:" + "a" * 64}
+    )
+    assert clean == [] and len(rows) == 1
+    assert rows[0]["reason"] == expected
+    assert rows[0]["fingerprint"] == "sha256:" + "a" * 64
+    if expected == "assertion":
+        assert rows[0]["failures"][0]["phase"] == "call"
+        assert rows[0]["failures"][0]["type"] in {"AssertionError", "Failed"}
+        assert rows[0]["tests_collected"] == 1
+
+
+@pytest.mark.parametrize("status", ["timeout", "segfault", "suspicious"])
+def test_OPS_06_timeout_crash_and_missing_assertion_evidence_never_count_as_kills(
+    tmp_path: Path, status: str
+) -> None:
+    from scripts.mutation_audit import audit_results
+
+    key = "offline.behavior.x_contract__mutmut_1"
+    rows, clean = audit_results(tmp_path, {key: status}, {key: "sha256:" + "a" * 64})
+    assert clean == []
+    assert (
+        rows[0]["reason"]
+        == {"timeout": "timeout", "segfault": "crash", "suspicious": "suspicious"}[status]
+    )
+    assert rows[0]["reason"] != "assertion"
+
+
+def test_OPS_06_fingerprint_survives_line_and_native_number_changes() -> None:
+    from scripts.mutation_fingerprints import mutation_rows
+
+    before = "def rule(value):\n    return value + 1\n"
+    after = "\n\ndef rule(value):\n    limit = 10\n    return value + 1\n"
+    old = [
+        row
+        for row in mutation_rows("backend/risk/example.py", before)
+        if row["payload"][2] == "return value + 1"
+    ]
+    new = [
+        row
+        for row in mutation_rows("backend/risk/example.py", after)
+        if row["payload"][2] == "return value + 1"
+    ]
+    assert {row["fingerprint"] for row in old} == {row["fingerprint"] for row in new}
+    assert old and new and old[0]["line"] != new[0]["line"] and old[0]["id"] != new[0]["id"]
+
+
+def test_OPS_06_fingerprint_keeps_exact_mutated_audit_message_whitespace() -> None:
+    from scripts.mutation_fingerprints import mutation_rows
+
+    source = "def audit():\n    return 'alpha  beta'\n"
+    rows = mutation_rows("backend/risk/example.py", source)
+    text_mutations = [row for row in rows if row["operator"] == "operator_string"]
+    assert text_mutations
+    assert any("alpha  beta" in row["payload"][4] for row in text_mutations)
+    assert all(row["payload"][4] == row["mutated_text"] for row in rows)
+
+
+def test_OPS_06_duplicate_fingerprints_preserve_every_occurrence_in_source_order() -> None:
+    from collections import defaultdict
+
+    from scripts.mutation_fingerprints import mutation_rows
+
+    source = "def rule(value):\n    value = value + 1\n    value = value + 1\n    return value\n"
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    rows = mutation_rows("backend/risk/example.py", source)
+    for row in rows:
+        groups[row["fingerprint"]].append(row)
+    duplicates = [group for group in groups.values() if len(group) > 1]
+    assert duplicates
+    assert sum(len(group) for group in groups.values()) == len(rows)
+    assert all(
+        [row["line"] for row in group] == sorted(row["line"] for row in group)
+        for group in duplicates
+    )
+    assert len({row["id"] for row in rows}) == len(rows)

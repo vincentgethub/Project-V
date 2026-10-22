@@ -1863,6 +1863,8 @@ class AlpacaExecutor:
         absent = {row.id for row in legs if self._confirmed_absence(row)}
         fresh: set[UUID] = set()
         for leg in legs:
+            if loop.time() >= deadline:
+                break
             try:
                 async with asyncio.timeout_at(deadline):
                     await self._read_bound(leg)
@@ -1899,6 +1901,8 @@ class AlpacaExecutor:
                 )
         faults: dict[str, str] = {}
         for leg in legs:
+            if loop.time() >= deadline:
+                break
             if leg.id in absent:
                 continue
             try:
@@ -1912,6 +1916,8 @@ class AlpacaExecutor:
         while loop.time() < deadline:
             observed: dict[UUID, BrokerOrder] = {}
             for leg in legs:
+                if loop.time() >= deadline:
+                    break
                 if leg.id in absent:
                     continue
                 try:
@@ -2499,7 +2505,8 @@ class AlpacaExecutor:
             selected = new_stop
             restoring_selected = False
             if standalone_repair:
-                assert approval is not None
+                if approval is None:
+                    raise DataIntegrityError("Standalone stop repair requires a recorded approval")
                 level = approval.old_stop
                 try:
                     inputs = await self._fresh_exit_inputs(entry)

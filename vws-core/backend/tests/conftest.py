@@ -16,6 +16,8 @@ from backend.core.database import create_database, create_schema
 from backend.data import market_calendar
 from backend.data.market_calendar import CalendarFactory, MarketCalendar
 
+pytest_plugins = ("scripts.mutation_audit",)
+
 
 @pytest.fixture(scope="session", autouse=True)
 def pristine_calendars() -> Iterator[None]:
