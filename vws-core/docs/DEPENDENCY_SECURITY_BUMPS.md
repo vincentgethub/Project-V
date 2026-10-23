@@ -308,45 +308,82 @@ Saved locally as `build/pass7/check_dependency_locks.py`. Its old inputs are the
 
 ```python
 """Classify every changed lock line, preserving package ownership of hash rows."""
+
 from pathlib import Path
 import difflib, json, re
-ROOT=Path(__file__).resolve().parents[2]
-OUT=ROOT/'build/pass7/dependency-lock-trial'
-APPROVED={'certifi':('2026.7.22','2026.10.19'),'virtualenv':('21.14.5','21.14.9')}
-def parse(text):
-    rows=text.splitlines(); owners=[]; pins={}; owner=None
-    for line in rows:
-        match=re.match(r'^([a-zA-Z0-9_.-]+)==([^\s;]+)',line)
-        if match:
-            owner=match[1]; pins[owner]=match[2]
-        owners.append(owner)
-    return rows,owners,pins
-report={}
-for name,count in [('requirements.lock',62),('requirements-dev.lock',141)]:
-    old=(OUT/(name+'.before')).read_text(); new=(ROOT/name).read_text()
-    a,ao,ap=parse(old); b,bo,bp=parse(new)
-    expected={k:APPROVED.get(k,(v,v))[1] for k,v in ap.items()}
-    if len(ap)!=count or len(bp)!=count or bp!=expected: raise SystemExit('STOP: package records changed outside approved bumps')
-    classes={'a':[],'b':[],'c':[]}
-    for op,i,j,k,l in difflib.SequenceMatcher(a=a,b=b,autojunk=False).get_opcodes():
-        if op=='equal': continue
-        for side,lines,owners,start,end in [('old',a,ao,i,j),('new',b,bo,k,l)]:
-            for n in range(start,end):
-                line=lines[n]; owner=owners[n]
-                if line.lstrip().startswith('#'): category='b'
-                elif owner in APPROVED and (re.fullmatch(r'[a-zA-Z0-9_.-]+==[^\s]+ \\',line) or re.fullmatch(r'    --hash=sha256:[0-9a-f]{64}( \\)?',line)): category='a'
-                else: category='c'
-                classes[category].append({'side':side,'line':n+1,'text':line,'package':owner})
-    for package in set(ap)&APPROVED.keys():
-        meta=json.loads((OUT/f'{package}-{bp[package]}-pypi.json').read_text())
-        expected_hashes={f['digests']['sha256'] for f in meta['urls']}
-        actual={re.search(r'sha256:([a-f0-9]{64})',line)[1] for line,owner in zip(b,bo) if owner==package and '--hash=' in line}
-        if actual!=expected_hashes: raise SystemExit('STOP: PyPI hash mismatch')
-    report[name]={'old_records':len(ap),'new_records':len(bp),'counts':{x:len(y) for x,y in classes.items()},'changed_lines':classes}
-    (OUT/(name+'.final.diff')).write_text(''.join(difflib.unified_diff(a,b,fromfile=name+'.old',tofile=name+'.new',lineterm='\n')))
-    print(name,len(ap),'->',len(bp),{x:len(y) for x,y in classes.items()})
-(OUT/'classified-lock-diff.json').write_text(json.dumps(report,indent=2))
-if any(v['counts']['c'] for v in report.values()): raise SystemExit('STOP: unapproved changed lines')
-print('PASS: every changed line is approved version/hash or comment; class c = 0.')
 
+ROOT = Path(__file__).resolve().parents[2]
+OUT = ROOT / "build/pass7/dependency-lock-trial"
+APPROVED = {"certifi": ("2026.7.22", "2026.10.19"), "virtualenv": ("21.14.5", "21.14.9")}
+
+
+def parse(text):
+    rows = text.splitlines()
+    owners = []
+    pins = {}
+    owner = None
+    for line in rows:
+        match = re.match(r"^([a-zA-Z0-9_.-]+)==([^\s;]+)", line)
+        if match:
+            owner = match[1]
+            pins[owner] = match[2]
+        owners.append(owner)
+    return rows, owners, pins
+
+
+report = {}
+for name, count in [("requirements.lock", 62), ("requirements-dev.lock", 141)]:
+    old = (OUT / (name + ".before")).read_text()
+    new = (ROOT / name).read_text()
+    a, ao, ap = parse(old)
+    b, bo, bp = parse(new)
+    expected = {k: APPROVED.get(k, (v, v))[1] for k, v in ap.items()}
+    if len(ap) != count or len(bp) != count or bp != expected:
+        raise SystemExit("STOP: package records changed outside approved bumps")
+    classes = {"a": [], "b": [], "c": []}
+    for op, i, j, k, l in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
+        if op == "equal":
+            continue
+        for side, lines, owners, start, end in [("old", a, ao, i, j), ("new", b, bo, k, l)]:
+            for n in range(start, end):
+                line = lines[n]
+                owner = owners[n]
+                if line.lstrip().startswith("#"):
+                    category = "b"
+                elif owner in APPROVED and (
+                    re.fullmatch(r"[a-zA-Z0-9_.-]+==[^\s]+ \\", line)
+                    or re.fullmatch(r"    --hash=sha256:[0-9a-f]{64}( \\)?", line)
+                ):
+                    category = "a"
+                else:
+                    category = "c"
+                classes[category].append(
+                    {"side": side, "line": n + 1, "text": line, "package": owner}
+                )
+    for package in set(ap) & APPROVED.keys():
+        meta = json.loads((OUT / f"{package}-{bp[package]}-pypi.json").read_text())
+        expected_hashes = {f["digests"]["sha256"] for f in meta["urls"]}
+        actual = {
+            re.search(r"sha256:([a-f0-9]{64})", line)[1]
+            for line, owner in zip(b, bo)
+            if owner == package and "--hash=" in line
+        }
+        if actual != expected_hashes:
+            raise SystemExit("STOP: PyPI hash mismatch")
+    report[name] = {
+        "old_records": len(ap),
+        "new_records": len(bp),
+        "counts": {x: len(y) for x, y in classes.items()},
+        "changed_lines": classes,
+    }
+    (OUT / (name + ".final.diff")).write_text(
+        "".join(
+            difflib.unified_diff(a, b, fromfile=name + ".old", tofile=name + ".new", lineterm="\n")
+        )
+    )
+    print(name, len(ap), "->", len(bp), {x: len(y) for x, y in classes.items()})
+(OUT / "classified-lock-diff.json").write_text(json.dumps(report, indent=2))
+if any(v["counts"]["c"] for v in report.values()):
+    raise SystemExit("STOP: unapproved changed lines")
+print("PASS: every changed line is approved version/hash or comment; class c = 0.")
 ```
