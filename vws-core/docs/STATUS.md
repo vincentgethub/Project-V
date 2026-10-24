@@ -1,5 +1,15 @@
 # Technical status
 
+## Security dependency pass - October 24, 2026
+
+| Requirement | Code / evidence | Result |
+| --- | --- | --- |
+| Approved dependency scope | `pyproject.toml`, both locks; `SETUPTOOLS_SECURITY_BUMP.md` | Only setuptools 84.1.0, filelock 4.2.1 and virtualenv 21.14.10 version/hash blocks plus generated comments; original 62/141 records retained; compiler unchanged. |
+| Setuptools provenance | `build/pass7/setuptools-security/source-verification` | All 224 wheel Python files match tag; old/new startup-hook bytes identical; none of 46 tag-only files is in wheel; uploader not publicly available. |
+| Installation and audits | Fresh hashed runtime/dev venvs; retained audit JSON | Both installs and pip check pass; both lock audits have zero findings. |
+| Complete offline verification | Normal/random JUnit, coverage and source fingerprints | Each: 6,737 passed, 61 unchanged skips, four original perf deselections; 100% of 9,510 statements and 3,394 branches; zero tests added/removed or source changes. |
+| Native CI and diagnostic pilot | Existing pilot 40067369610; one automatic new-head CI after authorized push | Pending; no gate/selector/timeout/threshold/kill-rule or partition changes; no extra mutation rerun. |
+
 ## Mutation Pass 7 — October 22, 2026
 
 | Requirement | Code / evidence | Result |

@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 24, 2026 - Diagnostic pilot verified locally; CI pending
+Last updated: October 24, 2026 - three security bumps: offline verification passed
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -22,7 +22,7 @@ Native timing, safe frames and full survivor/missing-ID exports are implemented.
 Dispatch-only pilot selects 6,201 IDs in 190 diagnostic batches; seed 39856462454.
 
 ## Waiting on you
-One Linux diagnostic pilot and one normal main-CI run are approved after the push.
+Setuptools 84.1.0, filelock 4.2.1 and virtualenv 21.14.10: both audits clean.
 Setup later needs paper broker keys and your CASH or MARGIN account type;
 your Telegram bot/private chat; read-only Plaid checking credentials;
 your FRED key and filing name/email; federal ST/LT rates and marked outside lots.
@@ -33,21 +33,21 @@ Setup stores keys in the computer's secret store; do not paste them here.
 ## Not checked yet
 Real broker, bank, Telegram, FRED and SEC checks need setup.
 Pilot: 14 infrastructure cases added, none removed; all 92 focused checks pass.
-Full suite: 6,737 pass, 61 unchanged skips, four original perf deselections; 100%.
-Required: 9,510 statements / 3,394 branches; executor: 1,871 / 784; zero missing.
-Two approved dependency bumps: clean hashed installs and zero audit findings.
+Normal and random: 6,737 pass each, 61 existing skips and four original perf cases.
+Required coverage: 100%; 9,510 statements / 3,394 branches; zero missing.
+Setuptools wheel: 224 Python files match tag; six metadata files plus one .pth extra.
 Run 39856462454: 4,851 assertion kills; 5,162 exception-only results are excluded.
 1,155 survivors (1,149 unlisted), one exported timeout and 4,298 missing exports.
 All 24 risk proposals stay unapproved; kill rules and all 135 jobs are unchanged.
 Amendment 02 "MANUAL_CSV path works": DEFERRED (user decision, Oct 8 2026).
 Walk-forward speed is UNVERIFIED: 19 windows took 949.845 seconds without finishing.
-Measured timings/attribution and a 90-minute partition proposal remain pending.
+Amended provenance passes; 2,122/6,201 pilot observations retained so far.
 Your host protections, backups, real stop raises, tax forms and drill are unchecked.
 No real trading edge or READY verdict has been established.
 
 ## Try this next
-Review MUTATION_PILOT.md; diagnostic files cannot satisfy the normal aggregate.
-Push 0ef6323, 90c567f and the pilot commit together once; dispatch the pilot once.
+See SETUPTOOLS_SECURITY_BUMP.md: provenance, compiler scope and verification.
+Verified security commit/push follows; hourly continuation collects the CI report.
 Setup remains deferred; missing credentials never count as a pass.
 
 ## Safety status
