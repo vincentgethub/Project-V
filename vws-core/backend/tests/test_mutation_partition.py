@@ -30,6 +30,30 @@ from scripts.run_mutation_shard import parse_results, select_configuration
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("placement", ["extra-pilot-file", "renamed-as-normal-result"])
+def test_OPS_06_pilot_cannot_satisfy_normal_aggregate_even_with_all_native_killed(
+    complete_evidence: tuple[Path, dict[str, set[str]]], placement: str
+) -> None:
+    from scripts.mutation_pilot import PURPOSE, build_plan
+
+    directory, _ = complete_evidence
+    batch = build_plan(ROOT)["batches"][0]
+    report = {
+        "purpose": PURPOSE,
+        "manifest": batch,
+        "records": dict.fromkeys(batch["selected"], "killed"),
+    }
+    name = (
+        batch["shard"]
+        if placement == "extra-pilot-file"
+        else load_shards(ROOT / "config/mutation-shards.json")[0].name
+    )
+    (directory / (name + ".json")).write_text(json.dumps(report), encoding="utf-8")
+    summary = gate.aggregate(ROOT, directory, "test-commit", "success")
+    assert summary["passed"] is False
+    assert summary["failures"]
+
+
 def test_OPS_06_workflow_partition_and_selector_additions_are_exact() -> None:
     shards = load_shards(ROOT / "config/mutation-shards.json")
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))

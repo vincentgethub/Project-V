@@ -174,9 +174,9 @@ def observation(
     return row
 
 
-def harvest(root: Path, child: str) -> dict[str, Any]:
+def harvest(root: Path, child: str, *, directory: Path | None = None) -> dict[str, Any]:
     """Read existing results once after native execution, including after cancellation."""
-    directory = root / "build/mutation-results"
+    directory = directory if directory is not None else root / "build/mutation-results"
     errors: list[str] = []
     report = read_json(directory / (child + ".json"), errors)
     manifest = report.get("manifest")

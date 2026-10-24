@@ -1,0 +1,28 @@
+{
+  "baseline_run": 39856462454,
+  "seed": 39856462454,
+  "sample_size": 100,
+  "parents": [
+    "executor-a-1",
+    "executor-a-2",
+    "executor-a-3",
+    "executor-a-4",
+    "executor-a-5",
+    "executor-a-6",
+    "executor-a-7",
+    "executor-a-8",
+    "executor-b-4",
+    "executor-b-5",
+    "executor-b-9",
+    "risk-controls-13",
+    "risk-sizing-1",
+    "risk-sizing-2",
+    "risk-sizing-3",
+    "risk-sizing-5",
+    "risk-sizing-6",
+    "risk-sizing-7"
+  ],
+  "pool_sha256": "sha256:f607469cfb39ed3b2006bf3fc51945c6564100e5fa697028512524cc214ad9e9",
+  "source_unqualified_kills_sha256": "sha256:f9a186d507693c7f1bd45dd439b87f99506ce06809fca27bb03fd6695c5bd87b",
+  "source": "https://github.com/vincentgethub/Project-V/actions/runs/39856462454; excluded native K, reason crash, complete exports only"
+}
