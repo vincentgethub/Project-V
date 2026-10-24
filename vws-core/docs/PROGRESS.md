@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 22, 2026 - Pass 7 offline checks pass; native CI pending
+Last updated: October 23, 2026 - Diagnostics tested locally; fresh native proof blocked
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -18,10 +18,10 @@ Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.
 Final full CRO recheck refuses all six timed blockers before any broker send.
-The 15,467-ID fingerprint partition passes across 135 children; original owners stay.
+Native timing, safe frames and full survivor/missing-ID exports are implemented.
 
 ## Waiting on you
-No new owner decision is needed for the authorized verification and single push.
+Fresh native proof needs Linux; WSL and container runtimes are unavailable here.
 Setup later needs paper broker keys and your CASH or MARGIN account type;
 your Telegram bot/private chat; read-only Plaid checking credentials;
 your FRED key and filing name/email; federal ST/LT rates and marked outside lots.
@@ -31,22 +31,23 @@ Setup stores keys in the computer's secret store; do not paste them here.
 
 ## Not checked yet
 Real broker, bank, Telegram, FRED and SEC checks need setup.
-Current pass: 80 more cases, none removed; four original perf deselections.
-Normal/random each pass 6,687, skip 61 and deselect four perf cases; coverage 100%.
+36 infrastructure cases added, none removed; all 415 focused/GD-07 checks pass.
+Full suite: 6,723 pass, 61 existing skips, four original perf deselections; 100%.
 Required: 9,510 statements / 3,394 branches; executor: 1,871 / 784; zero missing.
 Two approved dependency bumps: clean hashed installs and zero audit findings.
-All 24 individual risk proposals remain unapproved and count as failures if surviving.
-Earlier replay, warm scan and realtime fake results remain in FINAL_REPORT.md.
+Native: 4,851 assertion kills; 5,162 exception-only kills are excluded.
+1,155 survivors (1,149 unlisted), one exported timeout and 4,298 missing exports.
+All 24 risk proposals stay unapproved; kill rules and all 135 jobs are unchanged.
 Amendment 02 "MANUAL_CSV path works": DEFERRED (user decision, Oct 8 2026).
 Walk-forward speed is UNVERIFIED: 19 windows took 949.845 seconds without finishing.
-Mutation, database, container and CI reproduction commands are supplied.
+Fresh native timings/attribution are blocked; the 221-child estimate is not applied.
 Your host protections, backups, real stop raises, tax forms and drill are unchecked.
 No real trading edge or READY verdict has been established.
 
 ## Try this next
-After setup, follow the backup-first migration steps in RUNBOOK.md.
-Run `.venv\Scripts\python.exe -m vws doctor`, then `-m vws start` when checks pass.
-Start defaults to MANUAL paper. Missing credentials never count as a pass.
+Review MUTATION_INSTRUMENTATION.md; no push or CI dispatch occurred.
+Local commit 0ef6323 remains separate; the formatter passes all 470 files.
+Setup remains deferred; missing credentials never count as a pass.
 
 ## Safety status
 ALPACA-only state. MANUAL_CSV refuses startup. MANUAL paper defaults; live is locked.

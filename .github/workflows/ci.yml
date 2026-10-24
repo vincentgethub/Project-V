@@ -248,6 +248,11 @@ jobs:
         run: |
           python -m scripts.run_mutation_shard
           python -m scripts.check_mutations "$RUNNER_TEMP/vws-mutants.txt"
+      - name: Export native timing, sanitized frames and incomplete observations
+        if: ${{ always() }}
+        env:
+          VWS_MUTATION_SHARD: ${{ matrix.shard }}
+        run: python -m scripts.mutation_evidence
       - name: Preserve individual native mutation results
         if: ${{ always() }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -256,6 +261,7 @@ jobs:
           path: |
             vws-core/build/mutation-results/${{ matrix.shard }}.json
             vws-core/build/mutation-results/${{ matrix.shard }}-audit/
+            vws-core/build/mutation-results/${{ matrix.shard }}-evidence/
           if-no-files-found: error
           retention-days: 30
   mutations-gate:
@@ -291,7 +297,9 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: mutation-aggregate
-          path: vws-core/build/mutation-aggregate.json
+          path: |
+            vws-core/build/mutation-aggregate.json
+            vws-core/build/mutation-results/aggregate-evidence/
           if-no-files-found: error
           retention-days: 30
   postgres:

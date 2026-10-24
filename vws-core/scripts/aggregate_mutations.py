@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.check_mutations import approved_equivalents
+from scripts.mutation_evidence import aggregate_exports
 from scripts.mutation_fingerprints import MAP_PATH, read_map
 from scripts.mutation_inventory import (
     EXPECTED_TOTAL,
@@ -167,6 +168,25 @@ def aggregate(root: Path, directory: Path, head: str, matrix_result: str) -> dic
         "failures": failures,
         "passed": not failures,
     }
+    summary["diagnostics"] = aggregate_exports(
+        directory,
+        [
+            {
+                "shard": shard.name,
+                "parent": shard.parent,
+                "source_job": shard.source_job,
+                "selected": list(shard.ids),
+                "fingerprints": {key: fingerprints[key] for key in shard.ids},
+                "head_sha": head,
+                "assignment_sha256": assignment_hash,
+                "inventory_sha256": inventory_hash,
+                "fingerprint_map_sha256": fingerprint_map_hash,
+            }
+            for shard in shards
+        ],
+        all_records,
+        all_audits,
+    )
     return summary
 
 

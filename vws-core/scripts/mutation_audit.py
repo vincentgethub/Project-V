@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections.abc import Generator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import pytest
@@ -15,17 +18,73 @@ from _pytest.outcomes import Failed
 from mutmut.mutation.trampoline import get_mutant_under_test
 
 
-@dataclass
+def sanitized_frames(excinfo: pytest.ExceptionInfo[BaseException]) -> list[dict[str, Any]]:
+    """Keep code locations only: never messages, source lines, locals or absolute paths."""
+    roots = (Path(__file__).resolve().parents[1], Path.cwd().resolve())
+    frames = []
+    entries = list(excinfo.traceback)
+    error = excinfo.value
+    seen = {id(error)}
+    while True:
+        cause = error.__cause__ or error.__context__
+        if cause is None or id(cause) in seen or cause.__traceback__ is None:
+            break
+        seen.add(id(cause))
+        entries.extend(pytest.ExceptionInfo.from_exception(cause).traceback)
+        error = cause
+    for entry in entries:
+        path = Path(str(entry.path)).resolve()
+        filename, origin = "<external>", "external"
+        for root in roots:
+            if path.is_relative_to(root):
+                relative = path.relative_to(root).as_posix()
+                if relative.startswith(("backend/", "scripts/", "vws/")) and path.is_file():
+                    filename = relative
+                    origin = (
+                        "test-harness"
+                        if relative.startswith("backend/tests/")
+                        else "runner"
+                        if relative.startswith("scripts/")
+                        else "production"
+                    )
+                    break
+        name = entry.name if filename != "<external>" else "<external>"
+        if not re.fullmatch(r"[\w.<>]+", name):
+            name = "<redacted>"
+        frames.append(
+            {"file": filename, "function": name, "line": entry.lineno + 1, "origin": origin}
+        )
+    return frames
+
+
+@dataclass(eq=False)
 class Audit:
     destination: Path
     mutant: str
     collected_only: bool
     calls: int = 0
     collected: int = 0
-    failures: list[dict[str, str]] = field(default_factory=list)
+    failures: list[dict[str, Any]] = field(default_factory=list)
     panic_cases: list[dict[str, str]] = field(default_factory=list)
     finished: bool = False
     exit_status: int | None = None
+    started: float = field(default_factory=perf_counter)
+    started_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    phase_seconds: dict[str, float] = field(default_factory=dict)
+
+    def pytest_internalerror(
+        self, excrepr: Any, excinfo: pytest.ExceptionInfo[BaseException]
+    ) -> None:
+        self.failures.append(
+            {
+                "test": "<internal>",
+                "phase": "internal",
+                "type": type(excinfo.value).__name__,
+                "kind": "crash",
+                "frames": sanitized_frames(excinfo),
+            }
+        )
+        self.write()
 
     def write(self) -> None:
         payload = {
@@ -37,6 +96,9 @@ class Audit:
             "panic_cases": self.panic_cases,
             "finished": self.finished,
             "exit_status": self.exit_status,
+            "started_utc": self.started_utc,
+            "duration_seconds": perf_counter() - self.started,
+            "phase_seconds": self.phase_seconds,
         }
         temporary = self.destination.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
@@ -60,12 +122,34 @@ def pytest_configure(config: pytest.Config) -> None:
         bool(config.getoption("collectonly")),
     )
     config.stash[KEY] = record
+    config.pluginmanager.register(record, "vws-internal-error-audit")
     record.write()
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
     if KEY in session.config.stash:
-        session.config.stash[KEY].collected = len(session.items)
+        record = session.config.stash[KEY]
+        record.collected = len(session.items)
+        record.write()
+
+
+def pytest_exception_interact(
+    node: pytest.Item | pytest.Collector,
+    call: pytest.CallInfo[Any],
+    report: pytest.TestReport | pytest.CollectReport,
+) -> None:
+    if isinstance(report, pytest.CollectReport) and KEY in node.config.stash:
+        record = node.config.stash[KEY]
+        record.failures.append(
+            {
+                "test": "<collection>",
+                "phase": "collection",
+                "type": type(call.excinfo.value).__name__ if call.excinfo else "Unknown",
+                "kind": "crash",
+                "frames": sanitized_frames(call.excinfo) if call.excinfo else [],
+            }
+        )
+        record.write()
 
 
 @pytest.hookimpl(wrapper=True)
@@ -76,6 +160,7 @@ def pytest_runtest_makereport(
     if KEY not in item.config.stash:
         return report
     record = item.config.stash[KEY]
+    record.phase_seconds[call.when] = record.phase_seconds.get(call.when, 0.0) + call.duration
     panic_case = call.when == "call" and "test_SEC_73" in item.nodeid
     if call.when == "call":
         record.calls += 1
@@ -89,7 +174,13 @@ def pytest_runtest_makereport(
             else "crash"
         )
         record.failures.append(
-            {"test": item.nodeid, "phase": call.when, "type": type(error).__name__, "kind": kind}
+            {
+                "test": item.nodeid,
+                "phase": call.when,
+                "type": type(error).__name__,
+                "kind": kind,
+                "frames": sanitized_frames(call.excinfo) if call.excinfo else [],
+            }
         )
     if report.failed or panic_case:
         record.write()
@@ -142,6 +233,9 @@ def audit_results(
                 "tests_collected": max((row["collected"] for row in evidence), default=0),
                 "tests_run": max((row["calls"] for row in evidence), default=0),
                 "failures": failures,
+                "pytest_seconds": max(
+                    (row.get("duration_seconds", 0.0) for row in evidence), default=0.0
+                ),
             }
         )
     clean = [

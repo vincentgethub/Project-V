@@ -58,6 +58,8 @@ def main() -> int:
         destination = root / "build/mutation-results" / (name + ".json")
         destination.parent.mkdir(parents=True, exist_ok=True)
         report = {"manifest": manifest, "records": {}, "run_exit": None, "export_exit": None}
+        # Persist identity before native execution so a killed job remains attributable.
+        destination.write_text(json.dumps(report, ensure_ascii=True), encoding="utf-8")
         project = root / "pyproject.toml"
         original = project.read_text(encoding="utf-8")
         audit_directory = destination.with_name(name + "-audit")
