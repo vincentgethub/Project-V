@@ -26,7 +26,13 @@ from backend.core.database import (
     prepare_panic_schema,
     transaction,
 )
-from backend.core.errors import ConfigurationError, DatabaseError, LedgerIntegrityError, SafetyError
+from backend.core.errors import (
+    ConfigurationError,
+    DatabaseError,
+    LedgerIntegrityError,
+    ReconciliationError,
+    SafetyError,
+)
 from backend.core.notifier import ConsoleNotifier
 from backend.core.system_state import SystemState, SystemStateStore
 from backend.net.egress import EgressPolicy, build_allowlist
@@ -508,6 +514,88 @@ def test_SEC_01_cli_invalid_attestation_is_rejected_without_evidence(
     assert events(context.engine, "ACCOUNT_ATTESTED") == []
 
 
+@pytest.mark.parametrize(
+    ("fault", "activity", "failed_steps", "expected_exit"),
+    [
+        ("cancel", ("PAPER · Verified broker activity",), ("cancel unfilled entries",), 1),
+        ("notify", ("PAPER · Verified broker activity",), ("notify Telegram",), 1),
+        ("activity", (), ("read recent activity",), 1),
+        (None, (), (), 1),
+        (None, ("UNVERIFIED: broker activity could not be confirmed",), (), 1),
+        (None, ("PAPER · Verified broker activity",), (), 0),
+    ],
+    ids=[
+        "cancel-failed",
+        "notice-failed",
+        "activity-failed",
+        "activity-empty",
+        "activity-unverified",
+        "complete",
+    ],
+)
+def test_SEC_73_cli_panic_exit_reports_completion_without_losing_halt_or_notices(
+    context: module.SecurityContext,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fault: str | None,
+    activity: tuple[str, ...],
+    failed_steps: tuple[str, ...],
+    expected_exit: int,
+) -> None:
+    from vws import execution_cli
+
+    calls: list[str] = []
+    notices: list[str] = []
+    bound = replace(context, emergency_mode="AUTO_PAPER")
+    monkeypatch.setattr(module, "open_context", lambda *_args, **_kwargs: bound)
+
+    async def cancel(*_args: Any) -> None:
+        assert context.state.current() == SystemState.HALTED
+        calls.append("cancel")
+        if fault == "cancel":
+            raise ReconciliationError("Synthetic incomplete panic cancellation")
+
+    async def notify(_context: Any, _store: Any, text: str) -> None:
+        assert context.state.current() == SystemState.HALTED
+        calls.append("notify")
+        notices.append(text)
+        if fault == "notify":
+            raise ConfigurationError("Synthetic notification unavailable")
+
+    async def read_activity(*_args: Any) -> tuple[str, ...]:
+        assert context.state.current() == SystemState.HALTED
+        calls.append("activity")
+        if fault == "activity":
+            raise ConfigurationError("Synthetic activity unavailable")
+        return activity
+
+    monkeypatch.setattr(execution_cli, "panic_cancel", cancel)
+    monkeypatch.setattr(module, "panic_notify", notify)
+    monkeypatch.setattr(module, "panic_activities", read_activity)
+
+    result = cli.main(["ops", "panic", "--operator", "Owner", "--reason", "offline emergency"])
+    output = capsys.readouterr().out
+    assert context.state.current() == SystemState.HALTED
+    assert calls == ["cancel", "notify", "activity"]
+    assert notices == [
+        "HALTED locally. Revoke affected broker and Telegram keys; inspect withdrawals and unknown orders."
+    ]
+    assert "Local state: HALTED" in output
+    if not activity:
+        assert "UNVERIFIED: recent broker activities; inspect the broker dashboard." in output
+    else:
+        assert activity[0] in output
+    for step in failed_steps:
+        assert "UNVERIFIED emergency step: " + step in output
+    # The existing PANIC audit precedes the notification and activity callbacks.
+    audit_failures = ["cancel unfilled entries"] if fault == "cancel" else []
+    assert events(context.engine, "PANIC") == [
+        {"operator": "Owner", "failed_steps": audit_failures}
+    ]
+    context.ledger.verify_chain()
+    assert result == expected_exit
+
+
 def test_SEC_73_cli_panic_still_persists_halt_with_a_corrupted_ledger(
     context: module.SecurityContext,
     monkeypatch: pytest.MonkeyPatch,
@@ -521,7 +609,7 @@ def test_SEC_73_cli_panic_still_persists_halt_with_a_corrupted_ledger(
     monkeypatch.setattr(module, "check_permissions", lambda **kwargs: ())
     monkeypatch.setattr(module, "SystemClock", lambda: context.ledger.clock)
     assert (
-        cli.main(["ops", "panic", "--operator", "Owner", "--reason", "suspected compromise"]) == 0
+        cli.main(["ops", "panic", "--operator", "Owner", "--reason", "suspected compromise"]) == 1
     )
     with transaction(context.engine) as session:
         control = session.get(SystemControl, 1)
@@ -547,7 +635,7 @@ def test_SEC_73_native_keyring_constructor_failure_does_not_prevent_local_halt(
     monkeypatch.setenv("AUTO_MAX_DAILY_ORDERS", "malformed")
     monkeypatch.setattr(module, "check_permissions", lambda **kwargs: ())
     monkeypatch.setattr(module, "SystemClock", lambda: context.ledger.clock)
-    assert cli.main(["ops", "panic", "--operator", "Owner"]) == 0
+    assert cli.main(["ops", "panic", "--operator", "Owner"]) == 1
     assert context.state.current() == SystemState.HALTED
     assert "UNVERIFIED emergency step: cancel unfilled entries" in capsys.readouterr().out
     context.ledger.verify_chain()
@@ -632,7 +720,7 @@ def test_SEC_73_old_schema_panic_halts_without_silent_migration(
     monkeypatch.setenv("DB_URL", str(context.engine.url))
     monkeypatch.setattr(module, "check_permissions", lambda **kwargs: ())
     monkeypatch.setattr(module, "SystemClock", lambda: context.ledger.clock)
-    assert cli.main(["ops", "panic", "--operator", "Owner", "--reason", "local emergency"]) == 0
+    assert cli.main(["ops", "panic", "--operator", "Owner", "--reason", "local emergency"]) == 1
     with transaction(context.engine) as session:
         control = session.get(SystemControl, 1)
         assert control is not None and control.state == SystemState.HALTED.value

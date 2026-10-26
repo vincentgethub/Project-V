@@ -360,6 +360,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(step)
                 for failed in panic_result.failed_steps:
                     print("UNVERIFIED emergency step: " + failed)
+                return int(
+                    bool(panic_result.failed_steps)
+                    or not panic_result.recent_activity
+                    or any(
+                        activity.lstrip().startswith("UNVERIFIED")
+                        for activity in panic_result.recent_activity
+                    )
+                )
             elif args.operation == "apply-config":
                 context.drift.apply(context.config_hash(), args.operator)
                 print("Effective configuration applied; audit event recorded.")
