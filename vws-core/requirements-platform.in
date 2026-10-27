@@ -1,5 +1,5 @@
 # Linux keyring runtime closure also retained when compiling on Windows.
 # These are existing keyring dependencies, not extra application capabilities.
 # Keyring's Linux native Secret Service backend requires both packages.
-SecretStorage>=3.2
-jeepney>=0.4.2
+SecretStorage>=3.5.0
+jeepney>=0.9.0
