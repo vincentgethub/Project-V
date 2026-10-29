@@ -118,7 +118,7 @@ from backend.execution.storage import (
     finalize_shared_order,
     held_quantity,
 )
-from backend.execution.worker import SingleAttemptWorker
+from backend.execution.worker import AttemptNotStartedError, SingleAttemptWorker
 from backend.net.egress import EgressPolicy
 from backend.net.http import make_order_session
 from backend.notifications.callbacks import CallbackClick, FreshInputs, FreshSource, callback_data
@@ -924,6 +924,9 @@ class AlpacaExecutor:
                 "Order attempt canceled; look up the client ID before any recovery",
             )
             raise
+        except AttemptNotStartedError as error:
+            self._outcome(instruction, "NOT_SENT", error)
+            raise EntryAdmissionRevoked(str(error)) from None
         except EntryAdmissionRevoked as error:
             # The physical request guard runs before Session.request. A host
             # downgrade is a verified no-send, not an ambiguous broker failure.

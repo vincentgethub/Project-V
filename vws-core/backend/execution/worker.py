@@ -11,6 +11,10 @@ from backend.data.async_reader import AsyncTokenBucket
 ResultT = TypeVar("ResultT")
 
 
+class AttemptNotStartedError(TimeoutError):
+    """A deadline expired before any physical worker was created."""
+
+
 class SingleAttemptWorker:
     def __init__(self, bucket: AsyncTokenBucket, *, deadline_seconds: int = 30) -> None:
         if type(deadline_seconds) is not int or not 1 <= deadline_seconds <= 30:
@@ -38,23 +42,33 @@ class SingleAttemptWorker:
     ) -> ResultT:
         if self._closed or len(self._workers) >= 2:
             raise ProviderError("Order worker is closed or has two unresolved physical attempts")
-        async with asyncio.timeout(self.deadline_seconds):
-            await self.bucket.acquire()
+        worker: asyncio.Task[ResultT] | None = None
+        try:
+            async with asyncio.timeout(self.deadline_seconds):
+                await self.bucket.acquire()
+                # No await may be added between admission returning and create_task:
+                # otherwise NOT_SENT below would no longer prove zero workers.
 
-            def work() -> ResultT:
-                self._local.admitted, self._local.guard = True, guard
-                try:
-                    guard()
-                    return operation()
-                finally:
-                    del self._local.admitted, self._local.guard
+                def work() -> ResultT:
+                    self._local.admitted, self._local.guard = True, guard
+                    try:
+                        guard()
+                        return operation()
+                    finally:
+                        del self._local.admitted, self._local.guard
 
-            worker = asyncio.create_task(asyncio.to_thread(work))
-            self._workers.add(worker)
-            worker.add_done_callback(self._completed)
-            # Cancel/timeout leaves the physical worker tracked until it exits.
-            # The caller must look up the durable client ID and must not retry.
-            return await asyncio.shield(worker)
+                worker = asyncio.create_task(asyncio.to_thread(work))
+                self._workers.add(worker)
+                worker.add_done_callback(self._completed)
+                # Cancel/timeout leaves the physical worker tracked until it exits.
+                # The caller must look up the durable client ID and must not retry.
+                return await asyncio.shield(worker)
+        except TimeoutError:
+            if worker is None:
+                raise AttemptNotStartedError(
+                    "Order attempt timed out before physical worker creation; no request sent"
+                ) from None
+            raise
 
     @property
     def has_pending_attempts(self) -> bool:
