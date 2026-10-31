@@ -10,6 +10,7 @@ import hmac
 import re
 import ssl
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal, localcontext
 from time import monotonic_ns
@@ -99,6 +100,7 @@ from backend.execution.models import (
     ExitCycleEvidence,
     Submission,
     SubmitOutcome,
+    TransportAttemptEvidence,
 )
 from backend.execution.modes import ModeStore, account_lock, assert_auto_binding
 from backend.execution.policy import (
@@ -118,7 +120,7 @@ from backend.execution.storage import (
     finalize_shared_order,
     held_quantity,
 )
-from backend.execution.worker import AttemptNotStartedError, SingleAttemptWorker
+from backend.execution.worker import AttemptNotStartedError, SingleAttemptWorker, TransportRecord
 from backend.net.egress import EgressPolicy
 from backend.net.http import make_order_session
 from backend.notifications.callbacks import CallbackClick, FreshInputs, FreshSource, callback_data
@@ -657,6 +659,34 @@ class AlpacaExecutor:
         if not isinstance(resolved, str):
             raise ConfigurationError("Execution client endpoint is unavailable")
         assert_broker_endpoint(self.settings, resolved)
+        self.worker.set_transport_recorder(self._record_transport)
+
+    def _record_transport(
+        self, record: TransportRecord, *, broker_order_id: UUID | None = None
+    ) -> None:
+        try:
+            evidence = TransportAttemptEvidence.model_validate(
+                {
+                    "attempt_id": record.attempt_id,
+                    "client_order_id": record.client_order_id,
+                    "account_id": self.modes.account_id,
+                    "environment": self.environment,
+                    "state": record.state.value,
+                    "reason": record.reason,
+                    "timestamp": self.state.clock.now(),
+                    "never_entered_transport": record.never_entered_transport,
+                    "broker_order_id": broker_order_id,
+                }
+            )
+            if record.kind in {"EXECUTION_ATTEMPT_ABANDONED", "EXECUTION_ATTEMPT_UNCERTAIN"}:
+                # Existing durable PAUSE: block entries before acknowledging proof or lookup.
+                self.modes.downgrade("PAUSE", actor="attempt-fence:" + record.attempt_id.hex)
+            self.state.ledger.append(
+                SecurityEvent, kind=record.kind, detail=evidence.model_dump(mode="json")
+            )
+        except Exception as error:
+            self.state.halt_for_error(error)
+            raise
 
     @property
     def environment(self) -> str:
@@ -831,7 +861,10 @@ class AlpacaExecutor:
 
     async def _lookup(self, client_id: str) -> BrokerOrder | None:
         try:
-            raw = await self.worker.attempt(lambda: self.client.get_order_by_client_id(client_id))
+            with self.worker.order_context(client_id):
+                raw = await self.worker.attempt(
+                    lambda: self.client.get_order_by_client_id(client_id)
+                )
         except Exception as error:
             if order_not_found(error):
                 return None
@@ -857,7 +890,12 @@ class AlpacaExecutor:
         )
 
     def _outcome(
-        self, instruction: ExecutionOrderRecord, outcome: str, error: Exception | None = None
+        self,
+        instruction: ExecutionOrderRecord,
+        outcome: str,
+        error: Exception | None = None,
+        *,
+        reason: Literal["fenced before transport"] | None = None,
     ) -> None:
         checked = SubmitOutcome.model_validate(
             {
@@ -866,10 +904,13 @@ class AlpacaExecutor:
                 "environment": self.environment,
                 "outcome": outcome,
                 "error_type": "NONE" if error is None else type(error).__name__,
+                "reason": reason,
             }
         )
         self.state.ledger.append(
-            SecurityEvent, kind="EXECUTION_SUBMIT_OUTCOME", detail=checked.model_dump(mode="json")
+            SecurityEvent,
+            kind="EXECUTION_SUBMIT_OUTCOME",
+            detail=checked.model_dump(mode="json", exclude_none=True),
         )
         if outcome not in {"ACCEPTED", "NOT_SENT"}:
             failures = 0
@@ -899,6 +940,69 @@ class AlpacaExecutor:
                         )
                         break
 
+    async def _lookup_after_attempt(
+        self, instruction: ExecutionOrderRecord, error: Exception
+    ) -> BrokerOrder | None:
+        try:
+            return await self._lookup(instruction.client_order_id)
+        except Exception as lookup_error:
+            self._outcome(instruction, "ERROR", error)
+            self.state.halt_for_error(lookup_error)
+            raise ProviderError("Ambiguous order and failed lookup; HALTED, no retry") from None
+
+    def _durable_transport_proof(self, instruction: ExecutionOrderRecord) -> TransportRecord | None:
+        proof = self.worker.durable_abandonment(instruction.client_order_id)
+        if proof is None:
+            return None
+        # A callback acknowledgement alone is insufficient: the correctly bound
+        # never-entered record must actually exist in this executor's ledger.
+        with DatabaseSession(self.state.engine) as session:
+            saved = session.scalar(
+                select(SecurityEvent.id)
+                .where(
+                    SecurityEvent.kind == "EXECUTION_ATTEMPT_ABANDONED",
+                    SecurityEvent.detail["attempt_id"].as_string() == str(proof.attempt_id),
+                    SecurityEvent.detail["client_order_id"].as_string()
+                    == instruction.client_order_id,
+                    SecurityEvent.detail["account_id"].as_string() == self.modes.account_id,
+                    SecurityEvent.detail["environment"].as_string() == self.environment,
+                    SecurityEvent.detail["state"].as_string() == "ABANDONED",
+                    SecurityEvent.detail["never_entered_transport"].as_boolean().is_(True),
+                )
+                .limit(1)
+            )
+        return proof if saved is not None else None
+
+    async def _confirm_abandoned_submit(
+        self,
+        instruction: ExecutionOrderRecord,
+        proof: TransportRecord,
+        looked_up: BrokerOrder | None,
+        error: Exception,
+    ) -> None:
+        if looked_up is not None:
+            self._record_transport(
+                replace(proof, kind="EXECUTION_ATTEMPT_CONTRADICTION"),
+                broker_order_id=looked_up.order_id,
+            )
+            self._outcome(instruction, "ERROR", error)
+            self.state.escalate(
+                SystemState.HALTED, "Broker order contradicts durable never-sent proof"
+            )
+            await self._trade_notice(
+                f"{self.environment} · HALTED: durable never-entered proof contradicts a broker order; protection repair refused; inspect broker urgently.",
+                True,
+                instruction.order_id,
+            )
+            raise DataIntegrityError(
+                "Broker order contradicts never-entered evidence; no restoration"
+            )
+        self._outcome(instruction, "NOT_SENT", error, reason="fenced before transport")
+        self.state.escalate(
+            SystemState.HALTED,
+            "fenced before transport",
+        )
+
     async def _submit(
         self,
         instruction: ExecutionOrderRecord,
@@ -915,14 +1019,22 @@ class AlpacaExecutor:
             self.settings.stale_quote_seconds,
         )
         try:
-            raw = await self.worker.attempt(lambda: self.client.submit_order(request), guard=guard)
+            with self.worker.order_context(instruction.client_order_id):
+                raw = await self.worker.attempt(
+                    lambda: self.client.submit_order(request), guard=guard
+                )
             broker = parse_order(raw)
             recovered = False
         except asyncio.CancelledError:
+            proof = self._durable_transport_proof(instruction)
             self.state.escalate(
                 SystemState.HALTED,
                 "Order attempt canceled; look up the client ID before any recovery",
             )
+            if proof is not None:
+                canceled = ProviderError("Order attempt canceled before physical transport")
+                looked_up = await self._lookup_after_attempt(instruction, canceled)
+                await self._confirm_abandoned_submit(instruction, proof, looked_up, canceled)
             raise
         except AttemptNotStartedError as error:
             self._outcome(instruction, "NOT_SENT", error)
@@ -935,12 +1047,13 @@ class AlpacaExecutor:
         except Exception as error:
             # Even a nominal reject is checked: a server may have accepted before
             # the response failed. There is never an automatic second POST.
-            try:
-                looked_up = await self._lookup(instruction.client_order_id)
-            except Exception as lookup_error:
-                self._outcome(instruction, "ERROR", error)
-                self.state.halt_for_error(lookup_error)
-                raise ProviderError("Ambiguous order and failed lookup; HALTED, no retry") from None
+            proof = self._durable_transport_proof(instruction)
+            looked_up = await self._lookup_after_attempt(instruction, error)
+            if proof is not None:
+                await self._confirm_abandoned_submit(instruction, proof, looked_up, error)
+                raise EntryAdmissionRevoked(
+                    "Durable never-entered proof and lookup confirm no send"
+                ) from None
             if looked_up is None:
                 rejected = isinstance(error, APIError) and error.status_code in {
                     400,
@@ -1638,9 +1751,10 @@ class AlpacaExecutor:
             previous = bindings(session).get(instruction.id)
         if previous is not None:
             try:
-                raw = await self.worker.attempt(
-                    lambda: self.client.get_order_by_id(previous.order_id)
-                )
+                with self.worker.order_context(instruction.client_order_id):
+                    raw = await self.worker.attempt(
+                        lambda: self.client.get_order_by_id(previous.order_id)
+                    )
                 broker = parse_order(raw, parent_id=previous.parent_id)
             except Exception as error:
                 raise ReconciliationError("Previously bound broker order disappeared") from error
@@ -1813,7 +1927,8 @@ class AlpacaExecutor:
         try:
             # A cancel is also a single physical attempt. On ambiguity read the
             # order; never repeat DELETE blindly or guess that it was canceled.
-            await self.worker.attempt(lambda: self.client.cancel_order_by_id(broker.order_id))
+            with self.worker.order_context(instruction.client_order_id):
+                await self.worker.attempt(lambda: self.client.cancel_order_by_id(broker.order_id))
         except Exception as error:
             self.state.ledger.append(
                 SecurityEvent,
@@ -1827,9 +1942,10 @@ class AlpacaExecutor:
             )
         async with asyncio.timeout(30):
             for attempt in range(3):
-                raw = await self.worker.attempt(
-                    lambda: self.client.get_order_by_id(broker.order_id)
-                )
+                with self.worker.order_context(instruction.client_order_id):
+                    raw = await self.worker.attempt(
+                        lambda: self.client.get_order_by_id(broker.order_id)
+                    )
                 checked = parse_order(raw, parent_id=broker.parent_id)
                 self._observe(instruction, checked)
                 if not checked.is_open:
@@ -2494,6 +2610,23 @@ class AlpacaExecutor:
                 old_stop = new_stop = protected_level
                 approval = None
         try:
+            with DatabaseSession(self.state.engine) as session:
+                contradiction = session.scalar(
+                    select(SecurityEvent)
+                    .where(
+                        SecurityEvent.kind == "EXECUTION_ATTEMPT_CONTRADICTION",
+                        SecurityEvent.detail["account_id"].as_string() == self.modes.account_id,
+                        SecurityEvent.detail["environment"].as_string() == self.environment,
+                        SecurityEvent.detail["client_order_id"]
+                        .as_string()
+                        .in_((journal["new_client_id"], journal["old_client_id"])),
+                    )
+                    .limit(1)
+                )
+            if contradiction is not None:
+                raise DataIntegrityError(
+                    "Durable transport contradiction requires operator review; no restoration"
+                )
             if self.worker.has_pending_attempts:
                 raise ReconciliationError(
                     "EX-05: unresolved physical attempt forbids a conflicting repair"
@@ -2849,6 +2982,7 @@ class AlpacaExecutor:
             ):
                 evidence = SubmitOutcome.model_validate(event.detail)
                 if evidence.execution_order_id == instruction.id:
+                    # Created-worker NOT_SENT needs durable abandonment plus a clear lookup.
                     return evidence.outcome in {"NOT_SENT", "REJECTED"}
         return False
 

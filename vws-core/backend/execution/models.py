@@ -176,6 +176,19 @@ class SubmitOutcome(FrozenModel):
     environment: Environment
     outcome: Literal["ACCEPTED", "REJECTED", "ERROR", "NOT_SENT"]
     error_type: str = Field(strict=True, min_length=1, max_length=128)
+    reason: Literal["fenced before transport"] | None = None
+
+
+class TransportAttemptEvidence(FrozenModel):
+    attempt_id: UUID
+    client_order_id: str | None = Field(max_length=128)
+    account_id: str = Field(strict=True, min_length=1, max_length=128)
+    environment: Environment
+    state: Literal["PENDING", "ENTERED", "ABANDONED"]
+    reason: Literal["timeout", "cancelled"]
+    timestamp: UTCDateTime
+    never_entered_transport: bool = Field(strict=True)
+    broker_order_id: UUID | None = None
 
 
 class AutoPrerequisites(FrozenModel):
