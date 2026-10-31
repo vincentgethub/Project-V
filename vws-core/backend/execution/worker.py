@@ -112,10 +112,7 @@ class TransportAttempt:
             recorder = None if self._refused else self._recorder
             self._refused = True
         if recorder is not None:
-            try:
-                recorder(record)
-            except Exception:
-                pass  # The recorder halts on failure; transport is still refused.
+            recorder(record)
 
     def proof(self, client_order_id: str) -> TransportRecord | None:
         with self._lock:
@@ -133,13 +130,20 @@ class SingleAttemptWorker:
         self._closed = False
         self._transport_bound = False
         self._recorder: Callable[[TransportRecord], None] | None = None
+        self._refusal_error: Callable[[Exception], object] | None = None
         self._client_id: ContextVar[str | None] = ContextVar("attempt-client-id", default=None)
         self._attempt: ContextVar[TransportAttempt | None] = ContextVar(
             "transport-attempt", default=None
         )
 
-    def set_transport_recorder(self, recorder: Callable[[TransportRecord], None]) -> None:
+    def set_transport_recorder(
+        self,
+        recorder: Callable[[TransportRecord], None],
+        *,
+        on_refusal_error: Callable[[Exception], object] | None = None,
+    ) -> None:
         self._recorder = recorder
+        self._refusal_error = on_refusal_error
 
     @contextmanager
     def order_context(self, client_order_id: str) -> Iterator[None]:
@@ -192,11 +196,22 @@ class SingleAttemptWorker:
                     try:
                         guard()
                         return operation()
-                    except Exception:
-                        attempt.audit_refusal()
+                    except Exception as original:
+                        try:
+                            attempt.audit_refusal()
+                        except Exception as audit_error:
+                            original.add_note(f"Refusal audit failed: {type(audit_error).__name__}")
+                            if self._refusal_error is not None:
+                                try:
+                                    self._refusal_error(audit_error)
+                                except Exception as halt_error:
+                                    original.add_note(
+                                        f"Refusal HALT notification failed: {type(halt_error).__name__}"
+                                    )
                         raise
                     finally:
-                        del self._local.admitted, self._local.guard, self._local.attempt
+                        for name in ("admitted", "guard", "attempt"):
+                            self._local.__dict__.pop(name, None)
 
                 worker = asyncio.create_task(asyncio.to_thread(work))
                 self._workers.add(worker)

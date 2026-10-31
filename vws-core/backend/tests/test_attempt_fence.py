@@ -17,7 +17,12 @@ from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from backend.core.database import ExecutionOrderRecord, Order, SecurityEvent
-from backend.core.errors import ExecutionDisabledError, ProviderError, SafetyError
+from backend.core.errors import (
+    EntryAdmissionRevoked,
+    ExecutionDisabledError,
+    ProviderError,
+    SafetyError,
+)
 from backend.core.system_state import SystemState
 from backend.execution.alpaca_executor import (
     AlpacaExecutor,
@@ -162,6 +167,8 @@ class PhysicalPaperBroker(CountingPaperBroker):
         self.entry_flags: list[bool] = []
         self.requests: dict[str, ExactLimit | ExactStop] = {}
         self.contradiction: str | None = None
+        self.submit_error: tuple[str, Exception] | None = None
+        self.failed_states: list[TransportState] = []
 
     @contextmanager
     def physical(self, kind: str, identity: str) -> Iterator[None]:
@@ -197,6 +204,10 @@ class PhysicalPaperBroker(CountingPaperBroker):
         self.requests[identity] = order_data
         with self.physical("submit", identity):
             self.submit_calls += 1
+            if self.submit_error is not None and self.submit_error[0] == identity:
+                assert self.worker is not None
+                self.failed_states.append(self.worker._local.attempt._state)
+                raise self.submit_error[1]
             return self._submit_paper(order_data)
 
     def cancel_order_by_id(self, order_id: UUID | str) -> None:
@@ -765,4 +776,268 @@ async def test_A8_real_session_boundary_has_one_winner_and_no_intervening_databa
     finally:
         gate.release.set()
         event.remove(harness.state.engine, "before_cursor_execute", observe_io)
+        await built.close()
+
+
+class HaltNotices:
+    """Record the existing synchronous critical HALT notification boundary."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def notify(self, state: str, reason: str) -> None:
+        self.calls.append((state, reason))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_A9_entered_transport_error_is_uncertain_and_never_restores(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built, client, entry, _ = await held_position(harness)
+    assert entry.stop_price is not None
+    qty = int(client.positions[0]["qty"])
+    journal = built._begin_protection_repair(entry, qty, entry.stop_price, entry.stop_price)
+    identity, restoration = str(journal["new_client_id"]), str(journal["old_client_id"])
+    client.submit_error = identity, ConnectionError("Offline transport failed after admission")
+    notices: list[tuple[str, bool]] = []
+
+    async def notice(text: str, urgent: bool) -> None:
+        notices.append((text, urgent))
+
+    monkeypatch.setattr(built, "notify", notice)
+    try:
+        with pytest.raises(SafetyError):
+            await built._journaled_stop_repair(entry, qty, entry.stop_price, entry.stop_price)
+        assert client.failed_states == [TransportState.ENTERED]
+        assert client.transport.count(("submit", identity)) == 1
+        assert client.transport.count(("submit", restoration)) == 0
+        instruction = next(row for row in built._instructions() if row.client_order_id == identity)
+        outcomes = [
+            row
+            for row in evidence(harness, "EXECUTION_SUBMIT_OUTCOME")
+            if row["execution_order_id"] == str(instruction.id)
+        ]
+        assert [row["outcome"] for row in outcomes] == ["ERROR"]
+        assert all(row.get("reason") != "fenced before transport" for row in outcomes)
+        for kind in ("EXECUTION_ATTEMPT_ABANDONED", "EXECUTION_ATTEMPT_UNCERTAIN"):
+            assert not any(
+                row["client_order_id"] == identity and row["never_entered_transport"] is True
+                for row in evidence(harness, kind)
+            )
+        assert harness.state.current() == SystemState.HALTED
+        assert any(urgent and "repair failed" in text for text, urgent in notices)
+        harness.state.ledger.verify_chain()
+    finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+@pytest.mark.parametrize("method_failure", [False, True])
+async def test_A10_refusal_audit_failure_preserves_original_and_halts_with_critical_notice(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, method_failure: bool
+) -> None:
+    client = PhysicalPaperBroker(harness)
+    built, intent, _, _ = await prepared_submit(harness, client, monkeypatch)
+    notices = HaltNotices()
+    harness.state.notifier.delegate = notices
+    recorder = built.worker._recorder
+    assert recorder is not None
+    audit_error = OSError("Offline refusal write failed")
+    originals: list[ProviderError] = []
+    attempts: list[TransportAttempt] = []
+
+    def failed_recorder(record: TransportRecord) -> None:
+        if record.kind == "EXECUTION_ATTEMPT_REFUSED":
+            raise audit_error
+        recorder(record)
+
+    def failed_audit(attempt: TransportAttempt) -> None:
+        raise audit_error
+
+    def operation() -> None:
+        attempt = built.worker._local.attempt
+        attempts.append(attempt)
+        attempt.bind_boundary()
+        attempt.abandon("timeout")
+        try:
+            built.worker.before_request()
+        except ProviderError as original:
+            originals.append(original)
+            raise
+
+    monkeypatch.setattr(built.worker, "_recorder", failed_recorder)
+    if method_failure:
+        monkeypatch.setattr(TransportAttempt, "audit_refusal", failed_audit)
+    try:
+        with built.worker.order_context(intent.client_order_id):
+            with pytest.raises(ProviderError) as caught:
+                await built.worker.attempt(operation)
+        assert caught.value is originals[0], "the original transport veto must stay primary"
+        assert harness.state.current() == SystemState.HALTED
+        assert ("HALTED", "fault: OSError") in notices.calls
+        assert any("OSError" in note for note in caught.value.__notes__)
+        assert attempts[0].proof(intent.client_order_id) is not None
+        assert evidence(harness, "EXECUTION_ATTEMPT_ABANDONED")
+        assert not evidence(harness, "EXECUTION_ATTEMPT_REFUSED")
+        assert client.posts == []
+    finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+@pytest.mark.parametrize("refusal_write_fails", [False, True])
+async def test_A11_complete_abandoned_repair_has_exact_transport_counts(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, refusal_write_fails: bool
+) -> None:
+    built, client, entry, old_stop = await held_position(harness)
+    assert entry.stop_price is not None
+    qty = int(client.positions[0]["qty"])
+    journal = built._begin_protection_repair(entry, qty, entry.stop_price, entry.stop_price)
+    identity, restoration = str(journal["new_client_id"]), str(journal["old_client_id"])
+    notices = HaltNotices()
+    harness.state.notifier.delegate = notices
+    append = harness.state.ledger.append
+
+    def refuse_audit_write(model: type[Any], **fields: Any) -> Any:
+        if fields.get("kind") == "EXECUTION_ATTEMPT_REFUSED":
+            raise OSError("Offline refusal write failed after durable proof")
+        return append(model, **fields)
+
+    if refusal_write_fails:
+        monkeypatch.setattr(harness.state.ledger, "append", refuse_audit_write)
+    gate = Gate()
+    client.gates["submit", identity] = gate
+    task = asyncio.create_task(
+        built._journaled_stop_repair(entry, qty, entry.stop_price, entry.stop_price)
+    )
+    try:
+        await gate.entered.wait()
+        result, error = await settle(task)
+        late_workers = tuple(built.worker._workers)
+        gate.release.set()
+        await gate.exited.wait()
+        await built.close()
+        assert result is not None and error is None
+        counts = {
+            kind: sum(saved == kind for saved, _ in client.transport)
+            for kind in ("lookup", "read", "cancel", "submit", "account", "positions", "orders")
+        }
+        print("A11 full repair transport counts:", counts)
+        assert client.transport.count(("lookup", identity)) == 3
+        assert client.transport.count(("lookup", restoration)) == 1
+        assert client.transport.count(("submit", identity)) == 0
+        assert client.transport.count(("submit", restoration)) == 1
+        # The existing OCO cancel closes its sibling too: one cancel, not two.
+        # Read-bound checks both children twice, polls the cancel once, then
+        # confirms the restoration once. Three client-ID reads use the failed
+        # new ID (preflight, ambiguity, cancel-new proof); one preflights restore.
+        assert counts == {
+            "lookup": 4,
+            "read": 6,
+            "cancel": 1,
+            "submit": 1,
+            "account": 5,
+            "positions": 5,
+            "orders": 5,
+        }
+        with Session(harness.state.engine) as session:
+            proved = bindings(session)
+            target = next(row for row in built._instructions() if row.role == "TARGET")
+            restored = next(
+                row for row in built._instructions() if row.client_order_id == restoration
+            )
+            canceled = [identity for kind, identity in client.transport if kind == "cancel"]
+            old_ids = {str(proved[row.id].order_id) for row in (old_stop, target)}
+            assert len(canceled) == 1 and canceled[0] in old_ids
+            for broker_id in old_ids:
+                expected = 3 if broker_id == canceled[0] else 2
+                assert client.transport.count(("read", broker_id)) == expected
+            assert client.transport.count(("read", str(proved[restored.id].order_id))) == 1
+        assert coverage(harness, client, entry) == qty
+        assert len(active_stops(client)) == 1
+        confirmed_cancel_before_restore(harness, old_stop, restoration)
+        assert harness.state.current() == SystemState.HALTED
+        if refusal_write_fails:
+            assert ("HALTED", "fault: OSError") in notices.calls
+            assert not evidence(harness, "EXECUTION_ATTEMPT_REFUSED")
+            assert evidence(harness, "EXECUTION_ATTEMPT_ABANDONED")
+            assert len(late_workers) == 1
+            late_error = late_workers[0].exception()
+            assert isinstance(late_error, ProviderError)
+            assert "Abandoned attempt refused" in str(late_error)
+            assert any("OSError" in note for note in late_error.__notes__)
+        harness.state.ledger.verify_chain()
+    finally:
+        gate.release.set()
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_A12_hook_guard_typed_veto_is_not_sent_without_uncertainty(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built, intent, request, _ = await prepared_submit(
+        harness, CountingPaperBroker(harness), monkeypatch
+    )
+    client = TradingClient(
+        api_key="TEST_ONLY_PAPER_ID", secret_key="TEST_ONLY_PAPER_SECRET", paper=True, raw_data=True
+    )
+    built.client = client
+    veto = EntryAdmissionRevoked("Offline host veto at physical hook")
+    calls: list[str] = []
+    guard_calls = 0
+
+    def guard() -> None:
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls == 2:
+            raise veto
+
+    def wire(session: RequestsSession, method: str, url: str, **kwargs: Any) -> Response:
+        calls.append("physical request")
+        raise AssertionError("Typed physical veto must precede Session.request")
+
+    configure_execution_client(
+        client,
+        harness.settings,
+        EgressPolicy(build_allowlist(mode="AUTO_PAPER"), harness.state.ledger),
+        before_request=built.worker.before_request,
+    )
+    monkeypatch.setattr(RequestsSession, "request", wire)
+    try:
+        with pytest.raises(EntryAdmissionRevoked) as caught:
+            await built._submit(intent, request, guard=guard)
+        assert caught.value is veto
+        assert guard_calls == 2 and calls == []
+        saved = evidence(harness, "EXECUTION_SUBMIT_OUTCOME")[-1]
+        assert saved["outcome"] == "NOT_SENT" and saved["error_type"] == "EntryAdmissionRevoked"
+        assert not evidence(harness, "EXECUTION_ATTEMPT_UNCERTAIN")
+        assert not evidence(harness, "EXECUTION_ATTEMPT_ABANDONED")
+        assert harness.state.current() == SystemState.RUNNING
+    finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+@pytest.mark.parametrize("missing", ["admitted", "guard", "attempt"])
+async def test_A13_missing_thread_local_cleanup_preserves_primary_exception(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    built, _, _, _ = await prepared_submit(harness, CountingPaperBroker(harness), monkeypatch)
+    primary = ProviderError("Offline primary operation failure")
+
+    def operation() -> None:
+        delattr(built.worker._local, missing)
+        raise primary
+
+    try:
+        with pytest.raises(ProviderError) as caught:
+            await built.worker.attempt(operation)
+        assert caught.value is primary, "cleanup must never replace the primary exception"
+    finally:
         await built.close()

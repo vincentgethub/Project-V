@@ -659,7 +659,9 @@ class AlpacaExecutor:
         if not isinstance(resolved, str):
             raise ConfigurationError("Execution client endpoint is unavailable")
         assert_broker_endpoint(self.settings, resolved)
-        self.worker.set_transport_recorder(self._record_transport)
+        self.worker.set_transport_recorder(
+            self._record_transport, on_refusal_error=self.state.halt_for_error
+        )
 
     def _record_transport(
         self, record: TransportRecord, *, broker_order_id: UUID | None = None
