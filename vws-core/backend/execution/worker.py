@@ -144,6 +144,8 @@ class SingleAttemptWorker:
     ) -> None:
         if on_refusal_error is None:
             raise ConfigurationError("Order worker requires a refusal-error HALT callback")
+        if recorder is None:
+            raise ConfigurationError("Order worker requires a transport recorder")
         self._recorder = recorder
         self._refusal_error = on_refusal_error
 
@@ -163,6 +165,8 @@ class SingleAttemptWorker:
         """Only one physical HTTP call may consume the already admitted token."""
         if self._refusal_error is None:
             raise ConfigurationError("Order worker requires a refusal-error HALT callback")
+        if self._recorder is None:
+            raise ConfigurationError("Order worker requires a transport recorder")
         if not getattr(self._local, "admitted", False):
             raise ProviderError("SDK request has no one-attempt admission")
         self._local.admitted = False
