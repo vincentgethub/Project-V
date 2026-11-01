@@ -10,7 +10,7 @@ from enum import StrEnum
 from typing import Any, Literal, TypeVar
 from uuid import UUID, uuid4
 
-from backend.core.errors import ProviderError
+from backend.core.errors import ConfigurationError, ProviderError
 from backend.data.async_reader import AsyncTokenBucket
 
 ResultT = TypeVar("ResultT")
@@ -140,8 +140,10 @@ class SingleAttemptWorker:
         self,
         recorder: Callable[[TransportRecord], None],
         *,
-        on_refusal_error: Callable[[Exception], object] | None = None,
+        on_refusal_error: Callable[[Exception], object],
     ) -> None:
+        if on_refusal_error is None:
+            raise ConfigurationError("Order worker requires a refusal-error HALT callback")
         self._recorder = recorder
         self._refusal_error = on_refusal_error
 
@@ -159,6 +161,8 @@ class SingleAttemptWorker:
 
     def before_request(self) -> None:
         """Only one physical HTTP call may consume the already admitted token."""
+        if self._refusal_error is None:
+            raise ConfigurationError("Order worker requires a refusal-error HALT callback")
         if not getattr(self._local, "admitted", False):
             raise ProviderError("SDK request has no one-attempt admission")
         self._local.admitted = False
