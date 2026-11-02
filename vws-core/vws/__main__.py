@@ -88,6 +88,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     report_parser.add_parser("monthly").add_argument("--month", required=True)
     ops = commands.add_parser("ops").add_subparsers(dest="operation", required=True)
+    clear_intent = ops.add_parser("clear-intent")
+    for option in ("intent", "account", "environment", "operator", "reason"):
+        clear_intent.add_argument("--" + option, required=True)
     attest = ops.add_parser("attest")
     attest.add_argument("item")
     attest.add_argument("--operator", required=True)
@@ -123,6 +126,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.healthcheck and args.command is None:
         parser.error("a command is required")
     try:
+        if args.command == "ops" and args.operation == "clear-intent":
+            from vws.intent_cli import execute as intent_execute
+
+            return intent_execute(
+                intent=args.intent,
+                account=args.account,
+                environment=args.environment,
+                operator=args.operator,
+                reason=args.reason,
+                env_file=args.env_file,
+            )
         if args.healthcheck:
             from backend.core.clock import SystemClock
             from backend.ops.process import heartbeat_is_fresh
@@ -309,6 +323,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif args.command == "doctor":
                 result = asyncio.run(security.doctor_result(context, store))
                 for line in result.lines():
+                    print(line)
+                from backend.ops.doctor import intent_hints
+
+                for line in intent_hints(context.settings, security.PROJECT):
                     print(line)
                 return result.exit_code
             elif args.command == "ledger":

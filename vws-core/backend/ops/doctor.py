@@ -40,6 +40,22 @@ class Check(FrozenModel):
     fix: str = Field(min_length=1, max_length=280)
 
 
+def intent_hints(settings: Settings, project: Path) -> tuple[str, ...]:
+    """Display only: no DoctorResult check, exit-code or readiness changes."""
+    from backend.execution.intent_resolution import IntentRefusal, SnapshotReader
+
+    try:
+        rows = SnapshotReader(settings, project).submitted()
+        return tuple(
+            f"Unresolved SUBMITTED intent {identity}. Dry-run hint: python -m vws ops clear-intent --intent {identity} --account {account} --environment {environment} --operator NAME --reason REASON"
+            for identity, account, environment in rows
+        )
+    except IntentRefusal:
+        return (
+            "UNVERIFIED: stuck-intent inventory unavailable; dry-run ledger snapshot could not be read.",
+        )
+
+
 class DoctorResult(FrozenModel):
     checks: tuple[Check, ...] = Field(min_length=1, max_length=100)
 

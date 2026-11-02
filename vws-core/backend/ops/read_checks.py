@@ -7,7 +7,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from alpaca.trading.enums import AccountStatus
@@ -20,6 +20,9 @@ from backend.core.logging import register_secrets
 from backend.domain.models import FrozenModel, Money
 from backend.net.egress import EgressPolicy
 from backend.net.http import make_client
+
+if TYPE_CHECKING:
+    from backend.execution.models import IntentBrokerSnapshot, IntentOrderView, IntentSnapshot
 
 
 def _nonfinite(value: str) -> object:
@@ -313,3 +316,192 @@ class ReadChecksClient:
         except (ValueError, ArithmeticError):
             raise DataIntegrityError("FRED credential check remains unverified") from None
         return result
+
+
+class IntentReadClient:
+    """Fix G-a: GET-only surface; canonical HTTP and egress policy unchanged."""
+
+    def __init__(
+        self, settings: Settings, account: str, policy: EgressPolicy, clock: Clock
+    ) -> None:
+        from backend.execution.intent_resolution import IntentRefusal
+
+        if not settings.paper_trading or settings.broker_endpoint != PAPER_BROKER_ENDPOINT:
+            raise IntentRefusal("FIX_G_PAPER_ONLY")
+        self.settings, self.account, self.policy, self.clock = settings, account, policy, clock
+
+    async def _fetch(
+        self, path: str, *, params: dict[str, str] | None = None, absence: bool = False
+    ) -> object:
+        from backend.execution.intent_resolution import IntentRefusal
+
+        try:
+            async with make_client(
+                "alpaca", policy=self.policy, allow_redirects=False, max_response_bytes=2_097_152
+            ) as client:
+                response = await client.get(
+                    self.settings.broker_endpoint + path,
+                    headers=ReadChecksClient.broker_headers(
+                        self.settings.broker_api_key, self.settings.broker_secret_key
+                    ),
+                    params=params,
+                )
+            if absence and response.status_code == 404:
+                return None
+            if response.status_code != 200:
+                raise ValueError("Unverified response")
+            return json.loads(
+                response.text,
+                parse_float=Decimal,
+                parse_constant=_nonfinite,
+                object_pairs_hook=_unique_object,
+            )
+        except Exception:
+            raise IntentRefusal("FIX_G_LOOKUP_UNVERIFIED") from None
+
+    async def _account(self) -> None:
+        from backend.execution.intent_resolution import IntentRefusal
+
+        raw = await self._fetch("/v2/account")
+        if not isinstance(raw, dict) or raw.get("id") != self.account:
+            raise IntentRefusal("FIX_G_ACCOUNT_MISMATCH")
+
+    @staticmethod
+    def _whole(value: object) -> int:
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            raise ValueError("Whole shares required")
+        number = Decimal(value)
+        if not number.is_finite() or number < 0 or number != number.to_integral_value():
+            raise ValueError("Whole shares required")
+        return int(number)
+
+    @staticmethod
+    def _order(raw: object) -> "IntentOrderView":
+        from backend.execution.models import IntentOrderView
+
+        if not isinstance(raw, dict):
+            raise ValueError("Order mapping required")
+        return IntentOrderView.model_validate(
+            {
+                "order_id": raw["id"],
+                "client_order_id": raw["client_order_id"],
+                "symbol": raw["symbol"],
+                "side": raw["side"],
+                "qty": IntentReadClient._whole(raw["qty"]),
+                "filled_qty": IntentReadClient._whole(raw["filled_qty"]),
+                "status": raw["status"],
+            }
+        )
+
+    async def open_orders(self) -> tuple["IntentOrderView", ...]:
+        from backend.core.execution_policy import ORDER_HTTP_PATH
+        from backend.execution.intent_resolution import IntentRefusal
+
+        try:
+            await self._account()
+            raw = await self._fetch(
+                ORDER_HTTP_PATH, params={"status": "open", "limit": "500", "nested": "true"}
+            )
+            if not isinstance(raw, list) or len(raw) >= 500:
+                raise IntentRefusal("FIX_G_PROOF_INCOMPLETE")
+            rows = []
+            for root in raw:
+                rows.append(self._order(root))
+                legs = root.get("legs") or []
+                if not isinstance(legs, list) or len(legs) > 2:
+                    raise ValueError("Bounded nested orders required")
+                rows.extend(self._order(leg) for leg in legs)
+            if len({row.order_id for row in rows}) != len(rows):
+                raise ValueError("Duplicate open orders")
+            return tuple(rows)
+        except IntentRefusal:
+            raise
+        except Exception:
+            raise IntentRefusal("FIX_G_LOOKUP_UNVERIFIED") from None
+
+    async def snapshot(self, intent: "IntentSnapshot") -> "IntentBrokerSnapshot":
+        from backend.core.execution_policy import ORDER_HTTP_PATH
+        from backend.execution.intent_resolution import IntentRefusal
+        from backend.execution.models import IntentBrokerSnapshot, payload_instant
+
+        try:
+            await self._account()
+            raw = await self._fetch(
+                ORDER_HTTP_PATH + ":by_client_order_id",
+                params={"client_order_id": intent.client_order_id},
+                absence=True,
+            )
+            order = None if raw is None else self._order(raw)
+            if order is not None and (
+                order.client_order_id != intent.client_order_id
+                or (order.symbol, order.side, order.qty) != (intent.symbol, intent.side, intent.qty)
+            ):
+                raise ValueError("Order identity differs")
+            if intent.broker_order_id is not None:
+                by_id = await self._fetch(
+                    ORDER_HTTP_PATH + "/" + str(intent.broker_order_id), absence=True
+                )
+                if by_id is None or order is None:
+                    raise IntentRefusal("FIX_G_CONTRADICTION")
+                if self._order(by_id) != order or order.order_id != intent.broker_order_id:
+                    raise ValueError("Bound identities differ")
+            positions = await self._fetch("/v2/positions")
+            if not isinstance(positions, list) or len(positions) >= 500:
+                raise IntentRefusal("FIX_G_PROOF_INCOMPLETE")
+            quantities: dict[str, int] = {}
+            for position in positions:
+                if (
+                    not isinstance(position, dict)
+                    or not isinstance(position.get("symbol"), str)
+                    or position["symbol"] in quantities
+                    or position.get("side") != "long"
+                ):
+                    raise ValueError("Unverified positions")
+                quantities[position["symbol"]] = self._whole(position["qty"])
+            end = self.clock.now()
+            activities = await self._fetch(
+                "/v2/account/activities",
+                params={
+                    "after": intent.submitted_at.isoformat(),
+                    "until": end.isoformat(),
+                    "direction": "asc",
+                    "page_size": "100",
+                },
+            )
+            if not isinstance(activities, list) or len(activities) >= 100:
+                raise IntentRefusal("FIX_G_PROOF_INCOMPLETE")
+            identities: list[str] = []
+            filled = 0
+            for activity in activities:
+                if (
+                    not isinstance(activity, dict)
+                    or not isinstance(activity.get("id"), str)
+                    or not 1 <= len(activity["id"]) <= 128
+                    or activity["id"] in identities
+                ):
+                    raise ValueError("Unverified activities")
+                identities.append(activity["id"])
+                if activity.get("activity_type") == "FILL":
+                    occurred = payload_instant(activity["transaction_time"])
+                    if not intent.submitted_at <= occurred <= end:
+                        raise ValueError("Activity outside intent lifetime")
+                    activity_order = UUID(activity["order_id"])
+                    if (order is not None and activity_order == order.order_id) or (
+                        order is None and activity.get("symbol") == intent.symbol
+                    ):
+                        filled += self._whole(activity["qty"])
+            opened = await self.open_orders()
+            return IntentBrokerSnapshot(
+                observed_at=self.clock.now(),
+                order=order,
+                not_found=raw is None,
+                position_qty=quantities.get(intent.symbol, 0),
+                fill_qty=filled,
+                activity_ids=tuple(sorted(identities)),
+                complete=True,
+                open_orders=opened,
+            )
+        except IntentRefusal:
+            raise
+        except Exception:
+            raise IntentRefusal("FIX_G_LOOKUP_UNVERIFIED") from None

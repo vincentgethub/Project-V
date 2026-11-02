@@ -57,6 +57,84 @@ OPEN_STATUSES = frozenset(
 TERMINAL_STATUSES = frozenset({"filled", "canceled", "expired", "rejected"})
 
 
+class IntentOrderView(FrozenModel):
+    """Sanitized GET evidence; no broker free text or rejection message."""
+
+    order_id: UUID
+    client_order_id: str = Field(strict=True, min_length=1, max_length=128)
+    symbol: Symbol
+    side: Literal["buy", "sell"]
+    qty: PositiveQty
+    filled_qty: NonnegativeQty
+    status: OrderStatus
+
+
+class IntentBrokerSnapshot(FrozenModel):
+    observed_at: UTCDateTime
+    order: IntentOrderView | None
+    not_found: bool = Field(default=False, strict=True)
+    position_qty: NonnegativeQty
+    fill_qty: NonnegativeQty
+    activity_ids: tuple[str, ...]
+    complete: bool = Field(strict=True)
+    open_orders: tuple[IntentOrderView, ...] = ()
+
+    @property
+    def taken_at(self) -> datetime:
+        return self.observed_at
+
+
+class IntentSnapshot(FrozenModel):
+    intent_id: UUID
+    order_id: UUID
+    client_order_id: str = Field(strict=True, min_length=1, max_length=128)
+    account: str = Field(strict=True, min_length=1, max_length=128)
+    environment: Environment
+    symbol: Symbol
+    side: Literal["buy", "sell"]
+    qty: PositiveQty
+    submitted_at: UTCDateTime
+    broker_order_id: UUID | None
+    position_qty: NonnegativeQty
+    filled_qty: NonnegativeQty
+    audit_id: UUID
+    audit_seq: int = Field(strict=True, gt=0)
+    state: Literal["RUNNING", "REDUCE_ONLY", "HALTED"]
+    state_id: UUID | None
+    state_version: int = Field(strict=True, ge=0)
+    mode: ExecutionMode
+    override_mode: ExecutionMode | None
+    paused: bool = Field(strict=True)
+    pause_owner: str | None
+    contradiction: bool = Field(strict=True)
+
+
+class IntentDryRun(FrozenModel):
+    intent_id: UUID
+    account: str
+    environment: Literal["PAPER"] = "PAPER"
+    outcome: Literal["TERMINAL", "QUALIFIED_NOT_FOUND"]
+    status: OrderStatus | None
+    pause_owner: str | None
+    apply_allowed: Literal[False] = False
+
+    def lines(self) -> tuple[str, ...]:
+        owner = "none" if self.pause_owner is None else "other owner (redacted)"
+        if self.pause_owner is not None and self.pause_owner.startswith("attempt-fence:"):
+            try:
+                owner = "attempt-fence:" + UUID(self.pause_owner.removeprefix("attempt-fence:")).hex
+            except ValueError:
+                pass
+        return (
+            f"Dry run: intent {self.intent_id}; account {self.account}; PAPER.",
+            f"Path A evidence: {self.outcome}; status {self.status or 'NOT_FOUND'}; apply permitted: NO.",
+            f"Pause owner: {owner}.",
+            "Quiescence: UNVERIFIED (standalone panic not coordinated). A later apply would REFUSE until panic coordination is built.",
+            "Ledger chain NOT verified by dry-run; a later apply must verify it.",
+            "A separately approved apply could record resolution; it must preserve HALT and effective PAUSE. No order, sell, restoration, resubmit or reset is authorized.",
+        )
+
+
 def payload_instant(value: object) -> datetime:
     if isinstance(value, datetime):
         return ensure_utc(value)
