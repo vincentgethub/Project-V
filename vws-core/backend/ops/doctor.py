@@ -56,6 +56,14 @@ def intent_hints(settings: Settings, project: Path) -> tuple[str, ...]:
         )
 
 
+def quiescence_hints(project: Path) -> tuple[str, ...]:
+    """Display only: an incomplete invocation never becomes a readiness gate."""
+    from backend.ops.quiescence import BrokerCoordination
+
+    message = BrokerCoordination(project).doctor_message()
+    return () if message is None else (message,)
+
+
 class DoctorResult(FrozenModel):
     checks: tuple[Check, ...] = Field(min_length=1, max_length=100)
 

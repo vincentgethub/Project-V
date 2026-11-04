@@ -117,6 +117,7 @@ class IntentDryRun(FrozenModel):
     status: OrderStatus | None
     pause_owner: str | None
     apply_allowed: Literal[False] = False
+    quiescence_verified: bool = Field(default=False, strict=True)
 
     def lines(self) -> tuple[str, ...]:
         owner = "none" if self.pause_owner is None else "other owner (redacted)"
@@ -129,7 +130,11 @@ class IntentDryRun(FrozenModel):
             f"Dry run: intent {self.intent_id}; account {self.account}; PAPER.",
             f"Path A evidence: {self.outcome}; status {self.status or 'NOT_FOUND'}; apply permitted: NO.",
             f"Pause owner: {owner}.",
-            "Quiescence: UNVERIFIED (standalone panic not coordinated). A later apply would REFUSE until panic coordination is built.",
+            (
+                "Quiescence: VERIFIED for this sampled window (runtime lock, eight broker slots, unchanged epoch); paper residual risk applies; no cached apply authorization."
+                if self.quiescence_verified
+                else "Quiescence: UNVERIFIED (standalone panic not coordinated). A later apply would REFUSE until panic coordination is built."
+            ),
             "Ledger chain NOT verified by dry-run; a later apply must verify it.",
             "A separately approved apply could record resolution; it must preserve HALT and effective PAUSE. No order, sell, restoration, resubmit or reset is authorized.",
         )

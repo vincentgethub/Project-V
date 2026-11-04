@@ -11,6 +11,7 @@ from sqlalchemy import create_engine
 
 from backend.core.clock import SystemClock
 from backend.core.ledger import Ledger
+from backend.execution.coordinated_intent import CoordinatedResolver
 from backend.execution.intent_resolution import (
     IntentRefusal,
     SnapshotReader,
@@ -18,6 +19,7 @@ from backend.execution.intent_resolution import (
     validate_request,
 )
 from backend.net.egress import EgressPolicy, build_allowlist
+from backend.ops.quiescence import BrokerCoordination
 from backend.ops.read_checks import IntentReadClient
 from backend.security.secrets import KeyringSecretStore
 from vws.host_config import load_host_settings
@@ -65,17 +67,19 @@ def execute(
         policy = EgressPolicy(build_allowlist(), Ledger(engine, clock))
         broker = IntentReadClient(settings, account, policy, clock)
         result = asyncio.run(
-            dry_run(
-                reader,
-                broker,
-                clock,
-                intent_id=identity,
-                account=account,
-                environment=environment,
-                operator=operator,
-                reason=reason,
-                host=host,
-                waiter=RealSnapshotWaiter(),
+            CoordinatedResolver(BrokerCoordination(project)).run(
+                lambda: dry_run(
+                    reader,
+                    broker,
+                    clock,
+                    intent_id=identity,
+                    account=account,
+                    environment=environment,
+                    operator=operator,
+                    reason=reason,
+                    host=host,
+                    waiter=RealSnapshotWaiter(),
+                )
             )
         )
         for line in result.lines():
@@ -84,11 +88,6 @@ def execute(
     except IntentRefusal as error:
         print(str(error), file=sys.stderr)
         logging.getLogger(__name__).warning("%s", error)
-        return 1
-    except Exception:
-        failure = IntentRefusal("FIX_G_QUIESCENCE_UNVERIFIED")
-        print(str(failure), file=sys.stderr)
-        logging.getLogger(__name__).warning("%s", failure)
         return 1
     finally:
         if engine is not None:

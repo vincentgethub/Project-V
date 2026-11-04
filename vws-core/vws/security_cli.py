@@ -147,6 +147,19 @@ async def panic_notify(context: SecurityContext, store: SecretStore, text: str) 
 async def panic_activities(
     context: SecurityContext, store: SecretStore, since: datetime
 ) -> tuple[str, ...]:
+    from backend.ops.quiescence import actor_scope
+
+    bound = _panic_bound_context(context, store)
+    database = bound.engine.url.database
+    project = PROJECT
+    if bound.engine.dialect.name == "sqlite" and database not in {None, "", ":memory:"}:
+        directory = Path(str(database)).resolve().parent
+        project = directory.parent if directory.name == "data" else directory
+    with actor_scope(project, "panic"):
+        return await _panic_activities(bound, since)
+
+
+async def _panic_activities(bound: SecurityContext, since: datetime) -> tuple[str, ...]:
     """SEC-73: bounded read-only activity and unrecognized-order report."""
     from sqlalchemy.orm import Session
 
@@ -154,12 +167,12 @@ async def panic_activities(
     from backend.data.fee_schedule import load_fee_schedule
     from backend.execution.storage import bindings
     from backend.funding.activities import AlpacaActivitiesSource
-    from backend.ops.read_checks import ReadChecksClient
+    from backend.ops.panic_broker import PanicReadChecksClient, PanicReadClient
+    from backend.ops.quiescence import current_actor
 
-    bound = _panic_bound_context(context, store)
     settings = bound.settings
     # Refuse before activating sockets if the matching native pair is absent.
-    ReadChecksClient.broker_headers(settings.broker_api_key, settings.broker_secret_key)
+    PanicReadChecksClient.broker_headers(settings.broker_api_key, settings.broker_secret_key)
     configure_egress(bound)
     config = load_yaml_config(
         PROJECT / "config/config.yaml",
@@ -172,7 +185,7 @@ async def panic_activities(
     source = None
     try:
         async with asyncio.timeout(60):
-            reads = ReadChecksClient(
+            reads = PanicReadChecksClient(
                 policy, bound.ledger.clock, alpaca_request_hook=reader.bucket.acquire
             )
             account = await reads.account(
@@ -181,6 +194,10 @@ async def panic_activities(
             source = AlpacaActivitiesSource(
                 settings, str(account.account_id), bound.state, bound.ledger.clock, reader, policy
             )
+            actor = current_actor()
+            if actor is None:
+                raise ConfigurationError("Panic activity source requires an actor scope")
+            source.client = PanicReadClient(source.client, actor)
             batch = await source.read_activities(
                 since, bound.ledger.clock.now(), load_fee_schedule(PROJECT / "config/fees.yaml")
             )

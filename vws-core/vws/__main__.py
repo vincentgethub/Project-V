@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import sys
 from collections.abc import Sequence
+from contextlib import ExitStack
 from datetime import date
 from pathlib import Path
 
@@ -125,6 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--healthcheck runs alone, without configuration or service access")
     if not args.healthcheck and args.command is None:
         parser.error("a command is required")
+    coordination = ExitStack()
     try:
         if args.command == "ops" and args.operation == "clear-intent":
             from vws.intent_cli import execute as intent_execute
@@ -199,6 +201,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Progress never imports network/keyring service composition.
         from backend.security.secrets import KeyringSecretStore, SecretStore
         from vws import security_cli as security
+
+        if args.command == "ops" and args.operation == "panic":
+            from backend.ops.quiescence import actor_scope
+
+            coordination.enter_context(actor_scope(security.PROJECT, "panic"))
         from vws.host_config import LocalLedgerLocator
 
         store: SecretStore
@@ -324,9 +331,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = asyncio.run(security.doctor_result(context, store))
                 for line in result.lines():
                     print(line)
-                from backend.ops.doctor import intent_hints
+                from backend.ops.doctor import intent_hints, quiescence_hints
 
                 for line in intent_hints(context.settings, security.PROJECT):
+                    print(line)
+                for line in quiescence_hints(security.PROJECT):
                     print(line)
                 return result.exit_code
             elif args.command == "ledger":
@@ -354,6 +363,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 attestation = context.ops.attest(security.attest_item(args.item), args.operator)
                 print(f"{attestation.status}: {attestation.item} {attestation.recorded_at}")
             elif args.operation == "panic":
+                from backend.ops.quiescence import current_actor
                 from vws.execution_cli import panic_cancel
 
                 mode = context.emergency_mode or context.settings.execution_mode
@@ -378,8 +388,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(step)
                 for failed in panic_result.failed_steps:
                     print("UNVERIFIED emergency step: " + failed)
+                panic_actor = current_actor()
                 return int(
                     bool(panic_result.failed_steps)
+                    or (panic_actor is not None and panic_actor.panic_not_recorded)
                     or not panic_result.recent_activity
                     or any(
                         activity.lstrip().startswith("UNVERIFIED")
@@ -437,6 +449,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    finally:
+        coordination.close()
 
 
 if __name__ == "__main__":

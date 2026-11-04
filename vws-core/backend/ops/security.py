@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -22,6 +23,7 @@ from backend.core.ledger import Ledger
 from backend.core.notifier import ConsoleNotifier
 from backend.core.system_state import SystemState, SystemStateStore
 from backend.domain.models import FrozenModel, UTCDateTime
+from backend.ops.quiescence import actor_scope, current_actor
 
 ACCOUNT_ITEMS = (
     "ALPACA_MFA",
@@ -405,6 +407,39 @@ class SecurityOps:
             ) from None
 
     def panic(
+        self,
+        operator: str,
+        reason: str,
+        *,
+        mode: str = "MANUAL",
+        stop_entries: Callable[[], None] | None = None,
+        cancel_unfilled: Callable[[], None] | None = None,
+        notify: Callable[[str], None] | None = None,
+        read_activities: Callable[[datetime], tuple[str, ...]] | None = None,
+    ) -> PanicResult:
+        database = self.ledger.engine.url.database
+        with ExitStack() as scope:
+            if current_actor() is None and database not in {None, "", ":memory:"}:
+                directory = Path(str(database)).resolve().parent
+                project = directory.parent if directory.name == "data" else directory
+                scope.enter_context(actor_scope(project, "panic"))
+            actor = current_actor()
+            result = self._panic(
+                operator,
+                reason,
+                mode=mode,
+                stop_entries=stop_entries,
+                cancel_unfilled=cancel_unfilled,
+                notify=notify,
+                read_activities=read_activities,
+            )
+        if actor is not None and actor.panic_not_recorded:
+            return result.model_copy(
+                update={"failed_steps": (*result.failed_steps, "panic coordination unrecorded")}
+            )
+        return result
+
+    def _panic(
         self,
         operator: str,
         reason: str,

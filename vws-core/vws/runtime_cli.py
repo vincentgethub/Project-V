@@ -75,6 +75,7 @@ from backend.ops.k_runtime import ExtraControls
 from backend.ops.macro_events import MacroCalendar
 from backend.ops.maintenance import NightlyMaintenance
 from backend.ops.process import ProcessLock
+from backend.ops.quiescence import actor_scope
 from backend.ops.read_checks import ReadChecksClient
 from backend.ops.report_publisher import ReportPublisher
 from backend.ops.runtime import HostRuntime
@@ -913,7 +914,7 @@ async def execute(env_file: Path | None) -> None:
     if data.is_symlink() or data.parent.resolve(strict=True) != data.parent:
         raise ConfigurationError("Host data directory must be a direct private path")
     data.mkdir(mode=0o700, exist_ok=True)
-    with ProcessLock(data / "runtime.lock"):
+    with ProcessLock(data / "runtime.lock"), actor_scope(project, "runtime"):
         context = security_cli.open_context(selected, store=store)
         try:
             if context.settings.config_hash != settings.config_hash:

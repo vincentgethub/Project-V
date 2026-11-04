@@ -32,6 +32,7 @@ from backend.core.errors import ConfigurationError, DataIntegrityError, Provider
 from backend.core.logging import register_secrets
 from backend.core.system_state import SystemStateStore
 from backend.data.async_reader import AsyncAlpacaReader
+from backend.data.broker_read_client import BrokerReadClient
 from backend.domain.instruments import InstrumentRegistry
 from backend.domain.models import FrozenModel, PositiveQty, Price, Side, Symbol, UTCDateTime
 from backend.net.egress import EgressPolicy
@@ -110,7 +111,7 @@ class AlpacaFillSource:
         if not all(self._headers.values()):
             raise ConfigurationError("UX: read-only fill polling requires broker credentials")
         register_secrets(*self._headers.values())
-        self.client = make_client(
+        self.client: BrokerReadClient = make_client(
             "alpaca_fills",
             policy=policy,
             transport=transport,

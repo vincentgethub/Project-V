@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 from backend.core.errors import ConfigurationError, ProviderError
 from backend.data.async_reader import AsyncTokenBucket
+from backend.ops.quiescence import current_actor
 
 ResultT = TypeVar("ResultT")
 
@@ -221,7 +222,14 @@ class SingleAttemptWorker:
                         for name in ("admitted", "guard", "attempt"):
                             self._local.__dict__.pop(name, None)
 
-                worker = asyncio.create_task(asyncio.to_thread(work))
+                actor = current_actor()
+                if actor is not None:
+                    actor.retain()
+
+                def physical_work() -> ResultT:
+                    return work() if actor is None else actor.physical_call(work)
+
+                worker = asyncio.create_task(asyncio.to_thread(physical_work))
                 self._workers.add(worker)
                 worker.add_done_callback(self._completed)
                 # Cancel/timeout leaves the physical worker tracked until it exits.

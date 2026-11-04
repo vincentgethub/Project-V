@@ -12,6 +12,7 @@ from backend.execution.live_guard import LIVE_PHRASE, LIVE_WARNING, LiveGuard
 from backend.execution.modes import ModeStore, assert_auto_binding
 from backend.execution.stop_readiness import live_raise_reasons
 from backend.ops.doctor import DoctorResult
+from backend.ops.quiescence import actor_scope
 from backend.ops.read_checks import ReadChecksClient
 from backend.security.secrets import SecretStore
 from vws import security_cli
@@ -19,6 +20,11 @@ from vws.drill_cli import verified_drill, verified_drill_time
 
 
 async def panic_cancel(context: security_cli.SecurityContext, store: SecretStore) -> None:
+    with actor_scope(security_cli.PROJECT, "panic"):
+        await _panic_cancel(context, store)
+
+
+async def _panic_cancel(context: security_cli.SecurityContext, store: SecretStore) -> None:
     """SEC-73: bounded best effort only after the local HALT is committed."""
     from sqlalchemy import select
     from sqlalchemy.orm import Session
