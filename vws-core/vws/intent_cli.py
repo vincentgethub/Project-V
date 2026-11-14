@@ -11,13 +11,22 @@ from sqlalchemy import create_engine
 
 from backend.core.clock import SystemClock
 from backend.core.ledger import Ledger
-from backend.execution.coordinated_intent import CoordinatedResolver
+from backend.core.notifier import ConsoleNotifier
+from backend.core.system_state import SystemStateStore
+from backend.execution.coordinated_intent import (
+    ApplyRequest,
+    CoordinatedResolver,
+    InventoryClient,
+)
+from backend.execution.coordinated_intent import (
+    CoordinatedSnapshotReader as SnapshotReader,
+)
 from backend.execution.intent_resolution import (
     IntentRefusal,
-    SnapshotReader,
     dry_run,
     validate_request,
 )
+from backend.execution.models import IntentDryRun
 from backend.net.egress import EgressPolicy, build_allowlist
 from backend.ops.quiescence import BrokerCoordination
 from backend.ops.read_checks import IntentReadClient
@@ -40,6 +49,7 @@ def execute(
     operator: str,
     reason: str,
     env_file: Path | None = None,
+    apply: bool = False,
 ) -> int:
     engine = None
     try:
@@ -59,29 +69,52 @@ def execute(
         settings = load_host_settings(project, env_file, KeyringSecretStore())
         if not settings.paper_trading:
             raise IntentRefusal("FIX_G_PAPER_ONLY")
+        coordination = BrokerCoordination(project)
         reader = SnapshotReader(settings, project)
+        reader.coordination = coordination
         clock = SystemClock()
         # Only unchanged EgressPolicy.deny may append through this engine.
         # No schema initialization, startup verification or state store is called.
         engine = create_engine(settings.db_url.get_secret_value())
         policy = EgressPolicy(build_allowlist(), Ledger(engine, clock))
         broker = IntentReadClient(settings, account, policy, clock)
-        result = asyncio.run(
-            CoordinatedResolver(BrokerCoordination(project)).run(
-                lambda: dry_run(
-                    reader,
-                    broker,
-                    clock,
-                    intent_id=identity,
-                    account=account,
-                    environment=environment,
-                    operator=operator,
-                    reason=reason,
-                    host=host,
-                    waiter=RealSnapshotWaiter(),
+
+        async def operation() -> IntentDryRun:
+            return await dry_run(
+                reader,
+                broker,
+                clock,
+                intent_id=identity,
+                account=account,
+                environment=environment,
+                operator=operator,
+                reason=reason,
+                host=host,
+                waiter=RealSnapshotWaiter(),
+            )
+
+        resolver = CoordinatedResolver(coordination)
+        if apply:
+            state = SystemStateStore(engine, clock, ConsoleNotifier(), verify_ledger=False)
+            asyncio.run(
+                resolver.apply(
+                    operation,
+                    reader=reader,
+                    broker=InventoryClient(broker),
+                    ledger=state.ledger,
+                    state=state,
+                    request=ApplyRequest(
+                        intent_id=identity,
+                        account=account,
+                        environment=environment,
+                        operator=operator,
+                        reason=reason,
+                        host=host,
+                    ),
+                    confirm=input,
                 )
             )
-        )
+        result = asyncio.run(resolver.run(operation))
         for line in result.lines():
             print(line)
         return 0

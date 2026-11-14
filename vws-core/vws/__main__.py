@@ -90,6 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report_parser.add_parser("monthly").add_argument("--month", required=True)
     ops = commands.add_parser("ops").add_subparsers(dest="operation", required=True)
     clear_intent = ops.add_parser("clear-intent")
+    clear_intent.add_argument("--apply", action="store_true")
     for option in ("intent", "account", "environment", "operator", "reason"):
         clear_intent.add_argument("--" + option, required=True)
     attest = ops.add_parser("attest")
@@ -129,6 +130,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     coordination = ExitStack()
     try:
         if args.command == "ops" and args.operation == "clear-intent":
+            if args.apply and not sys.stdin.isatty():
+                parser.error("FIX_G_HOST_CONFIRMATION_REQUIRED: interactive host CLI required")
             from vws.intent_cli import execute as intent_execute
 
             return intent_execute(
@@ -138,6 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 operator=args.operator,
                 reason=args.reason,
                 env_file=args.env_file,
+                apply=args.apply,
             )
         if args.healthcheck:
             from backend.core.clock import SystemClock

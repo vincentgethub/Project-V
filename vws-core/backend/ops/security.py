@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
+import sys
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from datetime import datetime, timedelta
@@ -12,12 +14,12 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from backend.core.clock import Clock, ensure_utc
 from backend.core.config import Settings
-from backend.core.database import SecurityEvent, transaction
+from backend.core.database import SecurityEvent, create_database, transaction
 from backend.core.errors import DataIntegrityError
 from backend.core.ledger import Ledger
 from backend.core.notifier import ConsoleNotifier
@@ -460,15 +462,37 @@ class SecurityOps:
             raise DataIntegrityError("SEC-73: panic requires a short local reason")
         if mode not in {"MANUAL", "AUTO_PAPER", "AUTO_LIVE"}:
             raise DataIntegrityError("SEC-73: panic requires a valid mode label")
-        local_state = SystemStateStore(
-            self.ledger.engine, self.clock, ConsoleNotifier(), verify_ledger=False
-        )
+        panic_engine = self.ledger.engine
+        isolated = panic_engine.dialect.name == "sqlite" and panic_engine.url.database not in {
+            None,
+            "",
+            ":memory:",
+        }
         try:
+            if isolated:
+                panic_engine = create_database(
+                    panic_engine.url.render_as_string(hide_password=False)
+                )
+
+                def short_local_wait(connection: sqlite3.Connection, _record: object) -> None:
+                    connection.execute("PRAGMA busy_timeout=1000")
+
+                event.listen(panic_engine, "connect", short_local_wait)
+            local_state = SystemStateStore(
+                panic_engine, self.clock, ConsoleNotifier(), verify_ledger=False
+            )
             local_state.escalate(SystemState.HALTED, "SEC-73 local panic")
         except Exception:
+            print(
+                "HALT_NOT_PERSISTED: revoke keys now; no broker callbacks were run.",
+                file=sys.stderr,
+            )
             raise DataIntegrityError(
                 "SEC-73: panic local HALT persistence failed; revoke keys now"
             ) from None
+        finally:
+            if isolated and panic_engine is not self.ledger.engine:
+                panic_engine.dispose()
         failures: list[str] = []
         if mode in {"AUTO_PAPER", "AUTO_LIVE"} and cancel_unfilled is None:
             failures.append("cancel unfilled entries unavailable")
