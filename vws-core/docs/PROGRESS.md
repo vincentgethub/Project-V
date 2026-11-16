@@ -13,7 +13,7 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-- Calendar staleness: provisional-time rows and a past-horizon calendar must alert and black out entries.
+- Calendar staleness (item 4): provisional-time rows black out their ET day and a past-horizon calendar blocks entries; both alert in status.
 Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.
