@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: October 24, 2026 - three security bumps: offline verification passed
+Last updated: 2026-11-16 (night1 item 4, RED)
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -13,7 +13,7 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-MUTATION_PASS6.md records pending cancellation, shared finalization and guard helpers.
+- Calendar staleness: provisional-time rows and a past-horizon calendar must alert and black out entries.
 Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.
