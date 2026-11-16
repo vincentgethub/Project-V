@@ -3,6 +3,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# Single flight: one run at a time; a running job is never canceled.
+concurrency:
+  group: vws-mutation-diagnostics
+  cancel-in-progress: false
 jobs:
   tax-diagnostics:
     runs-on: ubuntu-latest

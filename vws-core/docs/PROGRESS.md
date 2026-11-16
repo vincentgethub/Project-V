@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: November 16, 2026 - workflow single-flight check added (failing first)
+Last updated: November 16, 2026 - scheduled/manual workflows run one at a time
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -13,7 +13,7 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-Night 1: scheduled and manual GitHub workflows get one-at-a-time runs.
+Night 1: scheduled and manual GitHub workflows run one at a time; none can trade.
 Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.
