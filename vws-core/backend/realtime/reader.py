@@ -238,8 +238,10 @@ class RealtimeReader:
                 return self._cache[feed]
             result = await self.reads.fred_observations(self.fred_key)
             row = parsers.fred(result, now, expected)
+            # Item 6: both series or neither; a DGS10 gap leaves FRED unverified.
+            rates = parsers.dgs10(await self.reads.fred_dgs10(self.fred_key), now, expected)
             self._fred_day = day
-            return self._health(feed, (row,))
+            return self._health(feed, (row, rates))
         if feed == "macro":
             self.macro.read()
             if not self.schedules_verified():

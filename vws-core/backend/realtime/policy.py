@@ -193,6 +193,10 @@ def context(
         if row.kind in {"MWC1", "MWC2", "MWC3"}:
             if auto:
                 actions.append(ACTION[mwc_actions[row.kind]])
+        if row.kind == "DGS10" and row.value is not None and row.value >= policy.dgs10_spike_bps:
+            tags.add(ContextTag.RATES_SPIKE)
+            if auto:
+                actions.append(ACTION[table.dgs10_spike])
         if row.kind == "VIX" and row.value is not None and row.value >= policy.vix_stress:
             tags.add(ContextTag.VIX_STRESS)
             if auto:
@@ -205,10 +209,9 @@ def context(
             tags.add(tag)
             hard_block = True
     fred = by_feed.get("fred")
-    if table.vix_stress != "annotate" and (
-        fred is None or health_at(fred, instant, policy) != HealthStatus.OK
-    ):
-        warnings.append("RT-07: VIX policy requires a verified FRED observation")
+    # Item 6: DGS10 has no neutral action, so FRED is always needed to trade AUTO.
+    if fred is None or health_at(fred, instant, policy) != HealthStatus.OK:
+        warnings.append("RT-07: VIX and DGS10 policy require a verified FRED observation")
         tags.add(ContextTag.UNAVAILABLE)
         if auto:
             actions.append(Decimal(0))

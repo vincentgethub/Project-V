@@ -75,6 +75,7 @@ YAML_ALLOWED_SETTING_NAMES = frozenset(YAML_INTEGER_BOUNDS) | frozenset(
         "ca_stale_hours",
         "halt_poll_sec",
         "vix_stress",
+        "dgs10_spike_bps",
         "hard_events",
         "required_feeds",
     }
@@ -1380,6 +1381,9 @@ class RealtimeConfig(_FrozenYamlModel):
     ca_stale_hours: int = Field(default=36, strict=True, ge=1, le=36)
     halt_poll_sec: int = Field(default=60, strict=True, ge=60, le=300)
     vix_stress: Decimal = Field(default=Decimal(30), ge=1, le=30)
+    # Item 6: a one-session DGS10 rise of at least this many bps reduces entries.
+    # The bound only lets an owner make the trigger more sensitive.
+    dgs10_spike_bps: Decimal = Field(default=Decimal(15), ge=1, le=15)
     hard_events: HardEventConfig = Field(default_factory=HardEventConfig)
     required_feeds: tuple[Literal["clock", "halts", "news", "assets"], ...] = (
         "clock",
@@ -1388,7 +1392,7 @@ class RealtimeConfig(_FrozenYamlModel):
         "assets",
     )
 
-    @field_validator("vix_stress", mode="before")
+    @field_validator("vix_stress", "dgs10_spike_bps", mode="before")
     @classmethod
     def exact_stress(cls, value: object) -> Decimal:
         return _exact_decimal(value)
@@ -1409,6 +1413,8 @@ class EventsPolicy(_FrozenYamlModel):
     pce: EventAction = "annotate"
     opex: EventAction = "annotate"
     vix_stress: EventAction = "half_size"
+    # Item 6: reduce-only by type; there is no neutral (annotate) DGS10 action.
+    dgs10_spike: Literal["half_size", "no_new_entries"] = "half_size"
 
 
 class YamlConfig(_FrozenYamlModel):

@@ -277,6 +277,26 @@ class ReadChecksClient:
     async def fred(self, key: SecretStr) -> None:
         await self.fred_observations(key)
 
+    async def fred_dgs10(self, key: SecretStr) -> dict[str, object]:
+        """Item 6: read-only recent DGS10 closes; holidays arrive as '.'."""
+        raw = self._token(key)
+        await self._reserve_fred()
+        # VERIFY: https://fred.stlouisfed.org/series/DGS10
+        result = await self._get(
+            "fred",
+            "https://api.stlouisfed.org/fred/series/observations",
+            params={
+                "series_id": "DGS10",
+                "file_type": "json",
+                "api_key": raw,
+                "limit": "10",
+                "sort_order": "desc",
+            },
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("observations"), list):
+            raise DataIntegrityError("FRED DGS10 read remains unverified")
+        return result
+
     async def fred_observations(self, key: SecretStr) -> dict[str, object]:
         raw = self._token(key)
         await self._reserve_fred()

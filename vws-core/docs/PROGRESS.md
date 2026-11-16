@@ -13,7 +13,7 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-- DGS10 (item 6): FRED 10y yield spikes may only reduce or block auto entries; no key or data fails closed. RED.
+- DGS10 (item 6): FRED 10y rise >= 15 bps halves (or blocks) auto entries; no key or data blocks auto. DEFERRED-TO-SETUP (no FRED key).
 Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.

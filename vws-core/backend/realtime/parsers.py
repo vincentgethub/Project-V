@@ -334,6 +334,47 @@ def fred(payload: Mapping[str, Any], now: datetime, expected_date: date) -> Real
         raise DataIntegrityError("RT-07: latest VIX daily close is missing or malformed") from None
 
 
+def dgs10(payload: Mapping[str, Any], now: datetime, expected_date: date) -> RealtimeEvent:
+    """Item 6: the one-session DGS10 rise in bps; a fall reports zero, never a credit."""
+    try:
+        observations = payload["observations"]
+        if not isinstance(observations, list) or not 2 <= len(observations) <= 10:
+            raise ValueError("bounded recent DGS10 observations required")
+        days = [date.fromisoformat(row["date"]) for row in observations]
+        if days != sorted(days, reverse=True) or len(set(days)) != len(days):
+            raise ValueError("DGS10 observations must be newest first and unique")
+        if days[0] != expected_date or observations[0]["value"] == ".":
+            raise ValueError("DGS10 close for the latest completed session is missing")
+        values = []
+        for row in observations:
+            if not isinstance(row["value"], str):
+                raise ValueError("DGS10 value must be text")
+            if row["value"] == ".":
+                continue
+            value = Decimal(row["value"])
+            if not value.is_finite() or value < 0:
+                raise ValueError("DGS10 value must be a finite yield")
+            values.append(value)
+        if len(values) < 2:
+            raise ValueError("a prior DGS10 close is required")
+        latest, prior = values[0], values[1]
+        occurred = datetime.combine(
+            expected_date, datetime.min.time().replace(hour=16), NY
+        ).astimezone(UTC)
+        return RealtimeEvent(
+            feed="fred",
+            provider_id=f"fred:DGS10:{expected_date}",
+            kind="DGS10",
+            occurred_at=occurred,
+            observed_at=now,
+            expires_at=occurred + timedelta(days=7),
+            value=max(Decimal(0), (latest - prior) * 100),
+            text=f"FRED DGS10 {expected_date} {latest}% vs prior {prior}%",
+        )
+    except Exception:
+        raise DataIntegrityError("RT-07: latest DGS10 closes are missing or malformed") from None
+
+
 def corporate_actions(
     payload: Mapping[str, Any], now: datetime, symbols: tuple[str, ...]
 ) -> tuple[RealtimeEvent, ...]:

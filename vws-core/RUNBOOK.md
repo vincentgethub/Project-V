@@ -495,6 +495,12 @@ Confirmed delisting may use the existing bounded AX-29 exit; dilution defaults
 to an alert. Scheduled events use the reducing policy table: FOMC/CPI/jobs and
 VIX stress halve size, GDP/PCE/OPEX annotate. Earnings retains its existing CRO
 gate. No event can raise size or create a trade.
+FRED DGS10 (10-year Treasury) is read with VIX. A rise of at least
+`rt.dgs10_spike_bps` (default and ceiling 15 bps) versus the prior published
+close applies `events_policy.dgs10_spike` (`half_size` or `no_new_entries`;
+there is no annotate option) to AUTO entries. A missing FRED key, a missing
+close for the latest completed session (including bond-market holidays) or a
+malformed read leaves FRED unverified, which stops AUTO entries.
 
 Enter FRED only through setup/native keyring and SEC identification through the
 same wizard. Missing credentials are UNVERIFIED. Paper keys, clock/calendar,

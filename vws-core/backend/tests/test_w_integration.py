@@ -204,8 +204,20 @@ async def test_RT_FRED_success_cache_does_not_poll_again_before_session_close(
     reader: Any = RealtimeReader.__new__(RealtimeReader)
     reader.clock, reader.calendar = clock, CAL
     reader.fred_key = SecretStr("PUBLIC_SYNTHETIC_FRED_FIXTURE")
-    reader.reads = SimpleNamespace(fred_observations=observed)
+    rates: list[object] = []
+
+    async def dgs10(key: object) -> dict[str, object]:
+        rates.append(key)
+        return {
+            "observations": [
+                {"date": expected.isoformat(), "value": "4.40"},
+                {"date": "2000-01-03", "value": "4.40"},
+            ]
+        }
+
+    reader.reads = SimpleNamespace(fred_observations=observed, fred_dgs10=dgs10)
     reader._fred_day, reader._cache = None, {}
     first = await reader.poll("fred")
     second = await reader.poll("fred")
     assert len(calls) == 1 and first == second
+    assert len(rates) == 1

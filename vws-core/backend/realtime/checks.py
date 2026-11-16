@@ -93,12 +93,7 @@ async def checklist(
             if value is None
             else f"heartbeat age {int((state.clock.now() - value.observed_at).total_seconds())}s"
         )
-        required = automatic and (
-            name in REQUIRED
-            or name == "macro"
-            or name == "fred"
-            and config.events_policy.vix_stress != "annotate"
-        )
+        required = automatic and (name in REQUIRED or name == "macro" or name == "fred")
         rows.append(
             Check(
                 name="fred" if name == "fred" else "rt_" + name,

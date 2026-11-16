@@ -26,6 +26,7 @@ class ContextTag(StrEnum):
     HALT = "halt"
     NEWS_NEG = "news_neg"
     VIX_STRESS = "vix_stress"
+    RATES_SPIKE = "rates_spike"
     FOMC = "fomc_day"
     CPI = "cpi_day"
     JOBS = "jobs_day"
@@ -87,6 +88,7 @@ class RealtimeEvent(FrozenModel):
         "DILUTION",
         "FILING",
         "VIX",
+        "DGS10",
     ]
     symbol: Symbol | None = None
     occurred_at: UTCDateTime
@@ -97,12 +99,13 @@ class RealtimeEvent(FrozenModel):
 
     @model_validator(mode="after")
     def causal(self) -> Self:
-        global_kind = self.kind in {"MWC1", "MWC2", "MWC3", "VIX"}
+        valued = self.kind in {"VIX", "DGS10"}
+        global_kind = self.kind in {"MWC1", "MWC2", "MWC3"} or valued
         if (
             self.occurred_at > self.observed_at
             or self.expires_at <= self.occurred_at
             or global_kind != (self.symbol is None)
-            or (self.kind == "VIX") != (self.value is not None)
+            or valued != (self.value is not None)
         ):
             raise ValueError("RT: causal, scoped public event required")
         return self

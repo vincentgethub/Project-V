@@ -88,6 +88,13 @@ def test_DGS10_parser_reports_only_the_rise_in_basis_points() -> None:
         payload(("2026-09-29", "-1"), ("2026-09-28", "4.40")),
         payload(("2026-09-28", "4.40"), ("2026-09-29", "4.60")),
         payload(*((f"2026-09-{29 - n:02d}", "4.40") for n in range(11))),
+        payload(("2026-09-29", "4.60"), ("2026-09-28", ".")),
+        {
+            "observations": [
+                {"date": "2026-09-29", "value": 4.6},
+                {"date": "2026-09-28", "value": "4.4"},
+            ]
+        },
         {"observations": "4.60"},
         {},
     ],
@@ -205,3 +212,12 @@ async def test_DGS10_read_is_bounded_official_and_masked(
     assert request.url.params["limit"] == "10" and request.url.params["sort_order"] == "desc"
     observations = result["observations"]
     assert isinstance(observations, list) and len(observations) == 2
+
+
+@pytest.mark.asyncio
+async def test_DGS10_read_rejects_a_malformed_body(
+    engine: Engine, clock: FrozenClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = client(engine, clock, monkeypatch, lambda _: httpx.Response(200, json={}))
+    with pytest.raises(DataIntegrityError):
+        await source.fred_dgs10(SecretStr("TEST_ONLY_NOT_A_CREDENTIAL"))
