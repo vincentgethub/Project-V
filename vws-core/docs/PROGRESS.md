@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: November 16, 2026 - data/KILL_SWITCH file stops new entries
+Last updated: 2026-11-16 (night1 kill switch, test fixes)
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -13,7 +13,7 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-Night 1: a data/KILL_SWITCH file stops new entries; exits and stops keep working.
+- Kill switch: touch data/KILL_SWITCH to refuse new entries; exits and stops keep working.
 Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.

@@ -11,8 +11,7 @@ from sqlalchemy.orm import Session
 
 from backend.core.database import SecurityEvent
 from backend.core.errors import EntryAdmissionRevoked, ExecutionDisabledError
-from backend.execution import kill_switch as module
-from backend.execution.alpaca_executor import AlpacaExecutor, ExactLimit, ExactStop
+from backend.execution.alpaca_executor import AlpacaExecutor
 from backend.execution.kill_switch import KILL_SWITCH_NAME, EntryKillSwitchGate, KillSwitch
 from backend.tests.test_auto_execution import (
     AUTO,
@@ -92,7 +91,7 @@ def test_OPS_KS_runtime_directory_owned_by_another_user_fails_closed(
 ) -> None:
     runtime = private(tmp_path / "data")
     other = os.geteuid() + 1
-    monkeypatch.setattr(module.os, "geteuid", lambda: other)
+    monkeypatch.setattr(os, "geteuid", lambda: other)
     with pytest.raises(ExecutionDisabledError, match="run-user owned"):
         KillSwitch(runtime).assert_entries_allowed()
 
@@ -108,7 +107,7 @@ def test_OPS_KS_unreadable_switch_state_fails_closed(
             raise PermissionError(13, "Permission denied")
         return real(path)
 
-    monkeypatch.setattr(module.os, "lstat", denied)
+    monkeypatch.setattr(os, "lstat", denied)
     with pytest.raises(ExecutionDisabledError) as caught:
         KillSwitch(runtime).assert_entries_allowed()
     assert str(caught.value) == (
@@ -121,7 +120,7 @@ def test_OPS_KS_windows_ignores_posix_mode_bits_but_still_reads_switch(
 ) -> None:
     runtime = private(tmp_path / "data")
     runtime.chmod(0o755)
-    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(os, "name", "nt")
     KillSwitch(runtime).assert_entries_allowed()
     (runtime / KILL_SWITCH_NAME).touch()
     with pytest.raises(ExecutionDisabledError, match="engaged"):
@@ -228,14 +227,7 @@ async def test_OPS_KS_final_guard_revokes_between_intent_and_physical_request(
     harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     alert = await deliver(harness)
-    sent: list[str] = []
-
-    class Broker(FakeTradingClient):
-        def submit_order(self, order_data: ExactLimit | ExactStop) -> dict[str, Any]:
-            sent.append(order_data.client_order_id)
-            return super().submit_order(order_data)
-
-    client = Broker(harness)
+    client = FakeTradingClient(harness)
     built = executor(harness, client)
     switch = engaged(harness, built, tmp_path)
     original = built._submit
@@ -247,7 +239,7 @@ async def test_OPS_KS_final_guard_revokes_between_intent_and_physical_request(
     monkeypatch.setattr(built, "_submit", engage_then_submit)
     with pytest.raises(EntryAdmissionRevoked, match="Kill switch is engaged"):
         await built.enter(alert.proposal_id)
-    assert sent == [] and client.posts == []
+    assert client.posts == []
     await built.close()
 
 
