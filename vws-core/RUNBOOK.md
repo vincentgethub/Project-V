@@ -514,6 +514,12 @@ fetches bounded official pages and displays hashes; it never writes that CSV.
 Type `CONFIRM MACRO SCHEDULES` only after reviewing the times in Eastern time.
 The reviewed file must still match and the review must be under 15 minutes old.
 Missing, edited, stale or unconfirmed schedules block AUTO event gating.
+If an official release time is not yet published, add the optional fifth
+column `time_status` (`confirmed` or `provisional`) and mark that row
+`provisional`. Status alerts on it, and its whole ET day blocks new entries in
+every mode until the official time is entered as `confirmed`. A calendar whose
+last row is before today is past its horizon: status alerts and new entries are
+blocked in every mode until official dates are added and reconfirmed.
 After editing policy files, use the existing host apply-config/ack-config
 workflow and review its drift warning. Fees, variants and event policy are now
 included in the security fingerprint; earlier acknowledgements need renewal.

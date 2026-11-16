@@ -8,7 +8,7 @@ from backend.core.clock import ensure_utc
 from backend.core.config import EventsPolicy, RealtimeConfig
 from backend.core.errors import DataIntegrityError
 from backend.data.market_calendar import MarketCalendar
-from backend.ops.macro_events import MacroEvent
+from backend.ops.macro_events import MacroEvent, horizon
 from backend.ops.trading_controls import ControlScope
 from backend.realtime.models import (
     REQUIRED,
@@ -212,13 +212,25 @@ def context(
         tags.add(ContextTag.UNAVAILABLE)
         if auto:
             actions.append(Decimal(0))
-    for macro in macros:
-        macro_row = MacroEvent.model_validate(macro)
+    macro_rows = tuple(MacroEvent.model_validate(macro) for macro in macros)
+    for macro_row in macro_rows:
         if macro_row.date == day:
             tag, action_name = MACRO_TAG[macro_row.event]
             tags.add(tag)
             if auto:
                 actions.append(ACTION[macro_actions[action_name]])
+            if not macro_row.time_confirmed:
+                # Item 4: an unconfirmed release time blacks out the whole ET day.
+                warnings.append(
+                    f"EVT-03: {macro_row.event} release time is unconfirmed; full-day blackout"
+                )
+                tags.add(ContextTag.UNAVAILABLE)
+                hard_block = True
+    last = horizon(macro_rows)
+    if last is not None and day > last:
+        warnings.append("EVT-04: macro calendar is past its horizon; entries are blacked out")
+        tags.add(ContextTag.UNAVAILABLE)
+        hard_block = True
     expiration = expiry_session(day, calendar)
     tags.update(expiration)
     if expiration and auto:
