@@ -44,7 +44,7 @@ There is no silent fallback.
 
 ## Status of the decisions
 - Built as night1 item 9 on `night1/secret-loader` @ a6ffa19 (ACCEPTED). It provides:
-  - `backend/security/secret_loader.py` `select_secret_store()`;
+  - the single loader `select_secret_store` in backend/security;
   - deploy/vws.service with `EnvironmentFile` removed and five `LoadCredentialEncrypted=` lines;
   - compose with `env_file` removed;
   - `.env` refused when it holds secret settings;
