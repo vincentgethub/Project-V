@@ -401,8 +401,8 @@ setup or CRO evidence. The digest lists at most five vetoes.
 `/watch TICKER` accepts instruments.csv names and allows ten requests per ET day.
 Watch cards are approvable in MANUAL and read-only in AUTO; they never auto-trade.
 SPY below EMA200 defaults to annotation in MANUAL and half size in AUTO. Macro
-release windows reuse CRO-11. The calendar ships empty; maintain official dates
-in `config/macro_events.csv`. Status warns after 90 days.
+release windows reuse CRO-11. The calendar ships with official dates fetched 2026-11-16
+(sources in `docs/MACRO_SOURCES.md`); maintain them in `config/macro_events.csv`. Status warns after 90 days.
 
 A negative mean R after 30 resolved tracker trades pauses that playbook's auto
 entries. Only `python -m vws ops playbook enable BASE_BREAKOUT --operator NAME`

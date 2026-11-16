@@ -1,1 +1,16 @@
 date,et_time,event,source
+2026-11-25,08:30,GDP,https://www.bea.gov/news/schedule/full
+2026-11-25,08:30,PCE,https://www.bea.gov/news/schedule/full
+2026-12-04,08:30,NFP,https://www.bls.gov/schedule/news_release/empsit.htm
+2026-12-09,14:00,FOMC,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+2026-12-10,08:30,CPI,https://www.bls.gov/schedule/news_release/cpi.htm
+2026-12-23,08:30,GDP,https://www.bea.gov/news/schedule/full
+2026-12-23,08:30,PCE,https://www.bea.gov/news/schedule/full
+2027-01-08,08:30,NFP,https://www.bls.gov/schedule/news_release/empsit.htm
+2027-01-13,08:30,CPI,https://www.bls.gov/schedule/news_release/cpi.htm
+2027-01-27,14:00,FOMC,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+2027-02-05,08:30,NFP,https://www.bls.gov/schedule/news_release/empsit.htm
+2027-02-11,08:30,CPI,https://www.bls.gov/schedule/news_release/cpi.htm
+2027-03-05,08:30,NFP,https://www.bls.gov/schedule/news_release/empsit.htm
+2027-03-10,08:30,CPI,https://www.bls.gov/schedule/news_release/cpi.htm
+2027-03-17,14:00,FOMC,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
