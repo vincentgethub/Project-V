@@ -19,6 +19,9 @@ LoadCredentialEncrypted=vws.telegram_bot_token:/etc/credstore.encrypted/vws.tele
 LoadCredentialEncrypted=vws.telegram_callback_secret:/etc/credstore.encrypted/vws.telegram_callback_secret
 LoadCredentialEncrypted=vws.vws_fingerprint_salt:/etc/credstore.encrypted/vws.vws_fingerprint_salt
 Environment=PYTHONDONTWRITEBYTECODE=1
+# THEME-CAPS (paper, item 17): non-secret risk setting for the deployed host. The
+# process environment wins over the host .env; keep in step with .env.example.
+Environment='THEME_CAPS={"AI_SEMIS":"0.25","CLOUD":"0.25","CONSUMER_TECH":"0.25"}'
 ExecStart=/opt/vws-core/.venv/bin/python -m vws start
 Restart=on-failure
 RestartSec=15
