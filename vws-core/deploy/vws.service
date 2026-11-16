@@ -10,7 +10,14 @@ Type=simple
 User=vws
 Group=vws
 WorkingDirectory=/opt/vws-core
-EnvironmentFile=/opt/vws-core/.env
+# SEC-LOADER: no environment file. Secrets come only from encrypted systemd
+# credentials (systemd-creds encrypt --with-key=tpm2, or host+tpm2; host-only
+# is weaker and must be written down). Files land in $CREDENTIALS_DIRECTORY.
+LoadCredentialEncrypted=vws.alpaca_paper_key_id:/etc/credstore.encrypted/vws.alpaca_paper_key_id
+LoadCredentialEncrypted=vws.alpaca_paper_secret:/etc/credstore.encrypted/vws.alpaca_paper_secret
+LoadCredentialEncrypted=vws.telegram_bot_token:/etc/credstore.encrypted/vws.telegram_bot_token
+LoadCredentialEncrypted=vws.telegram_callback_secret:/etc/credstore.encrypted/vws.telegram_callback_secret
+LoadCredentialEncrypted=vws.vws_fingerprint_salt:/etc/credstore.encrypted/vws.vws_fingerprint_salt
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/vws-core/.venv/bin/python -m vws start
 Restart=on-failure

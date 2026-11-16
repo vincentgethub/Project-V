@@ -2,7 +2,10 @@ services:
   vws:
     build: .
     user: "10001:10001"
-    env_file: .env
+    # SEC-LOADER: no environment file; secrets never come from a dotenv. Without systemd
+    # credentials or a Secret Service the container refuses (SECRETS_UNAVAILABLE).
+    # Paper-only launch injection: VWS_SECRET_SOURCE=injected plus VWS_INJECTED_*
+    # passed from a masked store at launch, never written to disk.
     environment:
       DB_URL: ${VWS_DB_URL:-sqlite:////app/data/vws.db}
       LOG_FILE_PATH: /app/logs/vws.jsonl

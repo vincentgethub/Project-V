@@ -45,8 +45,14 @@ ResultT = TypeVar("ResultT")
 class MemorySecrets:
     """SEC-11: no native store, file secret or process fallback exists in tests."""
 
+    source_name = "memory-test"
+
     def __init__(self) -> None:
         self.values: dict[str, SecretStr] = {}
+
+    def probe(self) -> None:
+        """SEC-LOADER: the isolated fake is always available."""
+        return None
 
     def get(self, name: str) -> SecretStr | None:
         return self.values.get(name)
@@ -373,7 +379,6 @@ async def test_OPS_02_start_cli_refuses_unverified_and_handles_signal_with_host_
         if fault != "auto"
         else Settings(_env_file=None, broker_account_type="CASH", execution_mode="AUTO_PAPER")
     )
-    monkeypatch.setattr(runtime_cli, "KeyringSecretStore", MemorySecrets)
     monkeypatch.setattr(runtime_cli, "load_host_settings", lambda _project, _path, _store: settings)
     monkeypatch.setattr(module, "open_context", lambda _path, **_kwargs: context)
     monkeypatch.setattr(runtime_cli, "configure_logging", lambda **_kwargs: None)

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from threading import RLock
 from types import MappingProxyType
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from pydantic import SecretStr
 from sqlalchemy import select
@@ -71,6 +71,13 @@ class _KeyringBackend(Protocol):
     def delete_password(self, service: str, username: str) -> None:
         """SEC-13: remove one operating-system credential."""
         raise NotImplementedError("native backend must implement delete_password")
+
+
+@runtime_checkable
+class _Prioritized(Protocol):
+    """SEC-LOADER: native keyring backends report live availability as priority."""
+
+    priority: float
 
 
 class _WindowsBackend(_KeyringBackend, Protocol):
@@ -125,10 +132,32 @@ def _secret(value: SecretStr) -> str:
 class KeyringSecretStore:
     """SEC-11/SEC-14: explicit native backend; no env/file/plaintext fallback."""
 
+    source_name = (
+        "windows-credential-manager" if platform.system() == "Windows" else "secret-service"
+    )
+
     def __init__(self) -> None:
         """SEC-11: construct only the approved host-specific native backend."""
         self._backend = _native_backend()
         self._lock = RLock()
+
+    def probe(self) -> None:
+        """SEC-LOADER: refuse non-native backends by class, then require a live service."""
+        from backend.security.secret_loader import assert_trusted_keyring_backend
+
+        assert_trusted_keyring_backend(self._backend)
+        try:
+            with self._lock, native_keyring_call():
+                backend = self._backend
+                if not isinstance(backend, _Prioritized):
+                    raise ConfigurationError("native keyring reports no availability")
+                priority: object = backend.priority
+        except Exception:
+            raise ConfigurationError(
+                "trusted native keyring is unavailable; no fallback is permitted"
+            ) from None
+        if not isinstance(priority, (int, float)) or priority <= 0:
+            raise ConfigurationError("trusted native keyring reports no usable service")
 
     def get(self, name: str) -> SecretStr | None:
         """SEC-11: a backend failure is unavailable evidence, never a fallback."""

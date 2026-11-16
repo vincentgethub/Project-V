@@ -840,8 +840,44 @@ def assert_broker_endpoint(settings: Settings, resolved_endpoint: str) -> None:
         raise ConfigurationError("broker endpoint does not match configured trading mode")
 
 
+def _dotenv_secret_names(env_file: str | Path) -> tuple[str, ...]:
+    """SEC-LOADER: names of non-empty secret settings present in a dotenv file."""
+    from dotenv import dotenv_values
+
+    names: set[str] = set()
+    for name, field in Settings.model_fields.items():
+        if field.annotation is SecretStr:
+            names.add(name.casefold())
+            alias = field.validation_alias
+            if isinstance(alias, AliasChoices):
+                names.update(str(choice).casefold() for choice in alias.choices)
+    found = []
+    for key, value in dotenv_values(env_file, interpolate=False).items():
+        if not value or key.casefold() not in names:
+            continue
+        if key.casefold() == "db_url" and urlsplit(value).password is None:
+            continue
+        found.append(key.upper())
+    return tuple(sorted(found))
+
+
 def load_settings(env_file: str | Path | None = None, **overrides: Any) -> Settings:
-    """R-06/R-07: explicitly load dotenv only when requested; fail typed."""
+    """R-06/R-07: explicitly load dotenv only when requested; fail typed.
+
+    SEC-LOADER: a dotenv file may carry non-secret settings only. A secret
+    value in it is refused; secrets come from the single secret loader.
+    """
+    if env_file is not None:
+        try:
+            secret_names = _dotenv_secret_names(env_file)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ConfigurationError("configuration validation failed") from exc
+        if secret_names:
+            raise ConfigurationError(
+                "SECRETS_UNAVAILABLE: a dotenv file cannot hold secrets ("
+                + ", ".join(secret_names)
+                + "); use systemd credentials or the Secret Service"
+            )
     try:
         values: dict[str, Any] = {"_env_file": env_file, **overrides}
         return Settings(**values)

@@ -366,3 +366,62 @@ def test_SEC_LOADER_systemd_credentials_need_a_posix_host(tmp_path: Path) -> Non
     else:
         with pytest.raises(SecretsUnavailableError):
             SystemdCredentialStore(directory)
+
+
+# --- the real KeyringSecretStore probe ------------------------------------
+
+
+def native_store(
+    monkeypatch: pytest.MonkeyPatch, module: str, name: str, priority: object
+) -> object:
+    import contextlib
+
+    import backend.security.secrets as secrets_module
+
+    def read_priority(cls: type) -> object:
+        if isinstance(priority, Exception):
+            raise priority
+        return priority
+
+    backend = type(name, (), {"__module__": module, "priority": property(read_priority)})()
+    monkeypatch.setattr(secrets_module, "_native_backend", lambda: backend)
+    monkeypatch.setattr(secrets_module, "native_keyring_call", contextlib.nullcontext)
+    return secrets_module.KeyringSecretStore()
+
+
+def test_SEC_LOADER_keyring_probe_accepts_only_a_live_native_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.security.secrets import KeyringSecretStore
+
+    store = native_store(monkeypatch, "keyring.backends.SecretService", "Keyring", 5)
+    assert isinstance(store, KeyringSecretStore)
+    store.probe()
+    assert select_secret_store({}, keyring=lambda: store) is store
+    assert secret_source_line(store) in {
+        "Secret source: secret-service",
+        "Secret source: windows-credential-manager",
+    }
+
+
+@pytest.mark.parametrize(
+    "module,name,priority",
+    [
+        ("keyrings.alt.file", "PlaintextKeyring", 5),
+        ("keyring.backends.chainer", "ChainerBackend", 10),
+        ("keyring.backends.SecretService", "Keyring", RuntimeError("no D-Bus service")),
+        ("keyring.backends.SecretService", "Keyring", 0),
+        ("keyring.backends.SecretService", "Keyring", "5"),
+    ],
+)
+def test_SEC_LOADER_keyring_probe_refuses_untrusted_or_dead_backends(
+    monkeypatch: pytest.MonkeyPatch, module: str, name: str, priority: object
+) -> None:
+    from backend.security.secrets import KeyringSecretStore
+
+    store = native_store(monkeypatch, module, name, priority)
+    assert isinstance(store, KeyringSecretStore)
+    with pytest.raises(ConfigurationError):
+        store.probe()
+    with pytest.raises(SecretsUnavailableError):
+        select_secret_store({}, keyring=lambda: store)

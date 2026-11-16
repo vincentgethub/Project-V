@@ -93,7 +93,8 @@ from backend.risk.compliance import ComplianceEngine
 from backend.risk.compliance_boundary import ComplianceBoundary
 from backend.risk.portfolio_marks import PersistedPortfolioMarks
 from backend.risk.risk_cro import ChiefRiskOfficer
-from backend.security.secrets import KeyringSecretStore, SecretStore
+from backend.security.secret_loader import secret_source_line, select_secret_store
+from backend.security.secrets import SecretStore
 from backend.tax.service import TaxService
 from vws import security_cli
 from vws.drill_cli import verified_drill, verified_drill_time
@@ -903,7 +904,8 @@ def _close_sdk(client: object) -> None:
 async def execute(env_file: Path | None) -> None:
     project = security_cli.PROJECT
     selected = project / ".env" if env_file is None else env_file
-    store = KeyringSecretStore()
+    # SEC-LOADER: systemd-creds, then Secret Service, then paper injection; else refuse.
+    store = select_secret_store()
     settings = load_host_settings(project, selected, store)
     if settings.execution_mode == "MANUAL" and not settings.paper_trading:
         raise ConfigurationError(
@@ -920,6 +922,7 @@ async def execute(env_file: Path | None) -> None:
                 raise ConfigurationError("Startup settings changed while opening the host context")
             context.settings_source = lambda: load_host_settings(project, selected, store)
             result = await security_cli.doctor_result(context, store)
+            print(secret_source_line(store))
             for line in result.lines():
                 print(line)
             if result.exit_code:

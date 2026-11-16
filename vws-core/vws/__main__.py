@@ -183,13 +183,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
         # Progress never imports network/keyring service composition.
-        from backend.security.secrets import KeyringSecretStore, SecretStore
+        from backend.security.secret_loader import secret_source_line, select_secret_store
+        from backend.security.secrets import SecretStore
         from vws import security_cli as security
         from vws.host_config import LocalLedgerLocator
 
         store: SecretStore
         try:
-            store = KeyringSecretStore()
+            # SEC-LOADER: systemd-creds, then Secret Service, then paper injection.
+            store = select_secret_store()
         except Exception:
             if args.command != "ops" or args.operation not in {"panic", "disable-live"}:
                 raise
@@ -308,6 +310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"1099-B reconciliation: {directory}")
             elif args.command == "doctor":
                 result = asyncio.run(security.doctor_result(context, store))
+                print(secret_source_line(store))
                 for line in result.lines():
                     print(line)
                 return result.exit_code

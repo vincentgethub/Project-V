@@ -84,6 +84,27 @@ key scope controls and IP allowlisting remain UNVERIFIED; never probe funding.
 Rotate Plaid credentials or remove the affected item, GitHub tokens and recovery
 email credentials as appropriate. A Plaid access token uses native keyring only.
 
+## Secret sources (one loader, strict order)
+
+`vws start` and every host command take secrets from exactly one source, in
+this order, and refuse with `SECRETS_UNAVAILABLE` otherwise (no partial start):
+
+1. systemd credentials. On a systemd host, encrypt each secret once with
+   `systemd-creds encrypt --name=vws.alpaca_paper_secret --with-key=tpm2 - /etc/credstore.encrypted/vws.alpaca_paper_secret`
+   (`host+tpm2` also fine; `--with-key=host` without a TPM is weaker: it stops
+   other users and leaked backups, not root). `deploy/vws.service` loads them with
+   `LoadCredentialEncrypted=`; files must be 0400 in a private directory.
+2. The native Secret Service (Linux desktop) or Windows Credential Manager.
+   Plaintext, file, chainer, fail and null keyring backends are refused by class.
+3. Paper-only injection: `VWS_SECRET_SOURCE=injected` with `VWS_INJECTED_<NAME>`
+   values passed at launch from a masked store. Off by default, refused for live
+   settings, read once into memory and never written. Same-user processes can
+   read a process environment, so this is for paper keys only.
+
+`.env` and `docker-compose.yml` carry non-secret settings only; a secret in a
+dotenv file is refused. `vws doctor` and `vws start` print `Secret source: NAME`
+with the source name only.
+
 ## Encrypted backup and verified restore
 
 Use `ops show-backup-key` once and save the key immediately in a password manager.
