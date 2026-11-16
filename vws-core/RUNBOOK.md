@@ -63,6 +63,22 @@ resuming. The specified future host reset is `ops reset --operator NAME --reason
 Daily-loss entry blocks expire at the next XNYS open. Drawdown/fault halts latch.
 Use [docs/INCIDENT.md](docs/INCIDENT.md) for key leaks, a lost laptop or takeover.
 
+### Kill-switch file (new entries only)
+
+The kill switch is the file `data/KILL_SWITCH` in the project folder (the
+private runtime directory, mode 0700 on Linux/macOS). While anything with that
+name exists, every new AUTO entry is refused before any broker request and again
+at the final pre-send guard; the refusal is logged as `AUTO_ENTRY_BLOCKED`.
+Exits, broker stop protection, stop repairs, cancels and reconciliation keep
+running, exactly like a halt. The program only reads the file; it never creates
+or removes it. Engage: `touch data/KILL_SWITCH` (PowerShell:
+`New-Item data\KILL_SWITCH`), optionally writing a reason inside. Release:
+delete the file; the next entry attempt is admitted normally. No restart is
+needed either way. Fail closed: if the state cannot be read (missing or linked
+`data` directory, permissions other than 0700, another owner, or an unreadable
+switch path) new entries are refused until the cause is fixed. The switch never
+cancels orders or flattens holdings; use panic above for an incident.
+
 ## Secret rotation
 
 Use `python -m vws --env-file .env ops rotate-secret NAME`; hidden input is

@@ -89,6 +89,7 @@ from backend.execution.exit_variants import (
     stop_raise_plan,
 )
 from backend.execution.fill_capture import ExecutionFillCapture
+from backend.execution.kill_switch import EntryKillSwitchGate
 from backend.execution.live_guard import LiveGuard
 from backend.execution.models import (
     AutoPrerequisites,
@@ -535,7 +536,7 @@ class TradingCalls(Protocol):
     def get_account(self) -> object: ...
 
 
-class AlpacaExecutor:
+class AlpacaExecutor(EntryKillSwitchGate):
     """AX-11/20..31: account-serialized admission and immutable recovery evidence."""
 
     def __init__(
@@ -1054,6 +1055,8 @@ class AlpacaExecutor:
     async def enter(self, proposal_id: UUID, *, click: CallbackClick | None = None) -> Submission:
         async with account_lock(self.modes.account_id, self.environment):
             try:
+                # OPS-KS: data/KILL_SWITCH refuses new entries before any broker call.
+                self._require_entries_not_killed()
                 broker_held: dict[str, int] = {}
                 broker_stops: dict[UUID, BrokerOrder] = {}
 
@@ -1294,6 +1297,7 @@ class AlpacaExecutor:
                         with DatabaseSession(self.state.engine) as session:
                             protection_veto(session)
                         self._assert_ops()
+                        self._require_entries_not_killed()
                         self._assert_entry_variant()
                         self._assert_playbook(alert.playbook)
                     except ExecutionDisabledError as error:

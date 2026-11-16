@@ -247,3 +247,15 @@ def bounded_advisory_work(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(ChiefRiskOfficer, "evaluate", evaluate)
     monkeypatch.setattr(ChiefRiskOfficer, "max_allowed_qty", size)
+
+
+@pytest.fixture(autouse=True)
+def private_kill_switch_runtime(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OPS-KS: executors see an empty private runtime directory unless a test binds one."""
+    from backend.execution.kill_switch import EntryKillSwitchGate, KillSwitch
+
+    runtime = tmp_path_factory.mktemp("vws-runtime")
+    runtime.chmod(0o700)
+    monkeypatch.setattr(EntryKillSwitchGate, "kill_switch", KillSwitch(runtime))

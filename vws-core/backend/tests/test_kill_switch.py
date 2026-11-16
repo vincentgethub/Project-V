@@ -91,7 +91,8 @@ def test_OPS_KS_runtime_directory_owned_by_another_user_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = private(tmp_path / "data")
-    monkeypatch.setattr(module.os, "geteuid", lambda: os.geteuid() + 1)
+    other = os.geteuid() + 1
+    monkeypatch.setattr(module.os, "geteuid", lambda: other)
     with pytest.raises(ExecutionDisabledError, match="run-user owned"):
         KillSwitch(runtime).assert_entries_allowed()
 

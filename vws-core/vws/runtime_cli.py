@@ -547,6 +547,7 @@ async def compose(
                 ManagedTradingStream,
                 ProtectionRecovery,
             )
+            from backend.execution.kill_switch import KillSwitch
 
             prerequisites = HostPrerequisites(
                 modes, verified_doctor, security_cli.backups(context, store)
@@ -600,6 +601,8 @@ async def compose(
                 if settings.execution_mode == "AUTO_LIVE"
                 else None,
             )
+            # OPS-KS: the private 0700 data directory hosts the entry-only kill switch.
+            execution.kill_switch = KillSwitch(project / "data")
             resources.push_async_callback(execution.close)
             gate.bind_auto(execution, modes)
 
