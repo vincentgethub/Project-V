@@ -37,6 +37,10 @@ Pages and what they showed:
   page). The 2027 monthly calendar pages returned 404 at retrieval, so the 2027
   rows use the same 2:00 p.m. ET statement time: a judgment call, flagged for
   owner review.
+- 2027 FOMC time (14:00 ET): the 2027-01-27 and 2027-03-17 rows use the Fed's
+  standing 2:00 p.m. ET statement time. The Fed has not yet published the 2027
+  statement times (only the meeting dates), so re-check both rows when the Fed
+  posts its 2027 monthly calendar pages and correct them if the time differs.
 - BLS CPI, https://www.bls.gov/schedule/news_release/cpi.htm: Dec 10 2026,
   Jan 13, Feb 11, Mar 10 2027, all 08:30 AM.
 - BLS Employment Situation (NFP), https://www.bls.gov/schedule/news_release/empsit.htm:
