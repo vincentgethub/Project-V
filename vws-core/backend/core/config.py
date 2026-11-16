@@ -206,6 +206,8 @@ class Settings(BaseSettings):
             "auto_exit_limit_offset": (Decimal("0"), Decimal("0.01")),
             "portfolio_max_open_risk": (Decimal("0"), Decimal("0.06")),
             "live_max_open_risk": (Decimal("0"), Decimal("0.02")),
+            # OPS-SPREAD: (ask - bid) / mid, 1-50 bps; never zero or disabled.
+            "max_entry_spread": (Decimal("0.0001"), Decimal("0.0050")),
         }
     )
     INTEGER_BOUNDS: ClassVar[Mapping[str, tuple[int, int]]] = MappingProxyType(
@@ -267,6 +269,7 @@ class Settings(BaseSettings):
     dd_reduce_only: Decimal = Decimal("0.08")
     dd_halt: Decimal = Decimal("0.12")
     stale_quote_seconds: int = 60
+    max_entry_spread: Decimal = Decimal("0.0010")
     max_clock_skew_seconds: int = 2
     gap_alert_pct: Decimal = Decimal("0.25")
     checking_buffer_usd: Decimal = Decimal("1500")

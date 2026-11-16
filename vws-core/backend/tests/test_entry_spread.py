@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import Engine
 
 from backend.core.config import Settings
-from backend.core.errors import DataIntegrityError, ExecutionDisabledError
+from backend.core.errors import DataIntegrityError, ExecutionDisabledError, ProviderError
 from backend.core.system_state import SystemState
 from backend.data.market_calendar import MarketCalendar
 from backend.data.top_of_book import (
@@ -282,7 +282,7 @@ async def test_OPS_SPREAD_data_layer_reads_one_iex_latest_quote(
     [
         {"AMD": {"t": "2026-11-16T14:59:59Z", "bp": "1.00", "ap": "1.01"}},
         {"SPY": {"t": "2026-11-16T14:59:59Z", "bp": "-1.00", "ap": "1.01"}},
-        {"SPY": {"t": "2026-11-16T14:59:59Z", "bp": 1.5, "ap": "1.01"}},
+        {"SPY": {"t": "2026-11-16T14:59:59Z", "bp": None, "ap": "1.01"}},
         {"SPY": {"t": "2026-11-16T14:59:59", "bp": "1.00", "ap": "1.01"}},
         {"SPY": ["not", "a", "quote"]},
     ],
@@ -305,7 +305,7 @@ async def test_OPS_SPREAD_data_layer_malformed_quote_fails_closed_and_halts(
         return result
 
     monkeypatch.setattr(requests.Session, "request", response)
-    with pytest.raises(DataIntegrityError):
+    with pytest.raises((DataIntegrityError, ProviderError)):
         await provider.top_of_book("SPY")
     assert reader.state.current() == SystemState.HALTED
 

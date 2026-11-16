@@ -63,6 +63,17 @@ resuming. The specified future host reset is `ops reset --operator NAME --reason
 Daily-loss entry blocks expire at the next XNYS open. Drawdown/fault halts latch.
 Use [docs/INCIDENT.md](docs/INCIDENT.md) for key leaks, a lost laptop or takeover.
 
+### Entry spread gate
+
+Before each new AUTO entry (and again after the fresh-input refresh) the host
+reads one fresh IEX latest quote for the symbol and refuses the entry when
+`(ask - bid) / mid` exceeds `MAX_ENTRY_SPREAD` (default `0.0010`, 10 bps). The
+setting accepts only 0.0001-0.0050 (1-50 bps), so it cannot be turned off. A
+missing, zero-sided, crossed, locked, future or older-than-`STALE_QUOTE_SECONDS`
+quote also refuses. A refusal is logged as `AUTO_ENTRY_BLOCKED` without a halt;
+a malformed quote response halts like other data faults. Exits and stop
+protection never consult this gate.
+
 ## Secret rotation
 
 Use `python -m vws --env-file .env ops rotate-secret NAME`; hidden input is

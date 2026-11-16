@@ -547,6 +547,7 @@ async def compose(
                 ManagedTradingStream,
                 ProtectionRecovery,
             )
+            from backend.execution.entry_spread import EntrySpreadGate
 
             prerequisites = HostPrerequisites(
                 modes, verified_doctor, security_cli.backups(context, store)
@@ -572,7 +573,9 @@ async def compose(
                 playbook_allowed=extras.playbook_allowed,
                 stop_raise_readiness=lambda: live_raise_reasons(state.ledger, config),
                 held_exit_observation=source.held_exit_observation,
-                realtime_entry=realtime.require_entry,
+                realtime_entry=EntrySpreadGate(
+                    settings, state.engine, clock, market.top_of_book, realtime.require_entry
+                ),
                 realtime_exit=realtime.hard_exit,
                 portfolio=portfolio,
                 configuration_check=lambda: context.drift.check(

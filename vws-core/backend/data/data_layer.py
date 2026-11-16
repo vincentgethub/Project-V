@@ -39,6 +39,7 @@ from backend.core.ledger import Ledger
 from backend.core.money import decimal_money, validate_cent_price
 from backend.core.system_state import SystemStateStore
 from backend.data.market_calendar import MarketCalendar
+from backend.data.top_of_book import TopOfBook
 from backend.domain.models import (
     FrozenModel,
     MarketContext,
@@ -791,6 +792,13 @@ class AlpacaMarketData:
             raise DataIntegrityError("DAT-02: malformed Alpaca quote/trade") from None
 
 
+def _quote_money(value: object) -> Decimal:
+    """OPS-SPREAD: exact quote side; zero is evidence the gate refuses, not a fault."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
+        raise DataIntegrityError("OPS-SPREAD: quote money must be exact")
+    return decimal_money(value)
+
+
 def _provider_money(value: object) -> Decimal:
     """R-04: transport already parsed exact JSON; inexact injected SDK data fails."""
     if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
@@ -1497,3 +1505,41 @@ class AsyncAlpacaMarketData:
             raise DataIntegrityError(
                 "DAT-02: async quote/trade cannot establish evidence"
             ) from None
+
+    def _top_of_book(self, symbol: str) -> TopOfBook:
+        from alpaca.data.enums import DataFeed
+        from alpaca.data.requests import StockLatestQuoteRequest
+
+        self.reader.ensure_active()
+        # VERIFY: GET /v2/stocks/quotes/latest with raw_data=True, as in _latest_market.
+        quote = self.client.get_stock_latest_quote(
+            StockLatestQuoteRequest(symbol_or_symbols=[symbol], feed=DataFeed.IEX)
+        )
+        if (
+            not isinstance(quote, Mapping)
+            or set(quote) != {symbol}
+            or not isinstance(quote[symbol], Mapping)
+        ):
+            raise DataIntegrityError("OPS-SPREAD: quote symbol differs from request")
+        q = quote[symbol]
+        quoted_at = datetime.fromisoformat(str(q["t"]).replace("Z", "+00:00"))
+        result = TopOfBook(
+            symbol=symbol,
+            bid=_quote_money(q["bp"]),
+            ask=_quote_money(q["ap"]),
+            quoted_at=quoted_at,
+        )
+        self.reader.ensure_active()
+        return result
+
+    async def top_of_book(self, symbol: str) -> TopOfBook:
+        """OPS-SPREAD: one fresh IEX latest quote for the entry spread gate only."""
+        try:
+            self.reader.bind_policy(self.settings, self.ledger)
+            validate_symbol(symbol)
+            return await self.reader.run(partial(self._top_of_book, symbol))
+        except Exception as error:
+            await self.reader.halt(error)
+            if isinstance(error, SafetyError):
+                raise error from None
+            raise DataIntegrityError("OPS-SPREAD: latest quote cannot establish evidence") from None
