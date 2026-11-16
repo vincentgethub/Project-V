@@ -13,7 +13,7 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-- Calendar status: shipped calendar marks only the two unpublished 2027 FOMC times provisional (RED).
+- Official Fed/BLS/BEA macro calendar with time_status; the two unpublished 2027 FOMC times are provisional (alert + day blackout).
 Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.

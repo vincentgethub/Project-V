@@ -9,23 +9,23 @@ Scope: rest of the current quarter (2026-11-16 to 2026-12-31) and the next
 quarter (2027-01-01 to 2027-03-31). Earlier Q4 2026 releases had already
 happened at retrieval and are not listed.
 
-| date | et_time | event | source |
-| --- | --- | --- | --- |
-| 2026-11-25 | 08:30 | GDP | https://www.bea.gov/news/schedule/full |
-| 2026-11-25 | 08:30 | PCE | https://www.bea.gov/news/schedule/full |
-| 2026-12-04 | 08:30 | NFP | https://www.bls.gov/schedule/news_release/empsit.htm |
-| 2026-12-09 | 14:00 | FOMC | https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm |
-| 2026-12-10 | 08:30 | CPI | https://www.bls.gov/schedule/news_release/cpi.htm |
-| 2026-12-23 | 08:30 | GDP | https://www.bea.gov/news/schedule/full |
-| 2026-12-23 | 08:30 | PCE | https://www.bea.gov/news/schedule/full |
-| 2027-01-08 | 08:30 | NFP | https://www.bls.gov/schedule/news_release/empsit.htm |
-| 2027-01-13 | 08:30 | CPI | https://www.bls.gov/schedule/news_release/cpi.htm |
-| 2027-01-27 | 14:00 | FOMC | https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm |
-| 2027-02-05 | 08:30 | NFP | https://www.bls.gov/schedule/news_release/empsit.htm |
-| 2027-02-11 | 08:30 | CPI | https://www.bls.gov/schedule/news_release/cpi.htm |
-| 2027-03-05 | 08:30 | NFP | https://www.bls.gov/schedule/news_release/empsit.htm |
-| 2027-03-10 | 08:30 | CPI | https://www.bls.gov/schedule/news_release/cpi.htm |
-| 2027-03-17 | 14:00 | FOMC | https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm |
+| date | et_time | event | source | time_status |
+| --- | --- | --- | --- | --- |
+| 2026-11-25 | 08:30 | GDP | https://www.bea.gov/news/schedule/full | confirmed |
+| 2026-11-25 | 08:30 | PCE | https://www.bea.gov/news/schedule/full | confirmed |
+| 2026-12-04 | 08:30 | NFP | https://www.bls.gov/schedule/news_release/empsit.htm | confirmed |
+| 2026-12-09 | 14:00 | FOMC | https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm | confirmed |
+| 2026-12-10 | 08:30 | CPI | https://www.bls.gov/schedule/news_release/cpi.htm | confirmed |
+| 2026-12-23 | 08:30 | GDP | https://www.bea.gov/news/schedule/full | confirmed |
+| 2026-12-23 | 08:30 | PCE | https://www.bea.gov/news/schedule/full | confirmed |
+| 2027-01-08 | 08:30 | NFP | https://www.bls.gov/schedule/news_release/empsit.htm | confirmed |
+| 2027-01-13 | 08:30 | CPI | https://www.bls.gov/schedule/news_release/cpi.htm | confirmed |
+| 2027-01-27 | 14:00 | FOMC | https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm | provisional |
+| 2027-02-05 | 08:30 | NFP | https://www.bls.gov/schedule/news_release/empsit.htm | confirmed |
+| 2027-02-11 | 08:30 | CPI | https://www.bls.gov/schedule/news_release/cpi.htm | confirmed |
+| 2027-03-05 | 08:30 | NFP | https://www.bls.gov/schedule/news_release/empsit.htm | confirmed |
+| 2027-03-10 | 08:30 | CPI | https://www.bls.gov/schedule/news_release/cpi.htm | confirmed |
+| 2027-03-17 | 14:00 | FOMC | https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm | provisional |
 
 Pages and what they showed:
 
@@ -41,6 +41,10 @@ Pages and what they showed:
   standing 2:00 p.m. ET statement time. The Fed has not yet published the 2027
   statement times (only the meeting dates), so re-check both rows when the Fed
   posts its 2027 monthly calendar pages and correct them if the time differs.
+  Both rows carry `time_status=provisional` (night1 calendar-status): status
+  alerts on them and each ET day is a full entry blackout until the Fed's
+  published time is entered and the row is marked `confirmed`. Every other
+  row's time was published on its source page at retrieval: `confirmed`.
 - BLS CPI, https://www.bls.gov/schedule/news_release/cpi.htm: Dec 10 2026,
   Jan 13, Feb 11, Mar 10 2027, all 08:30 AM.
 - BLS Employment Situation (NFP), https://www.bls.gov/schedule/news_release/empsit.htm:

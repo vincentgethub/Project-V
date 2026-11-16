@@ -48,8 +48,8 @@ def test_DATA_16_every_row_is_recorded_with_its_retrieval_evidence() -> None:
     assert "Retrieved: 2026-11-16" in notes
     rows = (CONFIG / "macro_events.csv").read_text(encoding="utf-8").splitlines()[1:]
     for row in rows:
-        day, clock, event, source = row.split(",")
-        assert f"| {day} | {clock} | {event} | {source} |" in notes
+        day, clock, event, source, status = row.split(",")
+        assert f"| {day} | {clock} | {event} | {source} | {status} |" in notes
     for unavailable in ("Earnings", "ETF sector weights", "substantially_identical.csv"):
         assert unavailable in notes
 
