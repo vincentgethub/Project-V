@@ -12,16 +12,17 @@ from backend.core.database import SecurityEvent
 from backend.core.system_state import SystemState
 from backend.execution.modes import ModeStore
 from backend.notifications.callbacks import callback_data
+from backend.tests.inert_live import inert_live_code
 from backend.tests.test_auto_execution import AUTO, FakeTradingClient, executor, fill_entry
 from backend.tests.test_execution_controls import live_settings
 from backend.tests.test_swarm_and_callbacks import Harness, deliver, make_research_harness
 from backend.tests.test_telegram_flow import API, command_update, make
 
 harness = make_research_harness
-MODES: list[dict[str, Any]] = [
-    {},
-    AUTO,
-    {
+# LIVE-BAN: the AUTO_LIVE row reaches only the inert live code; tests using
+# MODES lift the ban locally (inert_live) so they can prove it still refuses.
+with inert_live_code():
+    LIVE_MODE: dict[str, Any] = {
         **AUTO,
         **live_settings().model_dump(
             include={
@@ -39,7 +40,11 @@ MODES: list[dict[str, Any]] = [
                 "live_daily_loss_limit",
             }
         ),
-    },
+    }
+MODES: list[Any] = [
+    {},
+    AUTO,
+    LIVE_MODE,
 ]
 
 
@@ -140,6 +145,7 @@ async def test_AX_50_expiry_never_reopens_or_closes_a_recorded_broker_intent(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("inert_live")
 @pytest.mark.parametrize("harness", MODES, indirect=True)
 async def test_AX_02_all_private_commands_cannot_upgrade_or_reset(harness: Harness) -> None:
     h = harness
@@ -193,6 +199,7 @@ async def test_AX_02_all_private_commands_cannot_upgrade_or_reset(harness: Harne
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("inert_live")
 @pytest.mark.parametrize("harness", MODES, indirect=True)
 @pytest.mark.parametrize("action", ["A", "R", "D", "P", "S", "malformed"])
 async def test_AX_02_every_callback_cannot_upgrade_mode(harness: Harness, action: Any) -> None:

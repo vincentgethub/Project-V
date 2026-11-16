@@ -15,6 +15,7 @@ from backend.core.clock import FrozenClock
 from backend.core.database import create_database, create_schema
 from backend.data import market_calendar
 from backend.data.market_calendar import CalendarFactory, MarketCalendar
+from backend.tests.inert_live import inert_live_code
 
 pytest_plugins = ("scripts.mutation_audit",)
 
@@ -247,3 +248,10 @@ def bounded_advisory_work(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(ChiefRiskOfficer, "evaluate", evaluate)
     monkeypatch.setattr(ChiefRiskOfficer, "max_allowed_qty", size)
+
+
+@pytest.fixture
+def inert_live() -> Iterator[None]:
+    """LIVE-BAN: opt-in only, for refusal tests of the inert live code."""
+    with inert_live_code():
+        yield

@@ -394,6 +394,7 @@ async def test_final_full_cro_rechecks_after_last_await_before_sending(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("inert_live")
 @pytest.mark.parametrize("harness", [AUTO], indirect=True)
 async def test_AX_42_ceiling_refuses_configuration_drift_before_any_durable_entry(
     harness: Harness,

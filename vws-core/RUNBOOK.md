@@ -45,6 +45,11 @@ Host AUTO resumes use `ops resume-auto --operator NAME` and the exact phrase
 prerequisites and recorded evidence pass. Setup never upgrades modes. Telegram can only downgrade:
 `/manual`, `/pause`, `/halt`; it never resets a halt or enables auto/live.
 
+LIVE-BAN (night1): AUTO_LIVE is hard-banned in this build. `EXECUTION_MODE=AUTO_LIVE`
+fails configuration load with "AUTO_LIVE is banned", and `ops enable-live` exits 1
+before opening any keyring, ledger or broker connection. The live unlock code above
+stays in the tree, inert. Re-allowing live is a code change plus Vincent's explicit approval.
+
 ## Halt, panic and recovery
 
 Run `python -m vws --env-file .env ops panic --operator NAME --reason "suspected compromise"`.

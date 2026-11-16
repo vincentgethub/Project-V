@@ -27,6 +27,7 @@ edge_outcomes = weekly.edge_outcomes
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("inert_live")
 @pytest.mark.parametrize(
     "fault",
     [None, "sessions", "report", "halt", "accounting", "drill", "ready", "feeds", "security"],

@@ -4676,6 +4676,7 @@ async def test_AX_30_monitor_faults_cancel_remainders_and_preserve_verified_stop
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("inert_live")
 @pytest.mark.parametrize("harness", [AUTO], indirect=True)
 @pytest.mark.parametrize("fault", ["missing", "state", "settings", "account", "locked"])
 async def test_AX_41_live_readiness_refuses_before_any_transport_use(

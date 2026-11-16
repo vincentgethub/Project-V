@@ -95,3 +95,22 @@ def test_LIVE_BAN_live_guard_and_enable_live_code_remain_present_and_inert() -> 
     # The Literal keeps AUTO_LIVE so inert live code still type-checks; the
     # mode="before" validator above is what rejects it at every load.
     assert "AUTO_LIVE" in get_args(config_module.Settings.model_fields["execution_mode"].annotation)
+
+
+def test_LIVE_BAN_banned_set_is_immutable_and_names_auto_live() -> None:
+    assert config_module.BANNED_EXECUTION_MODES == frozenset({"AUTO_LIVE"})
+    assert type(config_module.BANNED_EXECUTION_MODES) is frozenset
+
+
+def test_LIVE_BAN_no_production_code_can_lift_the_ban() -> None:
+    offenders = []
+    for root in ("backend", "vws", "scripts"):
+        for path in sorted((PROJECT / root).rglob("*.py")):
+            if "tests" in path.parts or path == PROJECT / "backend/core/config.py":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "BANNED_EXECUTION_MODES" in text or "inert_live" in text:
+                offenders.append(path.relative_to(PROJECT).as_posix())
+    assert offenders == []
+    config_text = (PROJECT / "backend/core/config.py").read_text(encoding="utf-8")
+    assert config_text.count("BANNED_EXECUTION_MODES") == 3

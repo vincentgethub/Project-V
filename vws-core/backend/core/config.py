@@ -133,6 +133,15 @@ def _json_exact(value: object) -> object:
     return value
 
 
+# LIVE-BAN: paper-only build. The live guard and enable-live code stay inert.
+# Re-allowing live trading is a code change plus Vincent's explicit approval.
+BANNED_EXECUTION_MODES: frozenset[str] = frozenset({"AUTO_LIVE"})
+AUTO_LIVE_BANNED = (
+    "AUTO_LIVE is banned: this build is paper-only; re-enabling live trading "
+    "requires a code change and Vincent's explicit approval"
+)
+
+
 class Settings(BaseSettings):
     """R-06: paper is default; unsafe overrides fail validation at startup.
 
@@ -448,12 +457,14 @@ class Settings(BaseSettings):
     @field_validator("execution_mode", mode="before")
     @classmethod
     def validate_execution_mode(cls, value: object) -> str:
-        """AX-02/SEC-10: an unknown mode cannot enable automatic behavior."""
-        return (
-            value
-            if isinstance(value, str) and value in {"MANUAL", "AUTO_PAPER", "AUTO_LIVE"}
-            else "MANUAL"
-        )
+        """AX-02/SEC-10: an unknown mode cannot enable automatic behavior.
+
+        LIVE-BAN: AUTO_LIVE is rejected outright, never downgraded silently.
+        """
+        if isinstance(value, str) and value.strip().upper() in BANNED_EXECUTION_MODES:
+            raise ValueError(AUTO_LIVE_BANNED)
+        allowed = {"MANUAL", "AUTO_PAPER", "AUTO_LIVE"} - BANNED_EXECUTION_MODES
+        return value if isinstance(value, str) and value in allowed else "MANUAL"
 
     @field_validator("display_tz")
     @classmethod

@@ -45,6 +45,7 @@ def live_settings() -> Settings:
     )
 
 
+@pytest.mark.usefixtures("inert_live")
 @pytest.mark.parametrize(
     "missing",
     [

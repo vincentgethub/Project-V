@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
-from backend.core.errors import SafetyError
+from backend.core.errors import ConfigurationError, SafetyError
 from backend.core.logging import redact
 from vws.progress import read_progress
 
@@ -123,6 +123,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.healthcheck and args.command is None:
         parser.error("a command is required")
     try:
+        if args.command == "ops" and args.operation == "enable-live":
+            # LIVE-BAN: refused before any keyring, context, or broker access.
+            from backend.core.config import AUTO_LIVE_BANNED
+
+            raise ConfigurationError(AUTO_LIVE_BANNED)
         if args.healthcheck:
             from backend.core.clock import SystemClock
             from backend.ops.process import heartbeat_is_fresh
