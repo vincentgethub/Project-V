@@ -13,7 +13,7 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-- Nightly replay (item 5): scheduled read-only offline replay workflow (RED).
+- Nightly replay (item 5): daily 08:23 UTC read-only offline replay workflow; pinned actions, no secrets, single flight.
 Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.
