@@ -19,7 +19,7 @@ from backend.core.errors import ConfigurationError
 from backend.core.logging import redact
 from backend.security.secret_loader import (
     INJECTED_PREFIX,
-    SECRETS_UNAVAILABLE,
+    LOADER_REFUSAL,
     SERVICE_CREDENTIALS,
     InjectedSecretStore,
     SecretsUnavailableError,
@@ -108,7 +108,7 @@ def test_SEC_LOADER_injected_is_used_only_after_systemd_and_secret_service() -> 
 def test_SEC_LOADER_no_source_is_secrets_unavailable() -> None:
     with pytest.raises(SecretsUnavailableError) as caught:
         select_secret_store({}, keyring=unavailable_keyring)
-    assert str(caught.value).startswith(SECRETS_UNAVAILABLE)
+    assert str(caught.value).startswith(LOADER_REFUSAL)
     assert isinstance(caught.value, ConfigurationError)
 
 
@@ -345,7 +345,7 @@ def test_SEC_LOADER_dotenv_cannot_be_a_secret_source(tmp_path: Path, line: str) 
     env.write_text(line + "\n", encoding="utf-8")
     with pytest.raises(ConfigurationError) as caught:
         load_settings(env_file=env)
-    assert SECRETS_UNAVAILABLE in str(caught.value)
+    assert LOADER_REFUSAL in str(caught.value)
     assert "TEST_ONLY" not in str(caught.value)
 
 

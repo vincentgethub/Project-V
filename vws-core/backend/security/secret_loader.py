@@ -30,7 +30,7 @@ from backend.core.errors import ConfigurationError
 from backend.core.logging import register_secrets
 from backend.security.secrets import SecretStore
 
-SECRETS_UNAVAILABLE = "SECRETS_UNAVAILABLE"
+LOADER_REFUSAL = "SECRETS_UNAVAILABLE"
 CREDENTIAL_PREFIX = "vws."
 INJECTED_PREFIX = "VWS_INJECTED_"
 SOURCE_SELECTOR = "VWS_SECRET_SOURCE"
@@ -59,7 +59,7 @@ class SecretsUnavailableError(ConfigurationError):
     """SEC-LOADER: no approved secret source; the process must not start."""
 
     def __init__(self, reason: str) -> None:
-        super().__init__(f"{SECRETS_UNAVAILABLE}: {reason}")
+        super().__init__(f"{LOADER_REFUSAL}: {reason}")
 
 
 class ProbedSecretStore(SecretStore, Protocol):
