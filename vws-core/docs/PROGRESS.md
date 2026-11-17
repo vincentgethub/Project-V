@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: November 16, 2026 - PF-04 validate-once cache
+Last updated: November 16, 2026 - PF-04 validate-once cache (GD-07 test fix)
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.

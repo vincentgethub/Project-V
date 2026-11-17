@@ -12,7 +12,10 @@ from backend.core.errors import DataIntegrityError
 from backend.data.history import FrozenHistory, HistoryBundle, validate_history
 from backend.data.market_calendar import MarketCalendar
 from backend.domain.models import CapitalStatus, DeployableCapital
+from backend.evaluation import equity as equity_module
 from backend.evaluation import history_cache
+from backend.evaluation import replay as replay_module
+from backend.evaluation import weekly as weekly_module
 from backend.evaluation.fixtures import seal_offline_fixtures
 from backend.evaluation.history_cache import ValidatedHistories
 from backend.evaluation.registry import Variant
@@ -118,9 +121,10 @@ def test_PF04_mutating_a_validated_bundle_is_refused_or_forces_revalidation(
     bar = checked.bundle.series[0].bars[0]
     assert bar is not history.bundle.series[0].bars[0]
     # Ordinary mutation is refused: the models are frozen.
-    for target, field, value in ((checked, "bundle", other.bundle), (bar, "close", D("1.00"))):
-        with pytest.raises(ValidationError):
-            setattr(target, field, value)
+    with pytest.raises(ValidationError):
+        checked.bundle = other.bundle
+    with pytest.raises(ValidationError):
+        bar.close = D("1.00")
     assert cache.validated(history, calendar) is checked and len(calls) == 1
     # A copy with changed content has a new hash: fully revalidated, and refused.
     changed = bar.model_copy(update={"volume": bar.volume + 1})
@@ -180,8 +184,12 @@ def test_PF04_evaluator_owns_one_cache_and_validates_once_across_windows(
     runner_args: tuple[Any, ...], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     counts: list[str] = []
-    for name in ("history_cache", "replay", "weekly", "equity"):
-        module = __import__(f"backend.evaluation.{name}", fromlist=["validate_history"])
+    for name, module in (
+        ("history_cache", history_cache),
+        ("replay", replay_module),
+        ("weekly", weekly_module),
+        ("equity", equity_module),
+    ):
         original: Callable[[HistoryBundle, MarketCalendar], HistoryBundle] = module.validate_history
 
         def counted(
