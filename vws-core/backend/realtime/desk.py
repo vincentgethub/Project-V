@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -26,6 +26,14 @@ from backend.realtime.schedules import Schedules
 from backend.realtime.storage import RealtimeStore
 
 
+class EntryBudget(Protocol):
+    """EGR-04: the host egress budget; True stops new entries only."""
+
+    def entries_blocked(self) -> bool: ...
+
+    def status_line(self) -> str | None: ...
+
+
 class RealtimeDesk:
     def __init__(
         self,
@@ -34,6 +42,8 @@ class RealtimeDesk:
         calendar: MarketCalendar,
         schedules: Schedules,
         automatic: Callable[[], bool],
+        *,
+        egress: EntryBudget | None = None,
     ) -> None:
         self.store, self.config, self.calendar, self.schedules = (
             store,
@@ -49,6 +59,7 @@ class RealtimeDesk:
                 "RT: desk must bind the complete current YAML policy and ledger"
             )
         self.automatic = automatic
+        self.egress = egress
 
     def context(self, symbol: str, at: datetime | None = None) -> RealtimeContext:
         return context(
@@ -97,6 +108,15 @@ class RealtimeDesk:
         """Only an opening proposal may call this; held exits have no RT gate."""
         if not isinstance(proposal_id, UUID):
             raise DataIntegrityError("RT-10: canonical opening proposal identity required")
+        if self.egress is not None:
+            try:
+                blocked = self.egress.entries_blocked()
+            except Exception:
+                blocked = True
+            if blocked:
+                raise ExecutionDisabledError(
+                    "EGR-95: new entry unavailable: monthly egress budget at 95% or unreadable"
+                )
         self.store.ledger.verify_chain()
         with Session(self.store.ledger.engine) as session:
             order = session.scalar(select(Order).where(Order.proposal_id == proposal_id))
@@ -146,6 +166,13 @@ class RealtimeDesk:
                 lines.append(
                     f"{name}: {health_at(row, now, self.config.rt).value}; last heartbeat {seconds}s ago"
                 )
+        if self.egress is not None:
+            try:
+                line = self.egress.status_line()
+            except Exception:
+                line = "EGR: egress budget UNVERIFIED; treated as 95%"
+            if line is not None:
+                lines.append(line)
         return tuple(lines)
 
     def events(self) -> str:

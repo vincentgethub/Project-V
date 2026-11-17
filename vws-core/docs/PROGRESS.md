@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: November 16, 2026 - egress watchdog tests (RED)
+Last updated: November 16, 2026 - egress watchdog: monthly outbound budget
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -13,7 +13,7 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-Egress watchdog: monthly outbound budget tests written first; implementation follows.
+Egress watchdog: 80% pauses optional egress, 95% or unreadable blocks new entries; exits stay open.
 Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.

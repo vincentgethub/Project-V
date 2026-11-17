@@ -1,6 +1,7 @@
 """OPS-02/AX-11: connected composition, only on explicit guarded host start."""
 
 import asyncio
+import os
 import signal
 from collections.abc import Callable
 from contextlib import AsyncExitStack
@@ -64,11 +65,13 @@ from backend.execution.stop_readiness import live_raise_reasons
 from backend.execution.worker import SingleAttemptWorker
 from backend.funding.activities import AlpacaActivitiesSource
 from backend.learning.service import LearningService
+from backend.net.egress import configure_budget
 from backend.notifications.callbacks import ApprovalGate
 from backend.notifications.telegram_bot import TelegramBot
 from backend.ops.account_context import LedgerAccountContext
 from backend.ops.desk_source import ConnectedDeskSource
 from backend.ops.doctor import DoctorResult
+from backend.ops.egress_budget import EgressWatch
 from backend.ops.job_health import JobHealth
 from backend.ops.journal import Journal
 from backend.ops.k_runtime import ExtraControls
@@ -136,6 +139,7 @@ async def compose(
     *,
     resources: AsyncExitStack,
     accounting_only: Literal[False] = False,
+    egress: EgressWatch | None = None,
 ) -> HostRuntime: ...
 
 
@@ -147,6 +151,7 @@ async def compose(
     *,
     resources: AsyncExitStack,
     accounting_only: Literal[True],
+    egress: EgressWatch | None = None,
 ) -> None: ...
 
 
@@ -157,6 +162,7 @@ async def compose(
     *,
     resources: AsyncExitStack,
     accounting_only: bool = False,
+    egress: EgressWatch | None = None,
 ) -> HostRuntime | None:
     if accounting_only and context.settings.execution_mode != "AUTO_LIVE":
         raise ConfigurationError(
@@ -181,6 +187,9 @@ async def compose(
     registry, calendar = InstrumentRegistry.from_csv(project / "config"), MarketCalendar()
     config = load_yaml_config(project / "config/config.yaml", allowed_symbols=registry.symbols)
     policy = security_cli._require_network_policy(context, config)
+    if egress is not None:
+        # EGR-03: one budget gate for every EgressPolicy check in this host process.
+        configure_budget(egress)
     reader = AsyncAlpacaReader(clock, state, plan=settings.alpaca_data_plan)
     resources.push_async_callback(reader.aclose)
     reader.bind_policy(settings, state.ledger)
@@ -327,6 +336,7 @@ async def compose(
         calendar,
         schedules,
         lambda: modes is not None and modes.effective != "MANUAL",
+        egress=egress,
     )
     extras.event_factor = realtime.factor
     from backend.evaluation.availability import GradeStore
@@ -764,6 +774,8 @@ async def compose(
                 SecurityEvent, kind="DESK_JOB_BINDING", detail=proof.model_dump(mode="json")
             )
         await job_health(run)
+        if egress is not None:
+            await egress.alert(lambda message: bot.notify(message, True))
 
     orchestrator = Orchestrator(
         config,
@@ -939,7 +951,12 @@ async def execute(env_file: Path | None) -> None:
                     raise ConfigurationError("Runtime evidence directory cannot be a link")
                 directory.mkdir(mode=0o700, exist_ok=True)
             async with AsyncExitStack() as resources:
-                runtime = await compose(context, store, result, resources=resources)
+                egress = EgressWatch(
+                    data / "egress-counter.json",
+                    context.ledger.clock,
+                    budget=os.environ.get("VWS_EGRESS_BUDGET_BYTES"),
+                )
+                runtime = await compose(context, store, result, resources=resources, egress=egress)
                 stop = asyncio.Event()
                 loop = asyncio.get_running_loop()
 

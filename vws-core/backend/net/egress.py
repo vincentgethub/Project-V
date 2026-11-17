@@ -15,7 +15,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Never
+from typing import Any, Never, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from backend.core.database import SecurityEvent
@@ -130,6 +130,24 @@ def build_allowlist(
     return frozenset(hosts)
 
 
+@runtime_checkable
+class BudgetGate(Protocol):
+    """EGR-03: decides whether a purpose may use outbound bytes right now."""
+
+    def allows(self, purpose: str) -> bool: ...
+
+
+_budget: BudgetGate | None = None
+
+
+def configure_budget(gate: object) -> None:
+    """EGR-03: bind the host's monthly egress budget; None removes it (tests/CLIs)."""
+    global _budget
+    if gate is not None and not isinstance(gate, BudgetGate):
+        raise ConfigurationError("egress budget gate must decide by purpose")
+    _budget = gate
+
+
 @dataclass(frozen=True, slots=True)
 class EgressPolicy:
     """SEC-31: refuse unknown destinations with a durable, sanitized audit row."""
@@ -160,6 +178,18 @@ class EgressPolicy:
             self.deny(purpose=purpose, reason="invalid HTTPS destination")
         if host not in self.hosts:
             self.deny(purpose=purpose, reason="hostname is not allowlisted", host=host)
+        gate = _budget
+        if gate is not None:
+            try:
+                allowed = gate.allows(purpose)
+            except Exception:
+                allowed = False
+            if not allowed:
+                self.deny(
+                    purpose=purpose,
+                    reason="egress budget pauses non-essential traffic",
+                    host=host,
+                )
         return host
 
 

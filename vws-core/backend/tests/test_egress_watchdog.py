@@ -144,6 +144,7 @@ def test_EGR_primary_interface_is_the_lowest_metric_default_route_never_lo() -> 
         ROUTE_HEADER + "\n",
         ROUTE_HEADER + "\nlo\t00000000\t00000000\t0003\t0\t0\t0\t00000000\t0\t0\t0\n",
         "Iface\tGateway\n" + "eth0\t00000000\n",
+        "Iface\tDestination\tGateway\tFlags\tRefCnt\n" + "eth0\t00000000\t0\t0003\t0\n",
         ROUTE_HEADER + "\neth0\t00000000\t0100A8C0\tzz\t0\t0\t100\t00000000\t0\t0\t0\n",
         ROUTE_HEADER + "\neth0\t00000000\n",
         ROUTE_HEADER + "\nbad/if\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n",

@@ -254,6 +254,19 @@ Failed urgent delivery stays pending, latches HALTED and stops heartbeat renewal
 An optional HTTPS dead-man URL is contacted only after successful jobs, through
 the guarded HTTP factory. Three job failures or a missed daily scan alert privately.
 
+Monthly egress budget (Linux host): the runtime counts outbound bytes on the
+default-route interface (`/proc/net/route`, never `lo`) from `/proc/net/dev` and
+keeps `data/egress-counter.json` per UTC month, written atomically. A reboot,
+counter reset or wrap never lowers the count. The budget is 1,000,000,000 bytes
+and `VWS_EGRESS_BUDGET_BYTES` can only lower it; a higher or malformed value is
+refused, the default applies and you get an alert. At 80% research, news, LLM
+and optional feeds pause; at 95% new entries are blocked too. Broker order
+status, cancels, reconcile, flatten, alerts and the healthcheck are never
+paused. A missing, corrupt or unreadable counter counts as 95% and alerts; a
+missing counter restarts from the kernel total since boot. A corrupt counter is
+left for review: inspect it, then delete it to restart the count. Other
+platforms report the budget as unsupported and stay at the 95% behavior.
+
 For a known older SQLite schema, stop the runtime first and run:
 
 ```powershell
