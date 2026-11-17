@@ -540,3 +540,89 @@ async def test_EGR_a_raising_gate_fails_closed_for_entries_and_non_essential_egr
     seed(state, used=0, last=100)
     plain = RealtimeDesk(store, baseline, CAL, schedules, lambda: True, egress=ok)
     assert not any(line.startswith("EGR") for line in plain.statuses())
+
+
+INVALID_BUDGETS = {
+    "zero": "0",
+    "negative": "-5",
+    "non-numeric": "lots",
+    "empty": "",
+    "too-high": str(DEFAULT_BUDGET_BYTES * 5),
+}
+
+
+@pytest.mark.parametrize("value_class", sorted(INVALID_BUDGETS))
+@pytest.mark.asyncio
+async def test_EGR_invalid_env_budget_keeps_the_default_and_every_live_gate_active(
+    engine: Engine,
+    clock: FrozenClock,
+    baseline: YamlConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value_class: str,
+) -> None:
+    """EGR-02: an invalid cap never disables the gate; the default governs every live path."""
+    monkeypatch.setenv("VWS_EGRESS_BUDGET_BYTES", INVALID_BUDGETS[value_class])
+    proc = write_proc(tmp_path / "proc", 100)
+    state = tmp_path / "data" / "egress-counter.json"
+    state.parent.mkdir()
+    # Built from the environment exactly as vws/runtime_cli.py execute() builds it.
+    gauge = EgressWatch(
+        state,
+        FrozenClock(NOV),
+        proc=proc,
+        budget=os.environ.get("VWS_EGRESS_BUDGET_BYTES"),
+        platform="linux",
+    )
+    assert gauge.budget == DEFAULT_BUDGET_BYTES == 1_000_000_000
+    ledger = Ledger(engine, clock)
+    policy = EgressPolicy(build_allowlist(rss_urls=("https://feeds.example.org/rss",)), ledger)
+    egress.configure_budget(gauge)
+    store = RealtimeStore(ledger, SCOPE, baseline.config_hash)
+    schedules = Schedules(
+        store.ledger, MacroCalendar(tmp_path / "missing.csv"), tmp_path / "events_policy.yaml"
+    )
+    desk = RealtimeDesk(store, baseline, CAL, schedules, lambda: True, egress=gauge)
+    sent: list[str] = []
+
+    async def notify(message: str) -> None:
+        sent.append(message)
+
+    for used, level in (
+        (0, EgressLevel.OK),
+        (800_000_000, EgressLevel.PAUSED),
+        (950_000_000, EgressLevel.BLOCKED),
+    ):
+        seed(state, used=used, last=100)
+        status = gauge.sample()
+        assert status.level == level and status.used == used
+        assert status.budget == DEFAULT_BUDGET_BYTES
+        if level == EgressLevel.OK:
+            # A zero or negative value was not applied as a budget (it would block at 0 bytes).
+            assert (
+                policy.check_url("https://feeds.example.org/rss", purpose="rss")
+                == "feeds.example.org"
+            )
+        else:
+            # A too-high value was not applied (it would leave 80% and 95% of the default open).
+            with pytest.raises(EgressDeniedError, match="budget"):
+                policy.check_url("https://feeds.example.org/rss", purpose="rss")
+        assert (
+            policy.check_url("https://paper-api.alpaca.markets/v2/orders", purpose="alpaca-order")
+            == "paper-api.alpaca.markets"
+        )
+        if level == EgressLevel.BLOCKED:
+            with pytest.raises(ExecutionDisabledError, match="EGR-95"):
+                await desk.require_entry(uuid4())
+        else:
+            with pytest.raises(DataIntegrityError, match="RT-10"):
+                await desk.require_entry(uuid4())
+        assert desk.hard_exit("NVDA", clock.now()) is None
+        assert await gauge.alert(notify) is (value_class != "empty" or level != EgressLevel.OK)
+    level_alerts = [message for message in sent if "refused" not in message]
+    assert len(level_alerts) == 2
+    assert "80% or more" in level_alerts[0] and "95% or more" in level_alerts[1]
+    assert "800000000 of 1000000000 bytes" in level_alerts[0]
+    assert "950000000 of 1000000000 bytes" in level_alerts[1]
+    if value_class != "empty":
+        assert sent[0] == gauge.refusal and sum("refused" in message for message in sent) == 1

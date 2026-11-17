@@ -950,3 +950,71 @@ def test_SEC_13_rejected_or_nonobject_rotation_response_preserves_the_secret(
         module.rotate_secret(context, "BROKER_API_KEY", store)
     assert store.get("BROKER_API_KEY") == SecretStr("PK-old-isolated")
     assert events(context.engine, "SECRET_ROTATED") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("value_class", "raw"),
+    [
+        ("zero", "0"),
+        ("negative", "-5"),
+        ("non-numeric", "lots"),
+        ("empty", ""),
+        ("too-high", "5000000000"),
+    ],
+)
+async def test_EGR_start_cli_builds_the_live_watchdog_with_the_default_for_invalid_budgets(
+    context: module.SecurityContext,
+    monkeypatch: pytest.MonkeyPatch,
+    value_class: str,
+    raw: str,
+) -> None:
+    """EGR-02 live path: execute() reads VWS_EGRESS_BUDGET_BYTES and hands compose a gate."""
+    from shutil import copytree
+
+    from backend.ops.doctor import Check, DoctorResult
+    from backend.ops.egress_budget import DEFAULT_BUDGET_BYTES, EgressWatch
+    from vws import runtime_cli
+
+    copytree(Path(__file__).resolve().parents[2] / "config", module.PROJECT / "config")
+    monkeypatch.setenv("VWS_EGRESS_BUDGET_BYTES", raw)
+    monkeypatch.setattr(runtime_cli, "KeyringSecretStore", MemorySecrets)
+    monkeypatch.setattr(
+        runtime_cli, "load_host_settings", lambda _project, _path, _store: context.settings
+    )
+    monkeypatch.setattr(module, "open_context", lambda _path, **_kwargs: context)
+    monkeypatch.setattr(runtime_cli, "configure_logging", lambda **_kwargs: None)
+    gates: list[object] = []
+
+    async def doctor(_context: object, _store: object) -> DoctorResult:
+        return DoctorResult(
+            checks=(
+                Check(
+                    name="synthetic",
+                    required=True,
+                    status="PASS",
+                    message="Synthetic startup gate",
+                    fix="Fixture",
+                ),
+            )
+        )
+
+    class Runtime:
+        async def run(self, stop: asyncio.Event) -> None:
+            stop.set()
+
+    async def compose(*_args: object, **kwargs: object) -> Runtime:
+        gates.append(kwargs["egress"])
+        return Runtime()
+
+    monkeypatch.setattr(module, "doctor_result", doctor)
+    monkeypatch.setattr(runtime_cli, "compose", compose)
+    await runtime_cli.execute(None)
+    assert len(gates) == 1
+    gate = gates[0]
+    # The gate is installed (never None) and keeps the safe default for every invalid class.
+    assert isinstance(gate, EgressWatch)
+    assert gate.budget == DEFAULT_BUDGET_BYTES == 1_000_000_000
+    assert gate.state_path == module.PROJECT / "data" / "egress-counter.json"
+    if value_class != "empty":
+        assert gate.refusal is not None and "refused" in gate.refusal
