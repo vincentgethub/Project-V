@@ -71,6 +71,7 @@ from backend.evaluation.dividends import distribution_rates
 from backend.evaluation.edge import EquityPoint
 from backend.evaluation.filter_shadows import filters as reduction_filters
 from backend.evaluation.fundamental_timeline import FundamentalTimeline, precompute_fundamentals
+from backend.evaluation.history_cache import ValidatedHistories
 from backend.evaluation.outcomes import Outcome, OutcomeSetup, _simulate
 from backend.evaluation.universe import PIT_NOTICE, HistoricalUniverse
 from backend.evaluation.weekly import (
@@ -385,12 +386,16 @@ def replay(
     cache_root: Path | None = None,
     preparation: ReplayPreparation | None = None,
     calibration: CostCalibration | None = None,
+    histories: ValidatedHistories | None = None,
 ) -> ReplayRun:
     """Fixed baseline only. Worker count affects speed, never sorting or decisions."""
     try:
         seed = ReplayRequest.model_validate(request)
-        frozen = FrozenHistory.model_validate(history)
-        validate_history(frozen.bundle, calendar)
+        if histories is None:
+            frozen = FrozenHistory.model_validate(history)
+            validate_history(frozen.bundle, calendar)
+        else:
+            frozen = histories.validated(history, calendar)
         facts = FrozenFilings.model_validate(filings)
         policy = YamlConfig.model_validate(config)
         limits = Settings.validated_copy(settings)
@@ -926,6 +931,7 @@ def replay(
             policy.cm,
             limits.tax_profile,
             calibration=cost_calibration,
+            histories=histories,
         )
         return ReplayRun(
             request=seed,

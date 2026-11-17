@@ -17,6 +17,7 @@ from backend.domain.instruments import InstrumentRegistry
 from backend.domain.models import AssetClass, DeployableCapital, FrozenModel, Instrument, Symbol
 from backend.evaluation.calibrated_costs import CostCalibration
 from backend.evaluation.costs import FeeSchedule
+from backend.evaluation.history_cache import ValidatedHistories
 from backend.evaluation.registry import Registration, Variant, apply_variant
 from backend.evaluation.replay import ReplayPreparation, ReplayRequest, prepare_replay, replay
 from backend.evaluation.universe import HistoricalUniverse
@@ -170,6 +171,7 @@ class ReplayEvaluator:
         self._preparations: dict[str, ReplayPreparation] = {}
         self._shared_arrays: dict[str, ReplayPreparation] = {}
         self._samples: dict[tuple[str, date, date], Sample] = {}
+        self.histories = ValidatedHistories(calendar)
 
     def preflight(self, family: str) -> None:
         """Refuse unavailable implementations before consuming a one-use holdout."""
@@ -286,6 +288,7 @@ class ReplayEvaluator:
             cache_root=self.cache_root,
             preparation=prepared,
             calibration=self.calibration,
+            histories=self.histories,
         )
         trades = []
         for item in run.decisions:

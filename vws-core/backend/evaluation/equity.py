@@ -23,6 +23,7 @@ from backend.evaluation.dividends import (
     distribution_rates,
 )
 from backend.evaluation.edge import EdgeKey, EquityCurve, EquityPoint
+from backend.evaluation.history_cache import ValidatedHistories
 from backend.evaluation.outcomes import Outcome
 
 MAX_EQUITY_SESSIONS = 20000
@@ -67,6 +68,7 @@ def build_equity_curve(
     start: date,
     end: date,
     portfolio: bool = False,
+    histories: ValidatedHistories | None = None,
 ) -> EquityBuild:
     """No new sizing/fill model. Cash, dated fees and whole-share splits follow EV/CM.
 
@@ -76,8 +78,11 @@ def build_equity_curve(
     """
     try:
         bound = EdgeKey.model_validate(key)
-        frozen = FrozenHistory.model_validate(history)
-        validate_history(frozen.bundle, calendar)
+        if histories is None:
+            frozen = FrozenHistory.model_validate(history)
+            validate_history(frozen.bundle, calendar)
+        else:
+            frozen = histories.validated(history, calendar)
         if not isinstance(outcomes, tuple) or len(outcomes) > 100000:
             raise ValueError("bounded immutable outcomes required")
         checked = tuple(Outcome.model_validate(item) for item in outcomes)

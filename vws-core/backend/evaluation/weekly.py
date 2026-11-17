@@ -24,6 +24,7 @@ from backend.evaluation.dividends import NOTICE as DISTRIBUTION_NOTICE
 from backend.evaluation.edge import EdgeCard, EdgeKey, summarize_edge
 from backend.evaluation.equity import _selected, build_equity_curve
 from backend.evaluation.fill_quality import DriftCheck, QualityBucket
+from backend.evaluation.history_cache import ValidatedHistories
 from backend.evaluation.outcomes import Cohort, Outcome
 from backend.evaluation.security_summary import WeeklySecurity, render_security
 from backend.evaluation.universe import PIT_NOTICE
@@ -261,6 +262,7 @@ def build_weekly_report(
     *,
     security: WeeklySecurity | None = None,
     calibration: CostCalibration | None = None,
+    histories: ValidatedHistories | None = None,
 ) -> WeeklyReport:
     """One card per playbook/variant/status, plus explicit fundamental subgroups.
 
@@ -269,8 +271,11 @@ def build_weekly_report(
     """
     try:
         bound = ReportContext.model_validate(context)
-        frozen = FrozenHistory.model_validate(history)
-        validate_history(frozen.bundle, calendar)
+        if histories is None:
+            frozen = FrozenHistory.model_validate(history)
+            validate_history(frozen.bundle, calendar)
+        else:
+            frozen = histories.validated(history, calendar)
         fees = FeeSchedule.model_validate(schedule)
         costs = CostModelConfig.model_validate(policy)
         taxes = TaxProfile.model_validate(tax_profile)
@@ -328,6 +333,7 @@ def build_weekly_report(
                     initial_equity=bound.initial_equity,
                     start=bound.start,
                     end=bound.end,
+                    histories=histories,
                 )
                 curve, note = built.curve, built.reason
             cards.append(summarize_edge(key, rows, calendar=calendar, curve=curve))
