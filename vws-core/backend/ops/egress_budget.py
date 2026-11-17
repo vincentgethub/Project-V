@@ -314,7 +314,11 @@ class EgressWatch:
             try:
                 await notify(message)
             except Exception:
-                continue
-            self._alerted.add(episode)
-            delivered = True
+                # Not marked as sent: the next sample retries this episode.
+                retry = True
+            else:
+                retry = False
+            if not retry:
+                self._alerted.add(episode)
+                delivered = True
         return delivered
