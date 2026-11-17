@@ -52,5 +52,13 @@ Applying it earlier would block the import push.
   fast, so changing visibility is Vincent's call, with the cost spelled out.
 
 ## Who applies it
-The settings are GitHub writes (`gh api` ruleset and settings calls). They need
-Vincent's explicit OK at apply time. No builder applies them on its own.
+Vincent's standing order (2026-11-16 02:12 CT) pre-approves everything except
+email. Under it:
+- **Boss authorizes the apply** after the first green CI on the imported
+  history. No builder applies it without Boss's go.
+- The apply uses the exact required-check names read from that green run
+  (`gh api repos/vincentgethub/Project-V/commits/<sha>/check-runs`).
+- The apply is logged in STATUS (what was set, when, and from which run).
+- Vincent is told afterward.
+- **Repo visibility is not covered**: it stays Vincent's call, because private
+  Actions minutes cost money.

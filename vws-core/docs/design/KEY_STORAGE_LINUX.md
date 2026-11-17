@@ -29,7 +29,8 @@ is readable by all of them.
      written to disk, logs, the DB or reports.
    - Honest risk: same-user processes can read `/proc/<pid>/environ`. Real-money
      keys never go on that host.
-4. **Anything else is `SECRETS_UNAVAILABLE`**: nonzero exit, no partial start.
+4. **Anything else is a loader refusal, `LOADER_REFUSAL`** (the code name since
+   a6ffa19; raised as `SecretsUnavailableError`): nonzero exit, no partial start.
 
 Never allowed: `.env` secrets, a plaintext keyring, a passphrase file next to
 the ciphertext, or keys in a CLI argument.
