@@ -79,7 +79,7 @@ class EgressStatus:
 
 def budget_from(raw: str | None) -> tuple[int, str | None]:
     """EGR-02: a budget can only be lowered; anything else uses the default."""
-    if raw is None or raw == "":
+    if raw is None:
         return DEFAULT_BUDGET_BYTES, None
     if not re.fullmatch(r"[0-9]{1,13}", raw) or not 1 <= int(raw) <= DEFAULT_BUDGET_BYTES:
         return DEFAULT_BUDGET_BYTES, (
