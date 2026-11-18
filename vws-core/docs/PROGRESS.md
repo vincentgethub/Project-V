@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: November 18, 2026 - mutation split places approved new IDs without moving old ones
+Last updated: November 18, 2026 - panic cancel mutants are killed by outcome checks; mutation pins updated
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.

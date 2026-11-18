@@ -1,10 +1,12 @@
 """AX-30/31: entry faults preserve only independently provable held protection."""
 
+from collections.abc import AsyncIterator
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 
 from backend.core.errors import ExecutionDisabledError, ProviderError, ReconciliationError
 from backend.core.system_state import SystemState
@@ -6245,3 +6247,303 @@ async def test_SEC_73_phase_c_polls_never_sleep_past_the_panic_deadline(
         assert pauses[0] == 0.05 and pauses[-1] < 0.05
     finally:
         await built.close()
+
+
+class ScriptedPaperBroker(FakeTradingClient):
+    """SEC-73: offline paper fake whose panic-time reads a test scripts after setup."""
+
+    def __init__(self, h: Harness) -> None:
+        super().__init__(h)
+        self.panic_read: Any = None
+        self.reads: list[str] = []
+        self.canceled: list[str] = []
+
+    def cancel_order_by_id(self, order_id: Any) -> None:
+        self.canceled.append(str(order_id))
+        super()._cancel_paper(order_id)
+
+    def get_order_by_id(self, order_id: Any, filter: object = None) -> dict[str, Any]:
+        if self.panic_read is not None:
+            self.reads.append(str(order_id))
+            self.panic_read(str(order_id))
+        return super().get_order_by_id(order_id, filter)
+
+
+@pytest_asyncio.fixture
+async def entered(harness: Harness, request: pytest.FixtureRequest) -> AsyncIterator[Any]:
+    """SEC-73 setup: one accepted paper entry; param None = production clock, else the
+    StepPanicClock step. Panic behaviour is exercised only in the test body."""
+    from backend.tests.test_auto_execution import StepPanicClock
+
+    step = getattr(request, "param", None)
+    clock = None if step is None else StepPanicClock(step=step)
+    alert = await deliver(harness)
+    client = ScriptedPaperBroker(harness)
+    built = executor(harness, client, panic_clock=clock)
+    try:
+        await built.enter(alert.proposal_id)
+        yield built, client, clock
+    finally:
+        await built.close()
+
+
+@pytest.fixture
+def live_refusal(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> Exception | None:
+    """SEC-73 setup: attempt one AUTO_LIVE composition without a readiness guard.
+
+    Paper-only: the broker is the offline fake. No panic clock or timer is passed, so this
+    is the production composition; the attempt's outcome is asserted by the test.
+    """
+    from backend.core.config import Settings
+    from backend.execution.alpaca_executor import AlpacaExecutor
+    from backend.tests.test_security_cli import MemorySecrets
+
+    settings = Settings.validated_copy(
+        harness.settings.model_copy(
+            update={
+                "execution_mode": "AUTO_LIVE",
+                "paper_trading": False,
+                "live_trading_enabled": True,
+                "live_trading_confirm": "I_ACCEPT_REAL_MONEY_RISK",
+            }
+        )
+    )
+    monkeypatch.setattr(harness.gate.risk.cro, "config", settings)
+    monkeypatch.setattr(harness.gate.compliance.engine, "config", settings)
+
+    class Captured(AlpacaExecutor):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arguments = (args, kwargs)
+
+    client = FakeTradingClient(harness)
+    captured = executor(harness, client, settings, constructor=Captured)
+    assert isinstance(captured, Captured)
+    args, kwargs = captured.arguments
+    assert "panic_clock" not in kwargs and "panic_timeout" not in kwargs
+    store = MemorySecrets()
+    store.set("ALPACA_LIVE_KEY_ID", settings.broker_api_key)
+    store.set("ALPACA_LIVE_SECRET", settings.broker_secret_key)
+    positional: list[Any] = [*args[:9], store, *args[10:]]
+    try:
+        AlpacaExecutor(*positional, **kwargs)
+    except Exception as error:
+        assert client.posts == [] and client.lookups == []
+        return error
+    return None
+
+
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+def test_SEC_73_production_composition_still_reaches_the_live_lock_refusal(
+    harness: Harness, live_refusal: Exception | None
+) -> None:
+    """SEC-73: without an injected panic clock, construction reaches AX-41's exact refusal."""
+    assert type(live_refusal) is ExecutionDisabledError
+    assert str(live_refusal) == (
+        "AUTO_LIVE is locked: history, drill, READY and healthy feeds required"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [{**AUTO, "panic_cancel_timeout_seconds": 1}], indirect=True)
+@pytest.mark.parametrize("entered", [None], indirect=True)
+async def test_SEC_73_default_budget_finalize_waits_out_pending_cancel_then_cancels(
+    harness: Harness, entered: Any
+) -> None:
+    """SEC-73: with no caller deadline, loop time plus the 1 s budget allows one phase C
+    pause, so a pending_cancel leg is seen canceled on the fourth read and finalized."""
+    import asyncio
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from backend.core.database import ExecutionOrderRecord, OrderEvent
+
+    built, client, _ = entered
+    with Session(harness.state.engine) as session:
+        entry = session.scalars(
+            select(ExecutionOrderRecord).where(ExecutionOrderRecord.role == "ENTRY")
+        ).one()
+    root = client.orders[entry.client_order_id]
+    root["status"] = "pending_cancel"
+
+    def cancel_on_fourth_read(order_id: str) -> None:
+        if len(client.reads) == 4:
+            client._cancel_paper(order_id)
+
+    client.panic_read = cancel_on_fourth_read
+    finalize = asyncio.ensure_future(
+        built._finalize_entry_cancellation(entry, reason="offline default panic budget")
+    )
+    try:
+        done, _ = await asyncio.wait({finalize}, timeout=10)
+        assert finalize in done
+        assert client.reads == [root["id"]] * 4
+        assert client.canceled == []
+        assert root["status"] == "canceled"
+        with Session(harness.state.engine) as session:
+            states = [
+                row.state
+                for row in session.scalars(
+                    select(OrderEvent)
+                    .where(OrderEvent.order_id == entry.order_id)
+                    .order_by(OrderEvent.seq)
+                )
+            ]
+        assert states[-2:] == ["CANCEL_REQUESTED", "CANCELED"]
+        assert finalize.result() == "CANCELED"
+        harness.state.ledger.verify_chain()
+    finally:
+        if not finalize.done():
+            finalize.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [{**AUTO, "panic_cancel_timeout_seconds": 1}], indirect=True)
+@pytest.mark.parametrize("entered", [None], indirect=True)
+async def test_SEC_73_default_panic_clock_cancels_and_records_the_open_entry(
+    harness: Harness, entered: Any
+) -> None:
+    """SEC-73: a panic on the production clock cancels the open entry once and records it."""
+    import asyncio
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from backend.core.database import ExecutionOrderRecord, SecurityEvent
+
+    built, client, _ = entered
+    with Session(harness.state.engine) as session:
+        entry = session.scalars(
+            select(ExecutionOrderRecord).where(ExecutionOrderRecord.role == "ENTRY")
+        ).one()
+    root = client.orders[entry.client_order_id]
+    harness.state.escalate(SystemState.HALTED, "offline production-clock panic")
+    panic = asyncio.ensure_future(built.cancel_unfilled_entries())
+    try:
+        done, _ = await asyncio.wait({panic}, timeout=10)
+        assert panic in done
+        assert client.canceled == [root["id"]]
+        assert root["status"] == "canceled"
+        with Session(harness.state.engine) as session:
+            result = session.scalar(
+                select(SecurityEvent)
+                .where(SecurityEvent.kind == "PANIC_CANCEL_RESULT")
+                .order_by(SecurityEvent.seq.desc())
+                .limit(1)
+            )
+        assert result is not None
+        assert result.detail == {
+            "entry_ids": [str(entry.id)],
+            "filled_orders": [],
+            "canceled_orders": [str(entry.order_id)],
+            "failed_orders": [],
+        }
+        assert panic.result() is None
+        assert harness.state.current() == SystemState.HALTED
+        harness.state.ledger.verify_chain()
+    finally:
+        if not panic.done():
+            panic.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [{**AUTO, "panic_cancel_timeout_seconds": 1}], indirect=True)
+@pytest.mark.parametrize("entered", [0.125], indirect=True)
+async def test_SEC_73_phase_c_read_spending_the_budget_is_cut_off_and_never_overslept(
+    harness: Harness, entered: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-73: injected clock, step 0.125, budget 1 -> injected deadline 1.125.
+
+    Reads 1-2 (phases A, B) fail fast; read 3 (phase C) spends 0.5 injected seconds and
+    then blocks. Its scope must expire at 1.125, the only pause is 0 (no time left), and
+    the panic ends at injected 1.375. A 3 s real-time guard turns a hang into an assertion.
+    """
+    import asyncio
+    import sys
+    import threading
+
+    built, client, clock = entered
+    release = threading.Event()
+    pauses: list[float] = []
+    original_sleep = asyncio.sleep
+
+    def stall_third_read(order_id: str) -> None:
+        if len(client.reads) == 3:
+            clock.advance(0.5)
+            release.wait(6)
+        raise TimeoutError("Paper leg is unavailable")
+
+    def recording_sleep(delay: float) -> Any:
+        if "_finalize_entry_cancellation" in sys._getframe(1).f_code.co_name:
+            pauses.append(delay)
+        return original_sleep(delay)
+
+    harness.state.escalate(SystemState.HALTED, "offline stalled phase C read")
+    client.panic_read = stall_third_read
+    monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+    panic = asyncio.ensure_future(built.cancel_unfilled_entries())
+    try:
+        done, _ = await asyncio.wait({panic}, timeout=3)
+        monkeypatch.setattr(asyncio, "sleep", original_sleep)
+        assert panic in done
+        assert not release.is_set() and len(client.reads) == 3
+        assert pauses == [0]
+        assert clock.peek() == 1.375
+        assert [root["status"] for root in client.orders.values()] == ["new"]
+        with pytest.raises(ReconciliationError) as caught:
+            panic.result()
+        assert str(caught.value).startswith("Panic cancellation incomplete; unresolved orders: ")
+        assert harness.state.current() == SystemState.HALTED
+    finally:
+        release.set()
+        if not panic.done():
+            panic.cancel()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [{**AUTO, "panic_cancel_timeout_seconds": 3}], indirect=True)
+@pytest.mark.parametrize("entered", [0.25], indirect=True)
+async def test_SEC_73_phase_c_stops_polling_when_the_clock_reaches_the_deadline_exactly(
+    harness: Harness, entered: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-73: the deadline is exclusive, as at every other phase check (now >= deadline).
+
+    Injected clock, step 0.25 (exact in binary), budget 3 -> injected deadline 3.25. Every
+    read fails fast. Phase C polls three times (pauses 0.05 each); the next loop check
+    reads exactly 3.25, which is expired, so there is no fourth poll or pause. A 3 s
+    real-time guard turns a hang into an assertion.
+    """
+    import asyncio
+    import sys
+
+    built, client, clock = entered
+    pauses: list[float] = []
+    original_sleep = asyncio.sleep
+
+    def unreadable(order_id: str) -> None:
+        raise TimeoutError("Paper leg is unavailable")
+
+    def recording_sleep(delay: float) -> Any:
+        if "_finalize_entry_cancellation" in sys._getframe(1).f_code.co_name:
+            pauses.append(delay)
+        return original_sleep(delay)
+
+    harness.state.escalate(SystemState.HALTED, "offline exact panic deadline")
+    client.panic_read = unreadable
+    monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+    panic = asyncio.ensure_future(built.cancel_unfilled_entries())
+    try:
+        done, _ = await asyncio.wait({panic}, timeout=3)
+        monkeypatch.setattr(asyncio, "sleep", original_sleep)
+        assert panic in done
+        assert len(client.reads) == 5
+        assert pauses == [0.05, 0.05, 0.05]
+        assert clock.peek() == 3.25
+        assert [root["status"] for root in client.orders.values()] == ["new"]
+        with pytest.raises(ReconciliationError) as caught:
+            panic.result()
+        assert str(caught.value).startswith("Panic cancellation incomplete; unresolved orders: ")
+        assert harness.state.current() == SystemState.HALTED
+    finally:
+        if not panic.done():
+            panic.cancel()
