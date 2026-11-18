@@ -6224,7 +6224,7 @@ async def test_SEC_73_phase_c_polls_never_sleep_past_the_panic_deadline(
             return super().get_order_by_id(order_id, filter)
 
     def recording_sleep(delay: float) -> Any:
-        if sys._getframe(1).f_code.co_name == "_finalize_entry_cancellation":
+        if "_finalize_entry_cancellation" in sys._getframe(1).f_code.co_name:
             pauses.append(delay)
         return original_sleep(delay)
 
