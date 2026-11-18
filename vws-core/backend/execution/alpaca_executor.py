@@ -10,6 +10,7 @@ import hmac
 import re
 import ssl
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timedelta
 from decimal import Decimal, localcontext
 from time import monotonic_ns
@@ -570,6 +571,7 @@ class AlpacaExecutor:
         realtime_exit: Callable[[str, datetime], tuple[Literal["DELIST", "DILUTION"], str] | None]
         | None = None,
         panic_clock: Callable[[], float] | None = None,
+        panic_timeout: Callable[[float], AbstractAsyncContextManager[object]] = asyncio.timeout_at,
     ) -> None:
         self.settings, self.config = (
             Settings.validated_copy(settings),
@@ -624,8 +626,8 @@ class AlpacaExecutor:
         self._arrival_quotes: dict[str, MarketContext] = {}
         self.held_exit_observation = held_exit_observation
         self.realtime_entry, self.realtime_exit = realtime_entry, realtime_exit
-        # SEC-73: test-only injected panic clock; production composition never passes it.
-        self._panic_clock = panic_clock
+        # SEC-73: tests may inject a panic clock and its timer; production passes neither.
+        self._panic_clock, self._panic_timeout = panic_clock, panic_timeout
         if recovery:
             managed = self._instructions()
             if not managed:
@@ -1858,7 +1860,7 @@ class AlpacaExecutor:
 
         def now() -> float:
             # The running loop's monotonic time unless a test injected a panic clock.
-            return loop.time() if self._panic_clock is None else self._panic_clock()
+            return (self._panic_clock or loop.time)()
 
         if deadline is None:
             deadline = now() + self.settings.panic_cancel_timeout_seconds
@@ -1874,7 +1876,7 @@ class AlpacaExecutor:
             if now() >= deadline:
                 break
             try:
-                async with asyncio.timeout(deadline - now()):
+                async with self._panic_timeout(deadline):
                     await self._read_bound(leg)
                 fresh.add(leg.id)
             except (ProviderError, ReconciliationError, TimeoutError):
@@ -1914,7 +1916,7 @@ class AlpacaExecutor:
             if leg.id in absent:
                 continue
             try:
-                async with asyncio.timeout(deadline - now()):
+                async with self._panic_timeout(deadline):
                     broker = await self._read_bound(leg)
                     if broker is not None and broker.is_open and broker.status != "pending_cancel":
                         await self._cancel_confirmed(leg, broker, verify_fills=False)
@@ -1929,7 +1931,7 @@ class AlpacaExecutor:
                 if leg.id in absent:
                     continue
                 try:
-                    async with asyncio.timeout(deadline - now()):
+                    async with self._panic_timeout(deadline):
                         broker = await self._read_bound(leg)
                     if broker is not None:
                         observed[leg.id] = broker
@@ -3507,12 +3509,9 @@ class AlpacaExecutor:
                         f"{self.environment} · Panic already complete; HALTED.", False
                     )
                     return
-            started = (
-                asyncio.get_running_loop().time()
-                if self._panic_clock is None
-                else self._panic_clock()
-            )
-            deadline = started + self.settings.panic_cancel_timeout_seconds
+            deadline = (
+                self._panic_clock or asyncio.get_running_loop().time
+            )() + self.settings.panic_cancel_timeout_seconds
             filled_orders: list[str] = []
             canceled_orders: list[str] = []
             failed_orders: list[str] = []

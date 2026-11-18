@@ -5957,15 +5957,18 @@ async def test_AX_30_recovery_never_guesses_holdings_or_overlaps_unknown_sell(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("harness", [AUTO], indirect=True)
 async def test_SEC_73_production_panic_clock_is_the_running_loop_clock(harness: Harness) -> None:
-    """SEC-73: the injected panic clock is test-only; production uses loop.time()."""
+    """SEC-73: production builds loop.time() plus asyncio.timeout_at; injection is test-only."""
     import ast
+    import asyncio
     import inspect
     from pathlib import Path
 
     from backend.execution.alpaca_executor import AlpacaExecutor, ProtectionRecovery
 
     for constructor in (AlpacaExecutor, ProtectionRecovery):
-        assert inspect.signature(constructor.__init__).parameters["panic_clock"].default is None
+        parameters = inspect.signature(constructor.__init__).parameters
+        assert parameters["panic_clock"].default is None
+        assert parameters["panic_timeout"].default is asyncio.timeout_at
     root = Path(__file__).resolve().parents[2]
     passing = [
         str(path.relative_to(root))
@@ -5973,7 +5976,7 @@ async def test_SEC_73_production_panic_clock_is_the_running_loop_clock(harness: 
         for path in sorted((root / package).rglob("*.py"))
         if "tests" not in path.parts
         and any(
-            isinstance(node, ast.keyword) and node.arg == "panic_clock"
+            isinstance(node, ast.keyword) and node.arg in {"panic_clock", "panic_timeout"}
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
         )
     ]
@@ -5981,7 +5984,61 @@ async def test_SEC_73_production_panic_clock_is_the_running_loop_clock(harness: 
     built = executor(harness, FakeTradingClient(harness))
     try:
         assert built._panic_clock is None
+        assert built._panic_timeout is asyncio.timeout_at
     finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_SEC_73_production_timeout_cuts_off_a_read_that_never_returns(
+    harness: Harness,
+) -> None:
+    """SEC-73: on production defaults a tiny real budget abandons a read that never returns."""
+    import asyncio
+    import threading
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from backend.core.database import ExecutionOrderRecord
+
+    release = threading.Event()
+    reads: list[str] = []
+
+    class HungPaperBroker(FakeTradingClient):
+        panic = False
+
+        def get_order_by_id(self, order_id: Any, filter: object = None) -> dict[str, Any]:
+            if self.panic:
+                reads.append(str(order_id))
+                release.wait()
+            return super().get_order_by_id(order_id, filter)
+
+    alert = await deliver(harness)
+    client = HungPaperBroker(harness)
+    built = executor(harness, client)
+    loop = asyncio.get_running_loop()
+    try:
+        await built.enter(alert.proposal_id)
+        with Session(harness.state.engine) as session:
+            entry = session.scalars(
+                select(ExecutionOrderRecord).where(ExecutionOrderRecord.role == "ENTRY")
+            ).first()
+        assert entry is not None
+        harness.state.escalate(SystemState.HALTED, "offline hung panic read")
+        client.panic = True
+        started = loop.time()
+        with pytest.raises(ReconciliationError, match="Cancellation confirmation unresolved"):
+            await built._finalize_entry_cancellation(
+                entry, reason="offline hung read", deadline=started + 0.2
+            )
+        elapsed = loop.time() - started
+        assert 0.2 <= elapsed < 1.5
+        assert len(reads) == 1 and not release.is_set()
+        assert harness.state.current() == SystemState.HALTED
+    finally:
+        release.set()
         await built.close()
 
 

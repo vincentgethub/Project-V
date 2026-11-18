@@ -1,8 +1,10 @@
 """AX-11/16/20..26/31: offline physical-attempt and admission regressions."""
 
 import asyncio
+import contextlib
 import re
-from collections.abc import Callable
+import threading
+from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -574,28 +576,64 @@ class FakeTradingClient:
 
 
 class StepPanicClock:
-    """SEC-73 test-only panic clock: every read advances one fixed logical step.
+    """SEC-73 test-only panic clock and timer; production composition passes neither.
 
-    The panic deadline then measures code steps, not host CPU, so a starved runner
-    cannot exhaust it. Logical time starts one hour ahead of the loop: a test that
-    freezes the running loop's time at a logical expiry is honoured, and that frozen
-    time is past every panic-step timer already scheduled, as the real deadline was.
-    Production composition never passes a panic clock.
+    Logical time starts at START (0.0, no offset) and every read advances one fixed step,
+    so the panic deadline measures code steps, not host CPU: a starved runner cannot
+    exhaust it. A test that freezes the running loop's time owns time: reads then return
+    that frozen value. ``timeout_at(deadline)`` expires only when this clock reaches the
+    deadline (a frozen loop time counts), never on wall time.
     """
+
+    START = 0.0
 
     def __init__(self, step: float = 0.01) -> None:
         self._loop = asyncio.get_running_loop()
-        self.now, self.step = self._loop.time() + 3600, step
+        self.now, self.step = self.START, step
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
 
-    def __call__(self) -> float:
+    def _frozen(self) -> float | None:
         loop_time = self._loop.time
-        if getattr(loop_time, "__func__", None) is not type(self._loop).time:
-            return loop_time()
+        if getattr(loop_time, "__func__", None) is type(self._loop).time:
+            return None
+        return loop_time()
+
+    def peek(self) -> float:
+        frozen = self._frozen()
+        return self.now if frozen is None else frozen
+
+    def __call__(self) -> float:
+        frozen = self._frozen()
+        if frozen is not None:
+            return frozen
         self.now += self.step
         return self.now
+
+    @contextlib.asynccontextmanager
+    async def timeout_at(self, deadline: float) -> AsyncIterator[None]:
+        loop = asyncio.get_running_loop()
+        stop = threading.Event()
+        async with asyncio.timeout(None) as scope:
+
+            def expire() -> None:
+                if not stop.is_set():
+                    scope.reschedule(loop.time())
+
+            def watch() -> None:
+                while not stop.wait(0.002):
+                    if self.peek() >= deadline:
+                        loop.call_soon_threadsafe(expire)
+                        return
+
+            watcher = threading.Thread(target=watch, name="step-panic-timer", daemon=True)
+            watcher.start()
+            try:
+                yield
+            finally:
+                stop.set()
+                watcher.join()
 
 
 def executor(
@@ -605,9 +643,15 @@ def executor(
     *,
     constructor: type[AlpacaExecutor] = AlpacaExecutor,
     account_id: str = "offline-paper",
-    panic_clock: Callable[[], float] | None = None,
+    panic_clock: StepPanicClock | None = None,
 ) -> AlpacaExecutor:
     settings = settings or h.settings
+    # SEC-73: no clock -> production defaults (loop.time, asyncio.timeout_at).
+    injected: dict[str, Any] = (
+        {}
+        if panic_clock is None
+        else {"panic_clock": panic_clock, "panic_timeout": panic_clock.timeout_at}
+    )
     store = MemorySecrets()
     store.set("ALPACA_PAPER_KEY_ID", settings.broker_api_key)
     store.set("ALPACA_PAPER_SECRET", settings.broker_secret_key)
@@ -643,7 +687,7 @@ def executor(
         notify=notify,
         client=client,
         entry_variant_allowed=lambda: True,  # Explicit offline fixture; never production admission.
-        panic_clock=panic_clock,
+        **injected,
     )
 
 
