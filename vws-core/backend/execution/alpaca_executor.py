@@ -3509,9 +3509,8 @@ class AlpacaExecutor:
                         f"{self.environment} · Panic already complete; HALTED.", False
                     )
                     return
-            deadline = (
-                self._panic_clock or asyncio.get_running_loop().time
-            )() + self.settings.panic_cancel_timeout_seconds
+            clock = self._panic_clock or asyncio.get_running_loop().time
+            deadline = clock() + self.settings.panic_cancel_timeout_seconds
             filled_orders: list[str] = []
             canceled_orders: list[str] = []
             failed_orders: list[str] = []
