@@ -569,6 +569,7 @@ class AlpacaExecutor:
         realtime_entry: Callable[[UUID], Awaitable[None]] | None = None,
         realtime_exit: Callable[[str, datetime], tuple[Literal["DELIST", "DILUTION"], str] | None]
         | None = None,
+        panic_clock: Callable[[], float] | None = None,
     ) -> None:
         self.settings, self.config = (
             Settings.validated_copy(settings),
@@ -623,6 +624,8 @@ class AlpacaExecutor:
         self._arrival_quotes: dict[str, MarketContext] = {}
         self.held_exit_observation = held_exit_observation
         self.realtime_entry, self.realtime_exit = realtime_entry, realtime_exit
+        # SEC-73: test-only injected panic clock; production composition never passes it.
+        self._panic_clock = panic_clock
         if recovery:
             managed = self._instructions()
             if not managed:
@@ -1852,8 +1855,13 @@ class AlpacaExecutor:
     ) -> str:
         """SEC-73/EX-01: one shared order remains pending until every entry leg is proved done."""
         loop = asyncio.get_running_loop()
+
+        def now() -> float:
+            # The running loop's monotonic time unless a test injected a panic clock.
+            return loop.time() if self._panic_clock is None else self._panic_clock()
+
         if deadline is None:
-            deadline = loop.time() + self.settings.panic_cancel_timeout_seconds
+            deadline = now() + self.settings.panic_cancel_timeout_seconds
         legs = tuple(
             row
             for row in self._instructions()
@@ -1863,10 +1871,10 @@ class AlpacaExecutor:
         absent = {row.id for row in legs if self._confirmed_absence(row)}
         fresh: set[UUID] = set()
         for leg in legs:
-            if loop.time() >= deadline:
+            if now() >= deadline:
                 break
             try:
-                async with asyncio.timeout_at(deadline):
+                async with asyncio.timeout(deadline - now()):
                     await self._read_bound(leg)
                 fresh.add(leg.id)
             except (ProviderError, ReconciliationError, TimeoutError):
@@ -1901,27 +1909,27 @@ class AlpacaExecutor:
                 )
         faults: dict[str, str] = {}
         for leg in legs:
-            if loop.time() >= deadline:
+            if now() >= deadline:
                 break
             if leg.id in absent:
                 continue
             try:
-                async with asyncio.timeout_at(deadline):
+                async with asyncio.timeout(deadline - now()):
                     broker = await self._read_bound(leg)
                     if broker is not None and broker.is_open and broker.status != "pending_cancel":
                         await self._cancel_confirmed(leg, broker, verify_fills=False)
             except (ProviderError, ReconciliationError, TimeoutError) as error:
                 faults[leg.client_order_id] = type(error).__name__
         unresolved = [row.client_order_id for row in legs if row.id not in absent]
-        while loop.time() < deadline:
+        while now() < deadline:
             observed: dict[UUID, BrokerOrder] = {}
             for leg in legs:
-                if loop.time() >= deadline:
+                if now() >= deadline:
                     break
                 if leg.id in absent:
                     continue
                 try:
-                    async with asyncio.timeout_at(deadline):
+                    async with asyncio.timeout(deadline - now()):
                         broker = await self._read_bound(leg)
                     if broker is not None:
                         observed[leg.id] = broker
@@ -1946,7 +1954,7 @@ class AlpacaExecutor:
                     )
                     if completed is not None:
                         return completed
-            await asyncio.sleep(min(0.05, max(0, deadline - loop.time())))
+            await asyncio.sleep(min(0.05, max(0, deadline - now())))
         self.state.escalate(SystemState.HALTED, "Cancellation confirmation remains unresolved")
         raise ReconciliationError(
             "Cancellation confirmation unresolved for legs: " + ", ".join(unresolved)
@@ -3499,9 +3507,12 @@ class AlpacaExecutor:
                         f"{self.environment} · Panic already complete; HALTED.", False
                     )
                     return
-            deadline = (
-                asyncio.get_running_loop().time() + self.settings.panic_cancel_timeout_seconds
+            started = (
+                asyncio.get_running_loop().time()
+                if self._panic_clock is None
+                else self._panic_clock()
             )
+            deadline = started + self.settings.panic_cancel_timeout_seconds
             filled_orders: list[str] = []
             canceled_orders: list[str] = []
             failed_orders: list[str] = []

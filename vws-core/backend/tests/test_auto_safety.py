@@ -3462,6 +3462,7 @@ async def test_SEC_73_pending_cancel_timeout_processes_other_leg_and_resumes_aft
     from backend.core.database import LEDGER_MODELS, ExecutionOrderRecord, OrderEvent, SecurityEvent
     from backend.core.ledger import canonical_json
     from backend.execution.storage import held_quantity
+    from backend.tests.test_auto_execution import StepPanicClock
     from backend.tests.test_v_execution import variant
 
     variant(harness, "SPLIT_1R")
@@ -3492,7 +3493,7 @@ async def test_SEC_73_pending_cancel_timeout_processes_other_leg_and_resumes_aft
     settings = harness.settings
     alert = await deliver(harness)
     client = PendingPaperBroker(harness)
-    built = executor(harness, client, settings)
+    built = executor(harness, client, settings, panic_clock=StepPanicClock())
     notices: list[str] = []
 
     async def notice(text: str, urgent: bool) -> None:
@@ -3546,7 +3547,7 @@ async def test_SEC_73_pending_cancel_timeout_processes_other_leg_and_resumes_aft
     finally:
         await built.close()
     client.release = True
-    resumed = executor(harness, client, settings)
+    resumed = executor(harness, client, settings, panic_clock=StepPanicClock())
     try:
         await resumed.cancel_unfilled_entries()
         with Session(harness.state.engine) as session:
@@ -5951,3 +5952,239 @@ async def test_AX_30_recovery_never_guesses_holdings_or_overlaps_unknown_sell(
     if fault != "repair_rejection":
         assert parent["status"] == "partially_filled"
     h.state.ledger.verify_chain()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [AUTO], indirect=True)
+async def test_SEC_73_production_panic_clock_is_the_running_loop_clock(harness: Harness) -> None:
+    """SEC-73: the injected panic clock is test-only; production uses loop.time()."""
+    import ast
+    import inspect
+    from pathlib import Path
+
+    from backend.execution.alpaca_executor import AlpacaExecutor, ProtectionRecovery
+
+    for constructor in (AlpacaExecutor, ProtectionRecovery):
+        assert inspect.signature(constructor.__init__).parameters["panic_clock"].default is None
+    root = Path(__file__).resolve().parents[2]
+    passing = [
+        str(path.relative_to(root))
+        for package in ("backend", "vws", "scripts")
+        for path in sorted((root / package).rglob("*.py"))
+        if "tests" not in path.parts
+        and any(
+            isinstance(node, ast.keyword) and node.arg == "panic_clock"
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        )
+    ]
+    assert passing == []
+    built = executor(harness, FakeTradingClient(harness))
+    try:
+        assert built._panic_clock is None
+    finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [{**AUTO, "panic_cancel_timeout_seconds": 1}], indirect=True)
+@pytest.mark.parametrize("blocked_read", [1, 2, 4])
+async def test_SEC_73_production_deadline_abandons_a_blocked_broker_read(
+    harness: Harness, blocked_read: int
+) -> None:
+    """SEC-73: on the loop clock, a read in flight at the deadline is abandoned, never awaited.
+
+    Read 1 is phase A's scan, read 2 phase B's pre-cancel read, read 4 phase C's first poll.
+    """
+    import asyncio
+    import threading
+
+    release = threading.Event()
+    reads: list[str] = []
+
+    class BlockedPaperBroker(FakeTradingClient):
+        panic = False
+
+        def get_order_by_id(self, order_id: Any, filter: object = None) -> dict[str, Any]:
+            if self.panic:
+                reads.append(str(order_id))
+                if len(reads) == blocked_read:
+                    release.wait(6)
+            return super().get_order_by_id(order_id, filter)
+
+    alert = await deliver(harness)
+    client = BlockedPaperBroker(harness)
+    built = executor(harness, client)
+    loop = asyncio.get_running_loop()
+    try:
+        await built.enter(alert.proposal_id)
+        harness.state.escalate(SystemState.HALTED, "offline blocked panic read")
+        client.panic = True
+        started = loop.time()
+        with pytest.raises(ReconciliationError) as caught:
+            await built.cancel_unfilled_entries()
+        elapsed = loop.time() - started
+        assert str(caught.value).startswith("Panic cancellation incomplete; unresolved orders: ")
+        assert elapsed < 3
+        assert len(reads) >= blocked_read
+        assert harness.state.current() == SystemState.HALTED
+    finally:
+        release.set()
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("harness", "seconds"),
+    [({**AUTO, "panic_cancel_timeout_seconds": 1}, 1), (AUTO, 30)],
+    indirect=["harness"],
+)
+async def test_SEC_73_production_panic_deadline_is_the_exact_loop_time_budget(
+    harness: Harness, seconds: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-73: real loop time plus exactly 1 s (test setting) or 30 s (production default)."""
+    import asyncio
+    import inspect
+
+    from pydantic import ValidationError
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from backend.core.config import Settings
+    from backend.core.database import ExecutionOrderRecord
+    from backend.execution.alpaca_executor import AlpacaExecutor
+
+    assert Settings.INTEGER_BOUNDS["panic_cancel_timeout_seconds"] == (1, 30)
+    assert Settings().panic_cancel_timeout_seconds == 30
+    for bad in (0, 31):
+        with pytest.raises(ValidationError):
+            Settings(panic_cancel_timeout_seconds=bad)
+    assert harness.settings.panic_cancel_timeout_seconds == seconds
+    confirm = inspect.signature(AlpacaExecutor._cancel_confirmed)
+    assert confirm.parameters["deadline_seconds"].default == 30
+    alert = await deliver(harness)
+    client = FakeTradingClient(harness)
+    built = executor(harness, client)
+    loop = asyncio.get_running_loop()
+    deadlines: list[float] = []
+    original_finalize = built._finalize_entry_cancellation
+    frozen = pytest.MonkeyPatch()
+
+    async def finalize(entry: Any, **kwargs: Any) -> str:
+        deadlines.append(kwargs["deadline"])
+        frozen.undo()
+        return await original_finalize(entry, **kwargs)
+
+    monkeypatch.setattr(built, "_finalize_entry_cancellation", finalize)
+    try:
+        await built.enter(alert.proposal_id)
+        harness.state.escalate(SystemState.HALTED, "offline exact panic deadline")
+        fixed = loop.time()
+        frozen.setattr(loop, "time", lambda: fixed)
+        try:
+            await built.cancel_unfilled_entries()
+        finally:
+            frozen.undo()
+        assert deadlines == [fixed + seconds]
+        with Session(harness.state.engine) as session:
+            entry = session.scalars(
+                select(ExecutionOrderRecord).where(ExecutionOrderRecord.role == "ENTRY")
+            ).first()
+        assert entry is not None
+        broker = await built._read_bound(entry)
+        assert broker is not None
+        for bad in (0, 31):
+            with pytest.raises(ProviderError, match="bounded deadline"):
+                await built._cancel_confirmed(entry, broker, deadline_seconds=bad)
+    finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [{**AUTO, "panic_cancel_timeout_seconds": 1}], indirect=True)
+async def test_SEC_73_broker_read_spending_the_injected_budget_exhausts_the_deadline(
+    harness: Harness,
+) -> None:
+    """Sabotage probe: one broker read taking 1.1 s of injected time leaves every leg uncanceled."""
+    from backend.tests.test_auto_execution import StepPanicClock
+    from backend.tests.test_v_execution import variant
+
+    variant(harness, "SPLIT_1R")
+    clock = StepPanicClock()
+    canceled: list[str] = []
+
+    class SlowPaperBroker(FakeTradingClient):
+        panic = False
+
+        def cancel_order_by_id(self, order_id: Any) -> None:
+            canceled.append(str(order_id))
+            super()._cancel_paper(order_id)
+
+        def get_order_by_id(self, order_id: Any, filter: object = None) -> dict[str, Any]:
+            if self.panic:
+                self.panic = False
+                clock.advance(1.1)
+            return super().get_order_by_id(order_id, filter)
+
+    alert = await deliver(harness)
+    client = SlowPaperBroker(harness)
+    built = executor(harness, client, panic_clock=clock)
+    try:
+        await built.enter(alert.proposal_id)
+        harness.state.escalate(SystemState.HALTED, "offline injected slow broker read")
+        client.panic = True
+        with pytest.raises(ReconciliationError) as caught:
+            await built.cancel_unfilled_entries()
+        assert str(caught.value).startswith("Panic cancellation incomplete; unresolved orders: ")
+        assert canceled == []
+        assert [root["status"] for root in client.orders.values()] == ["new", "new"]
+        assert not client.panic and harness.state.current() == SystemState.HALTED
+        harness.state.ledger.verify_chain()
+    finally:
+        await built.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", [{**AUTO, "panic_cancel_timeout_seconds": 1}], indirect=True)
+async def test_SEC_73_phase_c_polls_never_sleep_past_the_panic_deadline(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-73: each phase C pause is min(0.05 s, time left), so the last one ends at the deadline."""
+    import asyncio
+    import sys
+
+    from backend.tests.test_auto_execution import StepPanicClock
+
+    clock = StepPanicClock()
+    pauses: list[float] = []
+    original_sleep = asyncio.sleep
+
+    class UnreadablePaperBroker(FakeTradingClient):
+        panic = False
+
+        def get_order_by_id(self, order_id: Any, filter: object = None) -> dict[str, Any]:
+            if self.panic:
+                raise TimeoutError("Paper leg is unavailable")
+            return super().get_order_by_id(order_id, filter)
+
+    def recording_sleep(delay: float) -> Any:
+        if sys._getframe(1).f_code.co_name == "_finalize_entry_cancellation":
+            pauses.append(delay)
+        return original_sleep(delay)
+
+    alert = await deliver(harness)
+    client = UnreadablePaperBroker(harness)
+    built = executor(harness, client, panic_clock=clock)
+    try:
+        await built.enter(alert.proposal_id)
+        harness.state.escalate(SystemState.HALTED, "offline unreadable panic leg")
+        client.panic = True
+        monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+        with pytest.raises(ReconciliationError) as caught:
+            await built.cancel_unfilled_entries()
+        monkeypatch.setattr(asyncio, "sleep", original_sleep)
+        assert str(caught.value).startswith("Panic cancellation incomplete; unresolved orders: ")
+        assert len(pauses) >= 10
+        assert all(0 <= pause <= 0.05 for pause in pauses)
+        assert pauses[0] == 0.05 and pauses[-1] < 0.05
+    finally:
+        await built.close()

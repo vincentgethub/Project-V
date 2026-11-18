@@ -573,6 +573,31 @@ class FakeTradingClient:
         return self.positions
 
 
+class StepPanicClock:
+    """SEC-73 test-only panic clock: every read advances one fixed logical step.
+
+    The panic deadline then measures code steps, not host CPU, so a starved runner
+    cannot exhaust it. Logical time starts one hour ahead of the loop: a test that
+    freezes the running loop's time at a logical expiry is honoured, and that frozen
+    time is past every panic-step timer already scheduled, as the real deadline was.
+    Production composition never passes a panic clock.
+    """
+
+    def __init__(self, step: float = 0.01) -> None:
+        self._loop = asyncio.get_running_loop()
+        self.now, self.step = self._loop.time() + 3600, step
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    def __call__(self) -> float:
+        loop_time = self._loop.time
+        if getattr(loop_time, "__func__", None) is not type(self._loop).time:
+            return loop_time()
+        self.now += self.step
+        return self.now
+
+
 def executor(
     h: Harness,
     client: FakeTradingClient,
@@ -580,6 +605,7 @@ def executor(
     *,
     constructor: type[AlpacaExecutor] = AlpacaExecutor,
     account_id: str = "offline-paper",
+    panic_clock: Callable[[], float] | None = None,
 ) -> AlpacaExecutor:
     settings = settings or h.settings
     store = MemorySecrets()
@@ -617,6 +643,7 @@ def executor(
         notify=notify,
         client=client,
         entry_variant_allowed=lambda: True,  # Explicit offline fixture; never production admission.
+        panic_clock=panic_clock,
     )
 
 
