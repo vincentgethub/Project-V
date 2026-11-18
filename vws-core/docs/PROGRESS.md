@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: November 17, 2026 - egress watchdog: bad budget settings tested
+Last updated: November 17, 2026 - egress watchdog: an empty budget setting alerts
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -13,7 +13,7 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-Egress watchdog: a bad budget setting keeps the default; zero, negative, text, empty, too-high tested.
+Egress watchdog: an empty budget setting now also alerts and keeps the default (tests first).
 Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.

@@ -180,7 +180,7 @@ def test_EGR_unreadable_dev_counters_are_refused(text: str) -> None:
     ("raw", "budget", "refused"),
     [
         (None, DEFAULT_BUDGET_BYTES, False),
-        ("", DEFAULT_BUDGET_BYTES, False),
+        ("", DEFAULT_BUDGET_BYTES, True),
         ("500000000", 500_000_000, False),
         (str(DEFAULT_BUDGET_BYTES), DEFAULT_BUDGET_BYTES, False),
         (str(DEFAULT_BUDGET_BYTES + 1), DEFAULT_BUDGET_BYTES, True),
@@ -618,11 +618,10 @@ async def test_EGR_invalid_env_budget_keeps_the_default_and_every_live_gate_acti
             with pytest.raises(DataIntegrityError, match="RT-10"):
                 await desk.require_entry(uuid4())
         assert desk.hard_exit("NVDA", clock.now()) is None
-        assert await gauge.alert(notify) is (value_class != "empty" or level != EgressLevel.OK)
+        assert await gauge.alert(notify) is True
     level_alerts = [message for message in sent if "refused" not in message]
     assert len(level_alerts) == 2
     assert "80% or more" in level_alerts[0] and "95% or more" in level_alerts[1]
     assert "800000000 of 1000000000 bytes" in level_alerts[0]
     assert "950000000 of 1000000000 bytes" in level_alerts[1]
-    if value_class != "empty":
-        assert sent[0] == gauge.refusal and sum("refused" in message for message in sent) == 1
+    assert sent[0] == gauge.refusal and sum("refused" in message for message in sent) == 1

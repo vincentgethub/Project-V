@@ -1016,5 +1016,4 @@ async def test_EGR_start_cli_builds_the_live_watchdog_with_the_default_for_inval
     assert isinstance(gate, EgressWatch)
     assert gate.budget == DEFAULT_BUDGET_BYTES == 1_000_000_000
     assert gate.state_path == module.PROJECT / "data" / "egress-counter.json"
-    if value_class != "empty":
-        assert gate.refusal is not None and "refused" in gate.refusal
+    assert gate.refusal is not None and "refused" in gate.refusal
