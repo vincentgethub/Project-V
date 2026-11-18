@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -14,6 +15,10 @@ from scripts.mutation_inventory import EXPECTED_TOTAL
 PARENTS_PATH = "config/mutation-parent-jobs.json"
 COUNTS_PATH = "config/mutation-child-counts.json"
 SPLIT_PATH = "config/mutation-shards.json"
+ADDED_PATH = "config/mutation-added-ids.json"
+# SHA-256 of ADDED_PATH: the Boss-approved NEW IDs whose source function has several
+# original owners. Any other NEW ID in such a function still fails closed.
+ADDED_SHA256 = "233e865e37fa831bf62a0db328c8c53b647c2a23a247dbaac12e3d7bd4b424c4"
 
 
 def source_parents(root: Path) -> list[dict[str, Any]]:
@@ -42,16 +47,53 @@ def child_counts(root: Path) -> dict[str, int]:
     return counts
 
 
+def approved_additions(root: Path) -> frozenset[str]:
+    raw = (root / ADDED_PATH).read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == ADDED_SHA256, "approved added-ID list hash")
+    data = json.loads(raw)
+    ids: list[str] = data["ids"]
+    require(
+        data["schema_version"] == 1
+        and data["base_commit"] == BASE_COMMIT
+        and all(isinstance(key, str) and "__mutmut_" in key for key in ids)
+        and ids == sorted(set(ids)),
+        "approved added-ID list format",
+    )
+    return frozenset(ids)
+
+
+def source_function(key: str) -> str:
+    return key.rsplit("__mutmut_", 1)[0]
+
+
+def owner_order(owner: str) -> tuple[str, int]:
+    prefix, _, number = owner.rpartition("-")
+    require(number.isdigit(), "owner name")
+    return prefix, int(number)
+
+
+def new_owner(key: str, candidates: set[str], approved: frozenset[str]) -> str:
+    """Owner of a NEW ID: its function's only original owner; with several owners the ID
+    must be on the approved list and goes to the lowest-numbered owner. No owner fails closed."""
+    require(bool(candidates), "NEW mutation source-function owner")
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    require(key in approved, "NEW mutation source-function owner")
+    return min(candidates, key=owner_order)
+
+
 def owned_mutants(root: Path) -> dict[str, list[tuple[str, int, str]]]:
     parents = source_parents(root)
     owners = {key: parent["shard"] for parent in parents for key in parent["ids"]}
     functions: dict[str, set[str]] = defaultdict(set)
     for key, owner in owners.items():
-        functions[key.rsplit("__mutmut_", 1)[0]].add(owner)
+        functions[source_function(key)].add(owner)
     mapping = read_map(root)
     require(
         {row["old_id"] for row in mapping if row["old_id"]} == set(owners), "map original owners"
     )
+    approved = approved_additions(root)
+    shared: set[str] = set()
     result: dict[str, list[tuple[str, int, str]]] = defaultdict(list)
     for appearance, row in enumerate(mapping):
         if not row["new_id"]:
@@ -59,10 +101,12 @@ def owned_mutants(root: Path) -> dict[str, list[tuple[str, int, str]]]:
         if row["old_id"]:
             owner = owners[row["old_id"]]
         else:
-            candidates = functions[row["new_id"].rsplit("__mutmut_", 1)[0]]
-            require(len(candidates) == 1, "NEW mutation source-function owner")
-            owner = next(iter(candidates))
+            candidates = functions[source_function(row["new_id"])]
+            owner = new_owner(row["new_id"], candidates, approved)
+            if len(candidates) > 1:
+                shared.add(row["new_id"])
         result[owner].append((row["fingerprint"], appearance, row["new_id"]))
+    require(shared == approved, "approved added-ID list differs from shared-owner NEW IDs")
     return dict(result)
 
 
@@ -70,15 +114,26 @@ def build_split(root: Path) -> dict[str, Any]:
     parents = source_parents(root)
     counts = child_counts(root)
     owned = owned_mutants(root)
+    approved = approved_additions(root)
     children: list[dict[str, Any]] = []
     for parent in parents:
         owner = parent["shard"]
-        values = sorted(owned[owner])
+        values = sorted(row for row in owned[owner] if row[2] not in approved)
         size = counts[owner]
         require(len(values) >= size, "nonempty child jobs")
+        groups = [[row[2] for row in values[index::size]] for index in range(size)]
+        # An approved addition never re-stripes existing IDs: it joins the lowest-numbered
+        # child that already holds an ID of its source function.
+        for key in sorted(row[2] for row in owned[owner] if row[2] in approved):
+            holders = [
+                index
+                for index, group in enumerate(groups)
+                if any(source_function(other) == source_function(key) for other in group)
+            ]
+            require(bool(holders), "NEW mutation source-function owner")
+            groups[holders[0]].append(key)
         for index in range(size):
-            members = values[index::size]
-            ids = sorted(row[2] for row in members)
+            ids = sorted(groups[index])
             children.append(
                 {
                     "shard": owner + "-" + str(index + 1),
