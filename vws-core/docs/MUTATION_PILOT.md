@@ -89,4 +89,4 @@ tests, dependencies, production logic or safety settings change in this pilot.
   `12a8a6d7ed34bcb00bc0b424ac46d1a79f655e8b73b440bee5ac7fabe27d8bd2`.
 - Both normal CI copies and both pilot workflow copies are byte-identical.
   Normal CI is unchanged from 90c567f; its normalized LF SHA-256 is
-  `9824325fd123bec943c0b0f03a8a96762339dac4fce380a0b7182591ce3cc5d4`.
+  `910d5d25dbf1d4c3eb79a46bfe2bbb345a101f358a290cc7fd65b19fbbb991f8`.

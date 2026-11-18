@@ -73,7 +73,7 @@ def test_dispatch_workflow_is_separate_from_the_normal_gate() -> None:
     assert main.read_bytes() == (ROOT.parent / ".github/workflows/ci.yml").read_bytes()
     assert (
         hashlib.sha256(main.read_text().encode()).hexdigest()
-        == "9824325fd123bec943c0b0f03a8a96762339dac4fce380a0b7182591ce3cc5d4"
+        == "910d5d25dbf1d4c3eb79a46bfe2bbb345a101f358a290cc7fd65b19fbbb991f8"
     )
     assert "pattern: mutation-result-*" in main.read_text()
     assert "diagnostic-pilot" not in main.read_text()

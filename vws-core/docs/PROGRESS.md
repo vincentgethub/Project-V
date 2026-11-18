@@ -1,5 +1,5 @@
 # Project V progress
-Last updated: November 16, 2026 - mutation checks run at most 12 jobs at once
+Last updated: November 17, 2026 - CI runs at most 12 mutation jobs at once
 ## Where things stand
 Research, tickets, paper auto, account/tax reports and fake drills pass offline checks.
 Validation, split exits and readiness reporting pass offline checks.
@@ -13,7 +13,7 @@ From the vws-core folder in PowerShell:
 Fake preview/replay keep your DB closed. Setup confirms saves; AI starts off.
 
 ## What's being built next
-Hosted mutation checks now run at most 12 jobs at once, leaving room for other checks.
+CI: at most 12 mutation jobs run at once; the recorded workflow fingerprint is updated to match.
 Race/resume, backed-up migration and journaled protection checks pass locally.
 Working BUY exits stay protected; independent entry veto prevents the RESUME bypass.
 Approved sizing-context fix passes 7,296 exhaustive cases with no oversizing.
