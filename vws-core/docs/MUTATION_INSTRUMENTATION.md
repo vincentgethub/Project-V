@@ -36,7 +36,7 @@ The aggregate gate function is unchanged apart from its diagnostic output call.
 Parsed workflow comparison proves the only changes are diagnostic export/publication.
 The 135 jobs, native command, 120-minute limit, selectors and six tax approvals stay.
 Both workflow copies are byte-identical, SHA256:
-`9824325fd123bec943c0b0f03a8a96762339dac4fce380a0b7182591ce3cc5d4`
+`c4228f37a7f03fd0b119bbaf86b1b2655f8b14be33bf719966d10f94c1ba5063`
 for their Git-normalized LF bytes. The two local CRLF copies are also byte-identical,
 SHA256 `7d35b1d72280028d86725a176fe9386de4a6d5bd9a78164543444de9b03f94d1`.
 

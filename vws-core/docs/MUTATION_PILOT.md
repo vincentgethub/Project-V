@@ -9,9 +9,10 @@ gate. The normal 135-child CI workflow, mutation command, covering-test selector
 
 The baseline is [run 39856462454](https://github.com/vincentgethub/Project-V/actions/runs/39856462454).
 `config/mutation-pilot.json` records its 18 timed-out original parents and the
-provenance hashes. They own 6,115 current mutants. The committed exception pool
-contains the baseline's 5,162 exception-only IDs, representing 5,043 distinct
-fingerprints. Its checksum normalizes CSV newlines to LF.
+provenance hashes. They own 6,116 current mutants. The committed exception pool
+contains 5,161 of the baseline's 5,162 exception-only IDs, representing 5,042 distinct
+fingerprints. The SEC-73 re-pin dropped one row, `cancel_unfilled_entries__mutmut_43`, because its
+fingerprint is GONE (see MUTATION_REPIN_SEC73.md). Its checksum normalizes CSV newlines to LF.
 
 Seed: **39856462454**. Rank distinct fingerprints by
 `sha256(str(seed) + ':' + fingerprint)`, breaking ties by fingerprint, and take
@@ -20,7 +21,7 @@ occurrence in numeric order; retain every occurrence in the sample manifest.
 This is deterministic sampling, with no security exception for pseudo-randomness.
 
 Fourteen samples overlap the 18-parent set; 86 are outside it. The union has
-**6,201 distinct IDs**, executed once each, grouped only within their existing
+**6,202 distinct IDs**, executed once each, grouped only within their existing
 original parent and cohort. Sort each parent's IDs by fingerprint and native ID,
 then divide into diagnostic batches of at most 40. There are **190 nonempty
 batches**, plus plan and reporting jobs: 192 expanded jobs, below 256.
@@ -89,4 +90,4 @@ tests, dependencies, production logic or safety settings change in this pilot.
   `12a8a6d7ed34bcb00bc0b424ac46d1a79f655e8b73b440bee5ac7fabe27d8bd2`.
 - Both normal CI copies and both pilot workflow copies are byte-identical.
   Normal CI is unchanged from 90c567f; its normalized LF SHA-256 is
-  `9824325fd123bec943c0b0f03a8a96762339dac4fce380a0b7182591ce3cc5d4`.
+  `c4228f37a7f03fd0b119bbaf86b1b2655f8b14be33bf719966d10f94c1ba5063`.

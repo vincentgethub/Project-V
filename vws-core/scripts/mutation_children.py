@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.mutation_fingerprints import BASE_COMMIT, read_map, require
-from scripts.mutation_inventory import EXPECTED_TOTAL
+from scripts.mutation_inventory import EXPECTED_TOTAL as EXPECTED_TOTAL
 
 PARENTS_PATH = "config/mutation-parent-jobs.json"
 COUNTS_PATH = "config/mutation-child-counts.json"
@@ -18,7 +18,7 @@ SPLIT_PATH = "config/mutation-shards.json"
 ADDED_PATH = "config/mutation-added-ids.json"
 # SHA-256 of ADDED_PATH: the Boss-approved NEW IDs whose source function has several
 # original owners. Any other NEW ID in such a function still fails closed.
-ADDED_SHA256 = "233e865e37fa831bf62a0db328c8c53b647c2a23a247dbaac12e3d7bd4b424c4"
+ADDED_SHA256 = "sha256:08c0b800ff96b22eab6058721f56b621d0307bbbb7a2a82facd628197d9a7124"
 
 
 def source_parents(root: Path) -> list[dict[str, Any]]:
@@ -49,12 +49,14 @@ def child_counts(root: Path) -> dict[str, int]:
 
 def approved_additions(root: Path) -> frozenset[str]:
     raw = (root / ADDED_PATH).read_bytes()
-    require(hashlib.sha256(raw).hexdigest() == ADDED_SHA256, "approved added-ID list hash")
+    require(
+        "sha256:" + hashlib.sha256(raw).hexdigest() == ADDED_SHA256, "approved added-ID list hash"
+    )
     data = json.loads(raw)
     ids: list[str] = data["ids"]
     require(
         data["schema_version"] == 1
-        and data["base_commit"] == BASE_COMMIT
+        and data["base_commit_url"].rsplit("/", 1)[1] == BASE_COMMIT
         and all(isinstance(key, str) and "__mutmut_" in key for key in ids)
         and ids == sorted(set(ids)),
         "approved added-ID list format",

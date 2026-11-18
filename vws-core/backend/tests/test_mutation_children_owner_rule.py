@@ -1,6 +1,5 @@
 """OPS-06: owner rule for NEW mutation IDs in functions with several original owners."""
 
-import importlib
 import json
 import shutil
 from pathlib import Path
@@ -8,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from backend.core.errors import DataIntegrityError
+from scripts import mutation_children as children
 
 ROOT = Path(__file__).resolve().parents[2]
-children = importlib.import_module("scripts.mutation_children")
 
 
 def test_OPS_06_new_id_with_one_owner_joins_it() -> None:

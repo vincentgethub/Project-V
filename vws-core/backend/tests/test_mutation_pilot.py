@@ -36,8 +36,8 @@ def test_pilot_scope_sample_and_fingerprint_batches_are_reproducible() -> None:
     assert len(plan["sample"]) == len(set(sampled)) == 100
     assigned = [key for batch in plan["batches"] for key in batch["selected"]]
     assert set(assigned) == wanted | {row["id"] for row in plan["sample"]}
-    assert len(assigned) == len(set(assigned)) == 6201
-    assert len(wanted) == plan["parent_mutants"] == 6115
+    assert len(assigned) == len(set(assigned)) == 6202
+    assert len(wanted) == plan["parent_mutants"] == 6116
     assert plan["sample_outside_parents"] == 86
     assert len(plan["batches"]) == 190
     assert len(plan["batches"]) + 2 < 256
@@ -73,7 +73,7 @@ def test_dispatch_workflow_is_separate_from_the_normal_gate() -> None:
     assert main.read_bytes() == (ROOT.parent / ".github/workflows/ci.yml").read_bytes()
     assert (
         hashlib.sha256(main.read_text().encode()).hexdigest()
-        == "9824325fd123bec943c0b0f03a8a96762339dac4fce380a0b7182591ce3cc5d4"
+        == "c4228f37a7f03fd0b119bbaf86b1b2655f8b14be33bf719966d10f94c1ba5063"
     )
     assert "pattern: mutation-result-*" in main.read_text()
     assert "diagnostic-pilot" not in main.read_text()
@@ -149,12 +149,12 @@ def test_pilot_summary_lists_every_missing_mutant_and_sample(
     monkeypatch.setattr(pilot, "build_plan", lambda root: plan)
     summary = pilot.summarize(tmp_path)
     assert len(summary["missing_batches"]) == 190
-    assert summary["summary"]["missing"] == summary["expected"] == 6201
+    assert summary["summary"]["missing"] == summary["expected"] == 6202
     assert len(summary["sample"]) == 100
     assert summary["sample_categories"] == {"unverified": 100}
     missing = tmp_path / pilot.OUTPUT / "summary/MISSING_IDS.csv"
     with missing.open(encoding="utf-8") as handle:
-        assert len(list(csv.DictReader(handle))) == 6201
+        assert len(list(csv.DictReader(handle))) == 6202
 
 
 @pytest.mark.parametrize("fault", ["none", "head", "row"])

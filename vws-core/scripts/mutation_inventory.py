@@ -14,7 +14,7 @@ from typing import Any
 
 from backend.core.errors import DataIntegrityError
 
-EXPECTED_TOTAL = 15467
+EXPECTED_TOTAL = 15471
 PARENT_JOBS = {
     "executor-a": 8,
     "executor-b": 9,
@@ -157,7 +157,7 @@ def generate_inventory(root: Path) -> dict[str, set[str]]:
     union = set().union(*result.values())
     require(
         len(union) == sum(map(len, result.values())) == EXPECTED_TOTAL,
-        "fresh inventory differs from 15467",
+        "fresh inventory differs from 15471",
     )
     return result
 
@@ -240,7 +240,7 @@ def main() -> int:
         destination = Path(os.environ["RUNNER_TEMP"], "vws-mutation-shard.json")
         destination.write_text(json.dumps(manifest, ensure_ascii=True), encoding="utf-8")
         print(
-            "Partition proof PASS: 18 files; 135 jobs; 15467 freshly generated unique IDs; every ID owned exactly once"
+            "Partition proof PASS: 18 files; 135 jobs; 15471 freshly generated unique IDs; every ID owned exactly once"
         )
         print("Inventory SHA256:", manifest["inventory_sha256"])
         print("Shard:", manifest["shard"], "assigned:", manifest["expected_count"])

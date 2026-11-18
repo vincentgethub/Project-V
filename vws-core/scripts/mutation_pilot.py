@@ -41,7 +41,7 @@ def build_plan(root: Path) -> dict[str, Any]:
     )
     with (root / POOL).open(encoding="utf-8", newline="") as handle:
         pool = list(csv.DictReader(handle))
-    require(len(pool) == 5162 and len({row["id"] for row in pool}) == 5162, "pilot pool size")
+    require(len(pool) == 5161 and len({row["id"] for row in pool}) == 5161, "pilot pool size")
     shards = load_shards(root / "config/mutation-shards.json")
     owners = {key: shard for shard in shards for key in shard.ids}
     fingerprints = {row["new_id"]: row["fingerprint"] for row in read_map(root) if row["new_id"]}
