@@ -16,7 +16,7 @@ from backend.core.database import create_database, create_schema
 from backend.data import market_calendar
 from backend.data.market_calendar import CalendarFactory, MarketCalendar
 
-pytest_plugins = ("scripts.mutation_audit",)
+pytest_plugins = ("scripts.mutation_audit", "backend.tests.sec73b_deadline_probe")
 
 
 @pytest.fixture(scope="session", autouse=True)
