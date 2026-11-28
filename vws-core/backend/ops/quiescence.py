@@ -414,6 +414,12 @@ class BrokerActor:
         return transient
 
     def physical_call(self, operation: Callable[[], ResultT]) -> ResultT:
+        with self._lock:
+            retained = self._pending > 0
+        if not retained:
+            refusal = QuiescenceError("physical_call requires retain() before dispatch")
+            self._record_failure(refusal)
+            raise refusal
         transient: Lease | None = None
         try:
             transient = self.before_broker_call()
@@ -437,7 +443,11 @@ class BrokerActor:
             except (OSError, QuiescenceError) as error:
                 self._record_failure(error)
         with self._lock:
-            self._pending -= 1
+            unbalanced = self._pending <= 0
+            if not unbalanced:
+                self._pending -= 1
+        if unbalanced:
+            self._record_failure(QuiescenceError("Broker call finished without a retained call"))
         if self.loop is not None and not self.loop.is_closed():
             self.loop.call_soon_threadsafe(self._finish_if_idle)
 
