@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 
 from backend.core.errors import ConfigurationError
 from backend.ops.panic_flag import FlagAdapter, FlagHandle, OSFlagAdapter, PanicFlagError
+from backend.ops.private_dir import RuntimeDirError, verify_private_directory
 
 
 class QuiescenceError(ConfigurationError):
@@ -159,10 +160,27 @@ class BrokerCoordination:
         self._leases: list[Lease] = []
         self._flag_handle: FlagHandle | None = None
 
+    def _verify_directory(self) -> None:
+        """POSIX: owner, mode 0700 and local filesystem of the real flock directory."""
+        if sys.platform == "win32" or not os.path.lexists(self.directory):
+            return  # a missing directory still fails later at the inventory read
+        try:
+            verify_private_directory(self.directory)
+        except RuntimeDirError:
+            raise QuiescenceError("Broker coordination directory is unsafe") from None
+
     def initialize(self) -> None:
-        self.directory.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            self.directory.mkdir(parents=True, exist_ok=True)
+        else:
+            self.directory.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                self.directory.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
         if self.directory.is_symlink():
             raise QuiescenceError("Direct broker coordination directory required")
+        self._verify_directory()
         generation = self.directory / "generation"
         try:
             with generation.open("x", encoding="ascii") as output:
@@ -196,6 +214,7 @@ class BrokerCoordination:
     def _inventory(self) -> tuple[tuple[str, str], ...]:
         if self.directory.is_symlink():
             raise QuiescenceError("Direct broker coordination directory required")
+        self._verify_directory()
         generation_path = self.directory / "generation"
         if generation_path.is_symlink():
             raise QuiescenceError("Direct broker generation required")
@@ -258,6 +277,7 @@ class BrokerCoordination:
     def acquire_proof(self) -> None:
         if self._leases:
             raise QuiescenceError("Broker proof is already held")
+        self._verify_directory()
         complete = False
         try:
             self._flag_handle = self.flag_adapter.open_window()

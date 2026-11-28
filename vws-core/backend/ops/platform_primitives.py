@@ -1,29 +1,37 @@
 """Linux parity: one platform module with one interface for slots, runtime lock and panic flag."""
 
-import ctypes
-import os
-import stat
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from backend.core.errors import ConfigurationError
+from backend.core.errors import ConfigurationError, DataIntegrityError
+from backend.ops.anchors import controlled_path
 from backend.ops.panic_flag import FlagAdapter, OSFlagAdapter, marker_signaled, panic_marker
+from backend.ops.private_dir import (
+    ALLOWED_FILESYSTEMS,
+    RuntimeDirError,
+    filesystem_magic,
+    verify_owner_and_mode,
+    verify_private_directory,
+)
 from backend.ops.process import ProcessLock
 from backend.ops.quiescence import OSSlots, SlotAdapter
 
-# statfs f_type values (linux/magic.h) for local filesystems that give flock its single-host
-# semantics. Network, FUSE and unknown filesystems (including overlayfs) are refused.
-ALLOWED_FILESYSTEMS = frozenset({0x01021994, 0xEF53, 0x58465342, 0x9123683E})
+__all__ = [
+    "ALLOWED_FILESYSTEMS",
+    "PlatformBackend",
+    "PlatformRefusal",
+    "RuntimeDirError",
+    "backend_for",
+    "current_backend",
+    "filesystem_magic",
+    "prepare_runtime_dir",
+]
 
 
 class PlatformRefusal(ConfigurationError):
     """No silent fallback: an unsupported platform is a named refusal."""
-
-
-class RuntimeDirError(ConfigurationError):
-    """The runtime directory is unsafe; it is never repaired."""
 
 
 @dataclass(frozen=True)
@@ -45,6 +53,12 @@ class PlatformBackend:
         return OSFlagAdapter(directory).signal_if_present()
 
     def panic_is_set(self, directory: Path) -> bool:
+        if self.kind == "windows-mutex-event":
+            handle = OSFlagAdapter(directory).open_window()
+            try:
+                return handle.signaled()
+            finally:
+                handle.close()
         return marker_signaled(panic_marker(directory))
 
 
@@ -60,22 +74,7 @@ def current_backend() -> PlatformBackend:
     return backend_for(sys.platform)
 
 
-class _StatFS(ctypes.Structure):
-    # Only f_type is read; the buffer exceeds every Linux statfs layout.
-    _fields_ = [("f_type", ctypes.c_long), ("rest", ctypes.c_ubyte * 120)]
-
-
-def filesystem_magic(path: Path) -> int:
-    libc = ctypes.CDLL(None, use_errno=True)
-    libc.statfs.argtypes = [ctypes.c_char_p, ctypes.POINTER(_StatFS)]
-    libc.statfs.restype = ctypes.c_int
-    result = _StatFS()
-    if libc.statfs(os.fsencode(path), ctypes.byref(result)) != 0:
-        raise RuntimeDirError("Runtime directory filesystem is unverified")
-    return int(result.f_type) & 0xFFFFFFFF
-
-
-def _base(env: Mapping[str, str]) -> Path:
+def _base(env: Mapping[str, str], uid: Callable[[], int] | None) -> Path:
     xdg = env.get("XDG_RUNTIME_DIR", "")
     if xdg:
         base = Path(xdg)
@@ -85,31 +84,31 @@ def _base(env: Mapping[str, str]) -> Path:
     home = Path(env.get("HOME", ""))
     if not home.is_absolute():
         raise RuntimeDirError("No private runtime directory base is available")
-    (home / ".projectv").mkdir(mode=0o700, exist_ok=True)
-    return home / ".projectv" / "run"
+    parent = home / ".projectv"
+    try:
+        parent.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    verify_owner_and_mode(parent, uid)
+    return parent / "run"
 
 
 def prepare_runtime_dir(
     env: Mapping[str, str],
-    statfs: Callable[[Path], int] = filesystem_magic,
+    statfs: Callable[[Path], int] | None = None,
     uid: Callable[[], int] | None = None,
 ) -> Path:
     """Create or verify the private 0700 runtime directory; refuse, never repair."""
     if sys.platform == "win32":
         raise RuntimeDirError("Runtime directory preparation is Linux-only")
-    owner = os.getuid if uid is None else uid
-    path = _base(env)
+    path = _base(env, uid)
     try:
         path.mkdir(mode=0o700)
     except FileExistsError:
         pass
-    status = path.lstat()
-    if not stat.S_ISDIR(status.st_mode):
-        raise RuntimeDirError("Runtime directory must be a direct directory")
-    if status.st_uid != owner():
-        raise RuntimeDirError("Runtime directory is not owned by this user")
-    if stat.S_IMODE(status.st_mode) != 0o700:
-        raise RuntimeDirError("Runtime directory must be private (mode 0700)")
-    if statfs(path) not in ALLOWED_FILESYSTEMS:
-        raise RuntimeDirError("Runtime directory is not on an allowed local filesystem")
+    verify_private_directory(path, statfs, uid)
+    try:
+        controlled_path(path / "runtime.lock")
+    except DataIntegrityError:
+        raise RuntimeDirError("Runtime directory is a protected or indirect path") from None
     return path

@@ -134,3 +134,42 @@ def test_LP12_runtime_dir_preparation_is_linux_only(
     monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(RuntimeDirError, match=r"^Runtime directory preparation is Linux-only$"):
         platform_primitives.prepare_runtime_dir({"XDG_RUNTIME_DIR": str(tmp_path)})
+
+
+def test_LP12b_protected_path_component_is_refused_like_the_process_lock(tmp_path: Path) -> None:
+    if sys.platform == "win32":
+        with pytest.raises(RuntimeDirError, match=r"^Runtime directory preparation is Linux-only$"):
+            prepare_runtime_dir({"HOME": str(tmp_path)})
+        return
+    home = tmp_path / "deploy"
+    home.mkdir(mode=0o700)
+    with pytest.raises(
+        RuntimeDirError, match=r"^Runtime directory is a protected or indirect path$"
+    ):
+        prepare_runtime_dir({"HOME": str(home)}, statfs=fixed(EXT4))
+
+
+def test_LP12b_symlinked_parent_is_refused_like_the_process_lock(tmp_path: Path) -> None:
+    if sys.platform == "win32":
+        return
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    with pytest.raises(
+        RuntimeDirError, match=r"^Runtime directory is a protected or indirect path$"
+    ):
+        prepare_runtime_dir({"XDG_RUNTIME_DIR": str(link)}, statfs=fixed(EXT4))
+
+
+def test_LP12b_dot_projectv_parent_is_verified_not_trusted(tmp_path: Path) -> None:
+    if sys.platform == "win32":
+        return
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    parent = home / ".projectv"
+    parent.mkdir()
+    parent.chmod(0o755)
+    with pytest.raises(RuntimeDirError, match=r"^Runtime directory must be private \(mode 0700\)$"):
+        prepare_runtime_dir({"HOME": str(home)}, statfs=fixed(EXT4))
+    assert mode(parent) == 0o755
