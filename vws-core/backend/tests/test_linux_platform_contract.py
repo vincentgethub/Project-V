@@ -24,8 +24,15 @@ def test_LP01_interface_is_identical_on_every_supported_platform(platform: str) 
     backend = backend_for(platform)
     public = {name for name in dir(backend) if not name.startswith("_")}
     assert public == {"kind", *PINNED_SIGNATURES}
+    bound = {
+        "slots": backend.slots,
+        "flag": backend.flag,
+        "runtime_lock": backend.runtime_lock,
+        "panic_set": backend.panic_set,
+        "panic_is_set": backend.panic_is_set,
+    }
     for name, expected in PINNED_SIGNATURES.items():
-        assert str(inspect.signature(getattr(backend, name))) == expected
+        assert str(inspect.signature(bound[name])) == expected
 
 
 def test_LP02_linux_uses_the_flock_file_backend_and_windows_the_mutex_event_backend() -> None:
