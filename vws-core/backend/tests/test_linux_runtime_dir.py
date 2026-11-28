@@ -1,6 +1,5 @@
 """LP-10/LP-11/LP-12: private, local runtime directory; refuse, never repair."""
 
-import os
 import stat
 import subprocess
 import sys
@@ -15,7 +14,7 @@ from backend.ops.platform_primitives import (
     filesystem_magic,
     prepare_runtime_dir,
 )
-from backend.tests.platform_expect import windows_refuses
+from backend.tests.platform_expect import posix_uid, windows_refuses
 
 TMPFS, EXT4, XFS, BTRFS = 0x01021994, 0xEF53, 0x58465342, 0x9123683E
 NFS, CIFS, FUSE, OVERLAY = 0x6969, 0xFF534D42, 0x65735546, 0x794C7630
@@ -39,7 +38,7 @@ def test_LP10_creates_directory_0700_owned_by_current_uid(tmp_path: Path) -> Non
         return
     runtime = prepare_runtime_dir({"XDG_RUNTIME_DIR": str(base)}, statfs=fixed(EXT4))
     assert runtime == base / "projectv"
-    assert mode(runtime) == 0o700 and runtime.lstat().st_uid == os.getuid()
+    assert mode(runtime) == 0o700 and runtime.lstat().st_uid == posix_uid()
     assert prepare_runtime_dir({"XDG_RUNTIME_DIR": str(base)}, statfs=fixed(EXT4)) == runtime
 
 
@@ -69,7 +68,7 @@ def test_LP10_directory_owned_by_another_user_is_refused(tmp_path: Path) -> None
         prepare_runtime_dir(
             {"XDG_RUNTIME_DIR": str(tmp_path)},
             statfs=fixed(EXT4),
-            uid=lambda: os.getuid() + 1,
+            uid=lambda: posix_uid() + 1,
         )
 
 

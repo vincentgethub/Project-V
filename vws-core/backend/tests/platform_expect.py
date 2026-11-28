@@ -1,5 +1,6 @@
 """Per-platform expectations for the LP tests: no markers, every test runs on every platform."""
 
+import os
 import sys
 from collections.abc import Callable, Iterator
 
@@ -7,6 +8,12 @@ import pytest
 
 from backend.ops import panic_flag
 from backend.ops.private_dir import RuntimeDirError
+
+
+def posix_uid() -> int:
+    if sys.platform == "win32":
+        raise AssertionError("POSIX-only helper")
+    return os.getuid()
 
 
 def windows_refuses(call: Callable[[], object], message: str) -> bool:
