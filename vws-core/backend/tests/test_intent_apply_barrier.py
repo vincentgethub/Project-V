@@ -198,7 +198,7 @@ async def review(harness: Harness, monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     built, instruction, _request, _guard = await prepared_submit(harness, client, monkeypatch)
     harness.state.escalate(SystemState.HALTED, "retain original proof halt")
     data = tmp_path / "data"
-    data.mkdir(exist_ok=True)
+    data.mkdir(mode=0o700, exist_ok=True)
     (data / "runtime.lock").write_bytes(b"0")
     settings = Settings.validated_copy(
         built.settings.model_copy(

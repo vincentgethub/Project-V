@@ -16,7 +16,7 @@ SLOT_NAMES = tuple(f"slot-{index}" for index in range(8))
 
 def prepare_coordination_directory(directory: Path) -> None:
     """Create the coordination directory the way production does (0700, slot files)."""
-    directory.parent.mkdir(parents=True, exist_ok=True)
+    directory.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     directory.mkdir(mode=0o700, exist_ok=True)
     if sys.platform != "win32":
         for name in SLOT_NAMES:

@@ -188,7 +188,7 @@ def test_OPS_02_healthcheck_reads_no_configuration_or_secrets(
     from backend.ops.process import Heartbeat, ProcessLock, write_heartbeat
 
     data = tmp_path / "data"
-    data.mkdir()
+    data.mkdir(mode=0o700)
     monkeypatch.setattr(cli, "__file__", str(tmp_path / "vws/__main__.py"))
 
     def forbidden(*_args: object, **_kwargs: object) -> object:

@@ -179,7 +179,7 @@ class BrokerCoordination:
         if sys.platform == "win32":
             self.directory.mkdir(parents=True, exist_ok=True)
         else:
-            self.directory.parent.mkdir(parents=True, exist_ok=True)
+            self.directory.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             try:
                 self.directory.mkdir(mode=0o700)
             except FileExistsError:

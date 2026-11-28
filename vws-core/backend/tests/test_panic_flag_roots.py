@@ -361,7 +361,7 @@ async def test_Q1_Q5_Q6_Q16_real_panic_roots_preserve_baseline_counts(
         )
     copytree(Path(__file__).resolve().parents[2] / "config", tmp_path / "config")
     for name in ("data", "logs", "backups"):
-        (tmp_path / name).mkdir(exist_ok=True)
+        (tmp_path / name).mkdir(mode=0o700, exist_ok=True)
     context = security_cli.SecurityContext(
         settings,
         harness.state.engine,
@@ -454,7 +454,7 @@ async def test_Q1_Q16_Q17_runtime_entry_uses_real_wiring_under_host_slot(
 
     copytree(Path(__file__).resolve().parents[2] / "config", tmp_path / "config")
     for name in ("data", "logs", "backups"):
-        (tmp_path / name).mkdir(exist_ok=True)
+        (tmp_path / name).mkdir(mode=0o700, exist_ok=True)
     context = security_cli.SecurityContext(
         harness.settings,
         harness.state.engine,

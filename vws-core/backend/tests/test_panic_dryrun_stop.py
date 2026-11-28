@@ -48,7 +48,7 @@ async def test_B2_dryrun_real_ensure_stop_change_refuses_at_existing_comparison(
     harness.state.escalate(SystemState.HALTED, "offline dry-run repair fixture")
     copytree(Path(__file__).resolve().parents[2] / "config", tmp_path / "config")
     for name in ("data", "logs", "backups"):
-        (tmp_path / name).mkdir(exist_ok=True)
+        (tmp_path / name).mkdir(mode=0o700, exist_ok=True)
     (tmp_path / "data/runtime.lock").write_bytes(b"0")
     context = security_cli.SecurityContext(
         harness.settings,

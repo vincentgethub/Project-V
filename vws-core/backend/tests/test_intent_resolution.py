@@ -157,7 +157,7 @@ def case(tmp_path: Path) -> tuple[SnapshotReader, Reads, FixtureClock, Settings]
         connection.execute("INSERT INTO system_control VALUES (1,'HALTED',1)")
         connection.execute("INSERT INTO system_events VALUES (?,'HALTED',3)", (UUID(int=5).hex,))
         connection.execute("INSERT INTO security_events VALUES (?,'TEST','{}',4)", (AUDIT.hex,))
-    (tmp_path / "data").mkdir()
+    (tmp_path / "data").mkdir(mode=0o700)
     (tmp_path / "data" / "runtime.lock").write_bytes(b"0")
     settings = Settings(
         db_url=SecretStr("sqlite:///" + str(database)),

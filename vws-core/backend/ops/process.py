@@ -17,6 +17,7 @@ from backend.core.clock import Clock, ensure_utc
 from backend.core.errors import ConfigurationError, DataIntegrityError
 from backend.domain.models import FrozenModel, UTCDateTime
 from backend.ops.anchors import controlled_path
+from backend.ops.private_dir import verify_private_directory
 
 
 class _FlockAPI(Protocol):
@@ -36,6 +37,11 @@ class ProcessLock:
     def __enter__(self) -> "ProcessLock":
         if self.fd is not None:
             raise ConfigurationError("The process lock is already held by this instance")
+        if sys.platform != "win32" and self.path.name == "runtime.lock":
+            # The host lock directory gets the same owner/0700/local-filesystem check as the
+            # broker coordination directory; refused, never repaired.
+            if os.path.lexists(self.path.parent):
+                verify_private_directory(self.path.parent)
         fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             if os.fstat(fd).st_size == 0:
