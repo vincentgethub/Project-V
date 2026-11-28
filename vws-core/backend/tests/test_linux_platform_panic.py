@@ -2,7 +2,9 @@
 
 import ast
 import os
+import stat
 import subprocess
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -151,22 +153,70 @@ def test_LP34_create_failure_is_loud_and_never_silently_continues(
     assert "PANIC_NOT_RECORDED: clear-intent --apply must not run" in capsys.readouterr().err
 
 
-def test_LP35_marker_is_flushed_and_fsynced_before_the_set_returns(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    directory = tmp_path / "flag"
-    seen: list[tuple[int, bytes]] = []
+def record_fsyncs(monkeypatch: pytest.MonkeyPatch, marker: Path) -> list[tuple[str, bytes]]:
+    seen: list[tuple[str, bytes]] = []
     real = os.fsync
 
     def spy(fd: int) -> None:
-        seen.append((fd, (directory / "panic-seen").read_bytes()))
+        kind = "dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+        seen.append((kind, marker.read_bytes() if marker.exists() else b""))
         real(fd)
 
     monkeypatch.setattr(os, "fsync", spy)
-    assert backend_for("linux").panic_set(directory) is True
-    assert len(seen) == 1 and seen[0][1] == b"1"
+    return seen
+
+
+def test_LP35_marker_and_its_directory_entry_are_fsynced_before_the_set_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "flag"
+    directory.mkdir(mode=0o700)
+    seen = record_fsyncs(monkeypatch, directory / "panic-seen")
+    assert backend_for(sys.platform).panic_set(directory) is True
+    if sys.platform == "win32":
+        assert seen == [], "the Windows flag is a kernel event: nothing is written to disk"
+        return
+    assert seen == [("file", b"1"), ("dir", b"1")]
     retained = panic_flag._retained_files[directory / "panic-seen"]
-    assert seen[0][0] == retained.fileno()
+    assert retained.fileno() > 2
+
+
+def test_LP35_a_directory_created_by_the_set_is_fsynced_in_its_parent_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "newflag"
+    seen = record_fsyncs(monkeypatch, directory / "panic-seen")
+    assert backend_for(sys.platform).panic_set(directory) is True
+    if sys.platform == "win32":
+        assert seen == []
+        return
+    assert seen == [("dir", b""), ("file", b"1"), ("dir", b"1")]
+
+
+def test_LP35_a_second_set_writes_and_fsyncs_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "flag"
+    backend_for(sys.platform).panic_set(directory)
+    seen = record_fsyncs(monkeypatch, directory / "panic-seen")
+    assert backend_for(sys.platform).panic_set(directory) is True
+    assert seen == []
+
+
+def test_LP35_generation_and_every_published_record_fsync_their_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coordination = BrokerCoordination(tmp_path)
+    seen = record_fsyncs(monkeypatch, coordination.directory / "generation")
+    coordination.initialize()
+    identity = uuid4()
+    coordination.publish(identity, "BEGIN", "runtime", True)
+    coordination.publish_failure(identity, "OSError")
+    kinds = [kind for kind, _content in seen]
+    if sys.platform == "win32":
+        assert kinds == ["file", "file", "file"]
+        return
+    assert kinds == ["file", "dir", "file", "dir", "file", "dir"]
 
 
 class CountingFlag(OSFlagAdapter):

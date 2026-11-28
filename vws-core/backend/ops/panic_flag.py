@@ -78,6 +78,17 @@ def _flock() -> FlockAPI:
     return cast(FlockAPI, fcntl)
 
 
+def fsync_directory(directory: Path) -> None:
+    """POSIX: make a created or renamed directory entry durable; a no-op on Windows."""
+    if sys.platform == "win32":
+        return
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def marker_signaled(marker: Path) -> bool:
     """Read-only sticky-marker state; the only reader of the Linux panic-seen file."""
     if marker.is_symlink():
@@ -156,7 +167,10 @@ class OSFlagAdapter:
             return True
         if self.directory.is_symlink():
             raise PanicFlagError("Panic flag directory is not direct")
+        existed = self.directory.is_dir()
         self.directory.mkdir(parents=True, exist_ok=True)
+        if not existed:
+            fsync_directory(self.directory.parent)
         marker = self.directory / "panic-seen"
         if marker.is_symlink():
             raise PanicFlagError("Panic flag marker is not direct")
@@ -172,5 +186,6 @@ class OSFlagAdapter:
                 retained.write(b"1")
                 retained.flush()
                 os.fsync(retained.fileno())
+                fsync_directory(self.directory)
             _retained_files[marker] = retained
         return True

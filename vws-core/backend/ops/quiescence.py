@@ -17,7 +17,13 @@ from typing import BinaryIO, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from backend.core.errors import ConfigurationError
-from backend.ops.panic_flag import FlagAdapter, FlagHandle, OSFlagAdapter, PanicFlagError
+from backend.ops.panic_flag import (
+    FlagAdapter,
+    FlagHandle,
+    OSFlagAdapter,
+    PanicFlagError,
+    fsync_directory,
+)
 from backend.ops.private_dir import RuntimeDirError, verify_private_directory
 
 
@@ -187,6 +193,7 @@ class BrokerCoordination:
                 output.write(uuid4().hex)
                 output.flush()
                 os.fsync(output.fileno())
+            fsync_directory(self.directory)
         except FileExistsError:
             pass
         if sys.platform != "win32":
@@ -203,6 +210,7 @@ class BrokerCoordination:
             output.write(json.dumps(payload, sort_keys=True))
             output.flush()
             os.fsync(output.fileno())
+        fsync_directory(self.directory)
 
     def publish_failure(self, identity: UUID, error_type: str) -> None:
         payload = {"id": identity.hex, "error_type": error_type}
@@ -210,6 +218,7 @@ class BrokerCoordination:
             output.write(json.dumps(payload, sort_keys=True))
             output.flush()
             os.fsync(output.fileno())
+        fsync_directory(self.directory)
 
     def _inventory(self) -> tuple[tuple[str, str], ...]:
         if self.directory.is_symlink():
