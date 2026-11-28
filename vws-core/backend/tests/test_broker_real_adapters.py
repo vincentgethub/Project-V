@@ -21,6 +21,7 @@ from backend.tests.broker_real_adapters import (
     assert_no_leaked_locks,
     flag_is_set,
 )
+from backend.tests.platform_expect import fresh_flag_state as fresh_flag_state
 from backend.tests.test_auto_execution import AUTO
 from backend.tests.test_security_cli import make_security_context
 from backend.tests.test_security_cli import no_native_keyring as no_native_keyring

@@ -62,3 +62,9 @@ def test_LP02_current_backend_follows_sys_platform(
 def test_LP02_linux_backend_returns_the_real_kernel_slot_adapter(tmp_path: Path) -> None:
     assert type(backend_for("linux").slots(tmp_path)) is OSSlots
     assert platform_primitives.PlatformRefusal.__mro__[1].__name__ == "ConfigurationError"
+
+
+def test_LP02_the_running_platform_selects_its_own_backend_and_primitives() -> None:
+    expected = "windows-mutex-event" if sys.platform == "win32" else "flock-file"
+    assert current_backend().kind == expected
+    assert current_backend() == backend_for(sys.platform)

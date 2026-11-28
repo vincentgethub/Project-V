@@ -1,4 +1,4 @@
-"""LP-30..LP-35 and the Linux-backend parts of LP-40..LP-44 (real files, real processes)."""
+"""LP-30..LP-35 and LP-40..LP-44: real adapters and processes, with per-platform expectations."""
 
 import ast
 import os
@@ -14,12 +14,13 @@ from backend.ops import panic_flag
 from backend.ops.panic_flag import OSFlagAdapter
 from backend.ops.platform_primitives import backend_for
 from backend.ops.quiescence import BrokerActor, BrokerCoordination, QuiescenceError
+from backend.tests.platform_expect import fresh_flag_state as fresh_flag_state
 from backend.tests.test_broker_flag_os import child
 
 SET = (
     "from pathlib import Path; import sys; import os; "
     "from backend.ops.platform_primitives import backend_for; "
-    "print('SET' if backend_for('linux').panic_set(Path(sys.argv[1])) else 'NO',flush=True); {tail}"
+    "print('SET' if backend_for(sys.platform).panic_set(Path(sys.argv[1])) else 'NO',flush=True); {tail}"
 )
 WAIT = "sys.stdin.readline()"
 DIE = "os._exit(0)"
@@ -36,7 +37,7 @@ def first_line(process: subprocess.Popen[str]) -> str:
 
 def test_LP30_flag_set_in_one_process_is_visible_in_another(tmp_path: Path) -> None:
     directory = tmp_path / "flag"
-    backend = backend_for("linux")
+    backend = backend_for(sys.platform)
     assert backend.panic_is_set(directory) is False
     process = setter(directory, WAIT)
     assert first_line(process) == "SET"
@@ -50,7 +51,11 @@ def test_LP32_flag_survives_setter_death_without_cleanup(tmp_path: Path) -> None
     process = setter(directory, DIE)
     assert first_line(process) == "SET"
     assert process.wait(timeout=30) == 0
-    assert backend_for("linux").panic_is_set(directory) is True
+    if sys.platform == "win32":
+        # A kernel event dies with its last handle; only the Linux marker is sticky on disk.
+        assert backend_for(sys.platform).panic_is_set(directory) is False
+        return
+    assert backend_for(sys.platform).panic_is_set(directory) is True
     assert (directory / "panic-seen").read_bytes() == b"1"
 
 
@@ -58,32 +63,46 @@ def test_LP33_second_set_from_another_process_succeeds_and_changes_nothing(
     tmp_path: Path,
 ) -> None:
     directory = tmp_path / "flag"
-    assert backend_for("linux").panic_set(directory) is True
+    assert backend_for(sys.platform).panic_set(directory) is True
     marker = directory / "panic-seen"
+    if sys.platform == "win32":
+        process = setter(directory, "pass")
+        assert first_line(process) == "SET"
+        assert process.wait(timeout=30) == 0
+        assert not marker.exists(), "the Windows flag is a kernel event: no marker file"
+        assert backend_for(sys.platform).panic_set(directory) is True
+        return
     before = (marker.read_bytes(), marker.stat().st_mtime_ns, marker.stat().st_ino)
     process = setter(directory, "pass")
     assert first_line(process) == "SET"
     assert process.wait(timeout=30) == 0
     assert (marker.read_bytes(), marker.stat().st_mtime_ns, marker.stat().st_ino) == before
-    assert backend_for("linux").panic_set(directory) is True
+    assert backend_for(sys.platform).panic_set(directory) is True
 
 
 def test_LP33_corrupt_marker_is_refused_loudly(tmp_path: Path) -> None:
     directory = tmp_path / "flag"
     directory.mkdir()
     (directory / "panic-seen").write_bytes(b"0")
+    if sys.platform == "win32":
+        assert backend_for(sys.platform).panic_set(directory) is True, "no marker is read"
+        assert backend_for(sys.platform).panic_is_set(directory) is True
+        return
     with pytest.raises(panic_flag.PanicFlagError, match=r"^Panic flag marker is corrupt$"):
-        backend_for("linux").panic_set(directory)
+        backend_for(sys.platform).panic_set(directory)
     with pytest.raises(panic_flag.PanicFlagError, match=r"^Panic flag marker is corrupt$"):
-        backend_for("linux").panic_is_set(directory)
+        backend_for(sys.platform).panic_is_set(directory)
 
 
 def test_LP33_marker_symlink_is_refused(tmp_path: Path) -> None:
     directory = tmp_path / "flag"
     directory.mkdir()
+    if sys.platform == "win32":
+        assert backend_for(sys.platform).panic_is_set(directory) is False, "no marker is read"
+        return
     (directory / "panic-seen").symlink_to(tmp_path / "elsewhere")
     with pytest.raises(panic_flag.PanicFlagError, match=r"^Panic flag marker is not direct$"):
-        backend_for("linux").panic_is_set(directory)
+        backend_for(sys.platform).panic_is_set(directory)
 
 
 FORBIDDEN_CALLS = {
@@ -127,8 +146,9 @@ def test_LP34_create_failure_is_loud_and_never_silently_continues(
 ) -> None:
     blocked = tmp_path / "flag"
     blocked.write_bytes(b"not a directory")
-    with pytest.raises(OSError):
-        backend_for("linux").panic_set(blocked)
+    if sys.platform != "win32":
+        with pytest.raises(OSError):
+            backend_for(sys.platform).panic_set(blocked)
     project = tmp_path / "project"
     coordination = BrokerCoordination(project, flag_adapter=OSFlagAdapter(blocked))
 
@@ -149,6 +169,12 @@ def test_LP34_create_failure_is_loud_and_never_silently_continues(
         assert lease is not None
         lease.release()
     assert ran == ["cancel"], "emergency work still runs"
+    if sys.platform == "win32":
+        # The kernel event ignores the directory, so the flag itself cannot fail here; the
+        # injected-kernel failure is asserted in test_linux_platform_exit_codes.
+        assert actor.panic_not_recorded is False
+        assert "PANIC_NOT_RECORDED" not in capsys.readouterr().err
+        return
     assert actor.panic_not_recorded is True
     assert "PANIC_NOT_RECORDED: clear-intent --apply must not run" in capsys.readouterr().err
 
@@ -243,7 +269,7 @@ def test_LP40_LP41_panic_is_slotless_and_flag_is_set_before_the_first_broker_cal
     held = [coordination.adapter.acquire(f"slot-{index}") for index in range(8)]
     assert all(lease is not None for lease in held)
     events: list[str] = []
-    backend = backend_for("linux")
+    backend = backend_for(sys.platform)
 
     def broker_call() -> None:
         events.append("flag_set" if backend.panic_is_set(coordination.directory) else "flag_unset")
@@ -269,7 +295,7 @@ def test_LP42_resolver_refuses_on_the_flag_at_entry_and_recheck_and_never_resets
     tmp_path: Path,
 ) -> None:
     coordination, _flag = real_coordination(tmp_path)
-    backend = backend_for("linux")
+    backend = backend_for(sys.platform)
     backend.panic_set(coordination.directory)
     with pytest.raises(QuiescenceError, match=r"^Panic flag is signaled$"):
         with coordination.resolver():
@@ -286,12 +312,12 @@ def test_LP42_flag_set_after_proof_is_caught_at_the_recheck(tmp_path: Path) -> N
     coordination, _flag = real_coordination(tmp_path)
     coordination.acquire_proof()
     try:
-        backend_for("linux").panic_set(coordination.directory)
+        backend_for(sys.platform).panic_set(coordination.directory)
         with pytest.raises(QuiescenceError, match=r"^Panic flag is signaled or unavailable$"):
             coordination.check()
     finally:
         coordination.release_proof()
-    assert backend_for("linux").panic_is_set(coordination.directory) is True
+    assert backend_for(sys.platform).panic_is_set(coordination.directory) is True
 
 
 def test_LP43_broker_inventory_change_between_snapshots_refuses(tmp_path: Path) -> None:

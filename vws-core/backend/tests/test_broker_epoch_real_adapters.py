@@ -9,6 +9,7 @@ from backend.tests import test_coordinated_intent as coordinated
 from backend.tests import test_panic_dryrun_stop as dryrun
 from backend.tests.broker_real_adapters import Adapters
 from backend.tests.lp43_epoch_child import CASES
+from backend.tests.platform_expect import fresh_flag_state as fresh_flag_state
 from backend.tests.test_auto_execution import AUTO
 from backend.tests.test_broker_flag_os import child
 from backend.tests.test_intent_resolution import case as ga_case

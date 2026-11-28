@@ -24,6 +24,8 @@ class _StatFS(ctypes.Structure):
 
 
 def filesystem_magic(path: Path) -> int:
+    if sys.platform == "win32":
+        raise RuntimeDirError("Runtime directory filesystem checks are Linux-only")
     libc = ctypes.CDLL(None, use_errno=True)
     libc.statfs.argtypes = [ctypes.c_char_p, ctypes.POINTER(_StatFS)]
     libc.statfs.restype = ctypes.c_int
