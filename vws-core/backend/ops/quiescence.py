@@ -76,6 +76,8 @@ class WindowsLease:
     def release(self) -> None:
         if threading.get_ident() != self.owner:
             raise QuiescenceError("Broker mutex release must stay on its owner thread")
+        if sys.platform != "win32":
+            raise QuiescenceError("Broker mutex release is Windows-only")
         api = ctypes.WinDLL("kernel32", use_last_error=True)
         api.ReleaseMutex.argtypes = [ctypes.c_void_p]
         api.ReleaseMutex.restype = ctypes.c_int

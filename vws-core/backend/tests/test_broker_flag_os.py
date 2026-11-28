@@ -8,6 +8,12 @@ from backend.ops.panic_flag import OSFlagAdapter
 from backend.ops.quiescence import BrokerCoordination, OSSlots
 
 
+def child_creation_flags() -> int:
+    if sys.platform == "win32":
+        return subprocess.CREATE_NO_WINDOW
+    return 0
+
+
 def child(code: str, path: Path) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [sys.executable, "-B", "-c", code, str(path)],
@@ -16,7 +22,7 @@ def child(code: str, path: Path) -> subprocess.Popen[str]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        creationflags=child_creation_flags(),
     )
 
 

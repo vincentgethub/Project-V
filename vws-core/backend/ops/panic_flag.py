@@ -30,7 +30,9 @@ _retained_windows: dict[str, int] = {}
 _retained_files: dict[Path, BinaryIO] = {}
 
 
-def _kernel() -> ctypes.WinDLL:
+def _kernel() -> ctypes.CDLL:
+    if sys.platform != "win32":
+        raise PanicFlagError("Panic flag kernel API is Windows-only")
     api = ctypes.WinDLL("kernel32", use_last_error=True)
     api.CreateEventW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_wchar_p]
     api.CreateEventW.restype = ctypes.c_void_p
@@ -76,20 +78,29 @@ def _flock() -> FlockAPI:
     return cast(FlockAPI, fcntl)
 
 
+def marker_signaled(marker: Path) -> bool:
+    """Read-only sticky-marker state; the only reader of the Linux panic-seen file."""
+    if marker.is_symlink():
+        raise PanicFlagError("Panic flag marker is not direct")
+    try:
+        data = marker.read_bytes()
+    except FileNotFoundError:
+        return False
+    if data != b"1":
+        raise PanicFlagError("Panic flag marker is corrupt")
+    return True
+
+
+def panic_marker(directory: Path) -> Path:
+    return directory / "panic-seen"
+
+
 class FileFlagHandle:
     def __init__(self, file: BinaryIO, marker: Path) -> None:
         self.file, self.marker = file, marker
 
     def signaled(self) -> bool:
-        if self.marker.is_symlink():
-            raise PanicFlagError("Panic flag marker is not direct")
-        try:
-            data = self.marker.read_bytes()
-        except FileNotFoundError:
-            return False
-        if data != b"1":
-            raise PanicFlagError("Panic flag marker is corrupt")
-        return True
+        return marker_signaled(self.marker)
 
     def close(self) -> None:
         try:
